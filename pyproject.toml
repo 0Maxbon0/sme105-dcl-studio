@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ford-dcl"
+version = "0.1.0"
+description = "Host capture and read-only analysis for Ford EEC-IV DCL diagnostics"
+requires-python = ">=3.10"
+dependencies = ["fastapi", "httpx", "pyserial", "uvicorn"]
+
+[project.optional-dependencies]
+build = ["httpx", "pyinstaller"]
+
+[project.scripts]
+ford-dcl = "ford_dcl.cli:main"
+ford-dcl-gui = "ford_dcl.web.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"ford_dcl.web" = ["static/*", "static/**/*"]

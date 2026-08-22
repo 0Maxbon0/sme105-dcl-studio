@@ -1,0 +1,6 @@
+[
+  {"wire_hex": "FF5F", "data": 4095, "parity": 5},
+  {"wire_hex": "00A0", "data": 0, "parity": 10},
+  {"wire_hex": "00B1", "data": 1, "parity": 11},
+  {"wire_hex": "1821", "data": 280, "parity": 2}
+]

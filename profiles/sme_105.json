@@ -1,0 +1,220 @@
+{
+  "profile_id": "sme_105",
+  "description": "Candidate SME-105 32-byte live-data response mapping",
+  "response_bytes": 32,
+  "protocol_confidence": "unverified",
+  "mapping_confidence": "reference",
+  "source": "published Java reference; byte and nibble translation not independently verified",
+  "fields": [
+    {
+      "name": "rpm",
+      "source_chars": "0:2 + low nibble at char 3",
+      "selectors": [
+        {"byte": 1, "part": "low_nibble"},
+        {"byte": 0, "part": "byte"}
+      ],
+      "confidence": "reference",
+      "verification": "unverified",
+      "engineering": {
+        "kind": "reference_formula",
+        "formula": "java_rpm",
+        "unit": "rpm",
+        "confidence": "reference"
+      }
+    },
+    {
+      "name": "voltage",
+      "source_chars": "4:6",
+      "selectors": [
+        {"byte": 2, "part": "byte"}
+      ],
+      "confidence": "reference",
+      "verification": "unverified",
+      "engineering": {
+        "kind": "reference_formula",
+        "formula": "java_voltage",
+        "unit": "V",
+        "confidence": "reference"
+      }
+    },
+    {
+      "name": "o2",
+      "source_chars": "8:10 + nibble at char 11",
+      "selectors": [
+        {"byte": 5, "part": "low_nibble"},
+        {"byte": 4, "part": "byte"}
+      ],
+      "confidence": "reference",
+      "verification": "unverified",
+      "engineering": {
+        "kind": "reference_formula",
+        "formula": "java_o2",
+        "unit": "mV",
+        "confidence": "reference"
+      }
+    },
+    {
+      "name": "tps",
+      "source_chars": "12:14 + nibble at char 15",
+      "selectors": [
+        {"byte": 7, "part": "low_nibble"},
+        {"byte": 6, "part": "byte"}
+      ],
+      "confidence": "reference",
+      "verification": "unverified",
+      "engineering": {
+        "kind": "reference_formula",
+        "formula": "java_tps",
+        "unit": "mV",
+        "confidence": "reference"
+      }
+    },
+    {
+      "name": "fuel_correction",
+      "source_chars": "nibbles at chars 16 and 19",
+      "selectors": [
+        {"byte": 9, "part": "low_nibble"},
+        {"byte": 8, "part": "high_nibble"}
+      ],
+      "confidence": "reference",
+      "verification": "unverified",
+      "engineering": {
+        "kind": "reference_formula",
+        "formula": "java_fuel_correction",
+        "unit": "%",
+        "confidence": "reference"
+      }
+    },
+    {
+      "name": "ect",
+      "source_chars": "20:22",
+      "selectors": [
+        {"byte": 10, "part": "byte"}
+      ],
+      "confidence": "reference",
+      "verification": "unverified",
+      "engineering": {
+        "kind": "reference_formula",
+        "formula": "java_temperature",
+        "unit": "degC",
+        "confidence": "reference"
+      }
+    },
+    {
+      "name": "iat",
+      "source_chars": "24:26",
+      "selectors": [
+        {"byte": 12, "part": "byte"}
+      ],
+      "confidence": "reference",
+      "verification": "unverified",
+      "engineering": {
+        "kind": "reference_formula",
+        "formula": "java_temperature",
+        "unit": "degC",
+        "confidence": "reference"
+      }
+    },
+    {
+      "name": "iac",
+      "source_chars": "nibbles at chars 28 and 31",
+      "selectors": [
+        {"byte": 15, "part": "low_nibble"},
+        {"byte": 14, "part": "high_nibble"}
+      ],
+      "confidence": "reference",
+      "verification": "unverified",
+      "engineering": {
+        "kind": "reference_formula",
+        "formula": "java_iac",
+        "unit": "%",
+        "confidence": "reference"
+      }
+    },
+    {
+      "name": "maf",
+      "source_chars": "32:34 + nibble at char 35",
+      "selectors": [
+        {"byte": 17, "part": "low_nibble"},
+        {"byte": 16, "part": "byte"}
+      ],
+      "confidence": "reference",
+      "verification": "unverified",
+      "engineering": {
+        "kind": "reference_formula",
+        "formula": "java_maf",
+        "unit": "mV",
+        "confidence": "reference"
+      }
+    },
+    {
+      "name": "injection",
+      "source_chars": "36:38 + nibble at char 39",
+      "selectors": [
+        {"byte": 19, "part": "low_nibble"},
+        {"byte": 18, "part": "byte"}
+      ],
+      "confidence": "reference",
+      "verification": "unverified",
+      "engineering": {
+        "kind": "reference_formula",
+        "formula": "java_injection",
+        "unit": "us",
+        "confidence": "reference"
+      }
+    },
+    {
+      "name": "ignition",
+      "source_chars": "40:42",
+      "selectors": [
+        {"byte": 20, "part": "byte"}
+      ],
+      "confidence": "reference",
+      "verification": "unverified",
+      "engineering": {
+        "kind": "reference_formula",
+        "formula": "java_ignition",
+        "unit": "deg",
+        "confidence": "reference"
+      }
+    },
+    {
+      "name": "tps_mode",
+      "source_chars": "44:46",
+      "selectors": [
+        {"byte": 22, "part": "byte"}
+      ],
+      "confidence": "reference",
+      "verification": "unverified",
+      "engineering": {
+        "kind": "lookup",
+        "unit": "state",
+        "confidence": "reference",
+        "values": {
+          "0xFF": "closed",
+          "0x00": "part_open",
+          "0x01": "fully_open"
+        }
+      }
+    },
+    {
+      "name": "o2_mode",
+      "source_chars": "48:52",
+      "selectors": [
+        {"byte": 24, "part": "byte"},
+        {"byte": 25, "part": "byte"}
+      ],
+      "confidence": "reference",
+      "verification": "unverified",
+      "engineering": {
+        "kind": "lookup",
+        "unit": "state",
+        "confidence": "reference",
+        "values": {
+          "0x3090": "Opened"
+        }
+      },
+      "notes": "The Java reference maps 0x3090 to open and every other value to closed; this profile leaves other values unknown."
+    }
+  ]
+}

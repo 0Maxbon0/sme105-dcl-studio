@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>SME-105 DCL Diagnostic Studio</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="loading" class="loading-screen">
+    <div class="loader-ring"></div>
+    <strong>Initializing diagnostic workspace</strong>
+    <span>Loading serial, safety, and evidence services…</span>
+  </div>
+
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">DCL</div>
+        <div><strong>SME-105</strong><span>Diagnostic Studio</span></div>
+      </div>
+      <nav id="nav">
+        <button class="active" data-page="dashboard">Overview</button>
+        <button data-page="setup">Guided Setup</button>
+        <button data-page="capture">Live Capture</button>
+        <button data-page="analysis">Sessions & Analysis</button>
+        <button data-page="dtc">DTC Lookup</button>
+        <button data-page="diagnosis">High-Idle Diagnosis</button>
+        <button data-page="firmware">Firmware</button>
+        <button data-page="logs">Live Logs <span id="log-count" class="nav-badge">0</span></button>
+        <button data-page="reference">Reference Library</button>
+        <button data-page="settings">Settings</button>
+      </nav>
+      <div class="author">
+        <span>Made by</span>
+        <strong>Eng. Maxim Salib</strong>
+        <small>Independent engineering tool<br>Not affiliated with Ford Motor Company</small>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">1998 Ford Escort · EEC-IV · SME-105</p>
+          <h1 id="page-title">System Overview</h1>
+        </div>
+        <div class="top-status">
+          <span id="connection-pill" class="pill neutral">No serial port</span>
+          <span id="capture-pill" class="pill neutral">Capture idle</span>
+          <button id="abort-button" class="danger ghost">STOP / ABORT</button>
+        </div>
+      </header>
+
+      <div class="safety-strip">
+        <strong>Receive-only safety mode</strong>
+        Active DCL transmission is locked. Never connect OBD pin 16 to this hardware.
+      </div>
+
+      <section class="page active" id="page-dashboard">
+        <div class="hero">
+          <div>
+            <p class="eyebrow">Evidence-first vehicle diagnostics</p>
+            <h2>Capture facts. Separate hypotheses. Diagnose safely.</h2>
+            <p>The studio preserves raw ESP32 data before interpretation and tracks whether each result is observed, reference, inferred, or unknown.</p>
+            <div class="button-row">
+              <button class="primary" data-open-page="setup">Start guided setup</button>
+              <button class="secondary" data-open-page="capture">Open live capture</button>
+            </div>
+          </div>
+          <div class="progress-orbit">
+            <svg viewBox="0 0 120 120" aria-label="Project progress">
+              <circle class="orbit-bg" cx="60" cy="60" r="48"></circle>
+              <circle id="progress-circle" class="orbit-value" cx="60" cy="60" r="48"></circle>
+            </svg>
+            <div><strong id="progress-value">0%</strong><span>setup readiness</span></div>
+          </div>
+        </div>
+        <div class="card-grid four">
+          <article class="metric-card"><span>Serial interface</span><strong id="metric-port">Not selected</strong><small id="metric-port-detail">Scan required</small></article>
+          <article class="metric-card"><span>Firmware mode</span><strong id="metric-firmware">Passive binary</strong><small>ECU transmit disabled</small></article>
+          <article class="metric-card"><span>Latest capture</span><strong id="metric-session">None</strong><small id="metric-capture-detail">Ready for bounded session</small></article>
+          <article class="metric-card"><span>Vehicle diagnosis</span><strong>Not established</strong><small>Physical evidence required</small></article>
+        </div>
+        <div class="two-column">
+          <article class="panel">
+            <div class="panel-heading"><div><p class="eyebrow">Current state</p><h3>Implementation confidence</h3></div></div>
+            <div class="evidence-list">
+              <div><span class="evidence observed">Observed</span><p>USB adapter detected and passive binary firmware flashed.</p></div>
+              <div><span class="evidence observed">Observed</span><p>SLIP/CRC host transport and capture integrity tests pass.</p></div>
+              <div><span class="evidence reference">Reference</span><p>DCL is treated as a 9600-baud, 8N2 candidate until vehicle validation.</p></div>
+              <div><span class="evidence unknown">Unknown</span><p>No SME-105 ECU request/response transaction has been captured.</p></div>
+            </div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading"><div><p class="eyebrow">Required next</p><h3>Vehicle evidence gates</h3></div></div>
+            <ol class="gate-list">
+              <li>Complete the wiring and receive-only safety checklist.</li>
+              <li>Validate A/B polarity with ignition ON, engine OFF.</li>
+              <li>Preserve three repeatable warm-idle sessions.</li>
+              <li>Perform reversible IAC airflow isolation before a definitive diagnosis.</li>
+            </ol>
+          </article>
+        </div>
+      </section>
+
+      <section class="page" id="page-setup">
+        <div class="section-intro"><div><p class="eyebrow">Question-driven workflow</p><h2>Guided hardware and safety setup</h2></div><span id="wizard-step-label">Step 1 of 6</span></div>
+        <div class="progress-track"><div id="wizard-progress"></div></div>
+        <div id="wizard" class="wizard">
+          <article class="wizard-step active" data-step="0">
+            <span class="step-number">01</span><h3>Work mode</h3>
+            <p>What is connected now?</p>
+            <label class="choice"><input type="radio" name="connection-state" value="usb_only" checked><span><strong>ESP32 USB only</strong><small>Correct for software setup. A floating receiver may report BREAK.</small></span></label>
+            <label class="choice"><input type="radio" name="connection-state" value="obd_koeo"><span><strong>Receive-only OBD connection, KOEO</strong><small>TX disconnected; common ground connected first.</small></span></label>
+          </article>
+          <article class="wizard-step" data-step="1">
+            <span class="step-number">02</span><h3>Electrical safety</h3>
+            <label class="check"><input type="checkbox" data-gate><span>I will not connect OBD pin 16 to the ESP32 or XY-K485.</span></label>
+            <label class="check"><input type="checkbox" data-gate><span>ESP32 GPIO17 TX is disconnected from the K485 during passive tests.</span></label>
+            <label class="check"><input type="checkbox" data-gate><span>Vehicle signal ground is connected before A/B when vehicle testing begins.</span></label>
+            <label class="check"><input type="checkbox" data-gate><span>I understand the XY-K485 is not approved for active-master transmission.</span></label>
+            <div class="wiring-card">
+              <svg viewBox="0 0 640 220" role="img" aria-label="Receive-only wiring">
+                <rect x="8" y="28" width="150" height="150" rx="12" fill="#122330" stroke="#244050"/>
+                <text x="83" y="58" text-anchor="middle" fill="#22d3c5" font-size="12" font-weight="700">OBD / DCL</text>
+                <text x="83" y="84" text-anchor="middle" fill="#edf5f7" font-size="11">Pin 3  DCL+</text>
+                <text x="83" y="106" text-anchor="middle" fill="#edf5f7" font-size="11">Pin 11 DCL-</text>
+                <text x="83" y="128" text-anchor="middle" fill="#6adea2" font-size="11">Signal GND first</text>
+                <text x="83" y="154" text-anchor="middle" fill="#ff625f" font-size="11">Never pin 16</text>
+                <path d="M158 80 H230" stroke="#22d3c5" stroke-width="2"/>
+                <path d="M158 104 H230" stroke="#e8b95c" stroke-width="2"/>
+                <path d="M158 128 H230" stroke="#6adea2" stroke-width="2"/>
+                <rect x="230" y="28" width="170" height="150" rx="12" fill="#122330" stroke="#244050"/>
+                <text x="315" y="58" text-anchor="middle" fill="#22d3c5" font-size="12" font-weight="700">XY-K485 RX only</text>
+                <text x="315" y="88" text-anchor="middle" fill="#edf5f7" font-size="11">A / B candidate pair</text>
+                <text x="315" y="110" text-anchor="middle" fill="#edf5f7" font-size="11">RO → ESP32 RX GPIO16</text>
+                <text x="315" y="132" text-anchor="middle" fill="#ff625f" font-size="11">DI / TX disconnected</text>
+                <text x="315" y="154" text-anchor="middle" fill="#8fa6b1" font-size="11">3.3 V logic, common GND</text>
+                <path d="M400 88 H470" stroke="#22d3c5" stroke-width="2"/>
+                <rect x="470" y="28" width="154" height="150" rx="12" fill="#122330" stroke="#244050"/>
+                <text x="547" y="70" text-anchor="middle" fill="#22d3c5" font-size="12" font-weight="700">ESP32 USB</text>
+                <text x="547" y="100" text-anchor="middle" fill="#edf5f7" font-size="11">Host USB capture</text>
+                <text x="547" y="122" text-anchor="middle" fill="#edf5f7" font-size="11">No DCL transmit</text>
+                <text x="547" y="148" text-anchor="middle" fill="#8fa6b1" font-size="11">Studio logs this path</text>
+              </svg>
+              <p>K485-to-ECU connection is not required for software setup. Connect it later only with ignition OFF, ground first, and TX disconnected.</p>
+            </div>
+          </article>
+          <article class="wizard-step" data-step="2">
+            <span class="step-number">03</span><h3>Serial interface</h3>
+            <div class="form-row"><label>Detected port<select id="wizard-port"></select></label><button id="refresh-ports" class="secondary compact">Refresh ports</button></div>
+            <div id="port-diagnostic" class="info-box">Select an ESP32/CP210x serial device.</div>
+          </article>
+          <article class="wizard-step" data-step="3">
+            <span class="step-number">04</span><h3>Firmware and transport</h3>
+            <label class="choice"><input type="radio" name="firmware-mode" value="passive_binary" checked><span><strong>Passive binary — recommended</strong><small>460800 USB baud, MCU timestamps, SLIP and CRC.</small></span></label>
+            <label class="choice"><input type="radio" name="firmware-mode" value="passive_ascii"><span><strong>Passive ASCII — compatibility</strong><small>115200 USB baud, no precise per-byte timestamps.</small></span></label>
+            <div class="warning-box">DCL 9600/8N2 remains a candidate. The GUI will not label it vehicle-verified.</div>
+          </article>
+          <article class="wizard-step" data-step="4">
+            <span class="step-number">05</span><h3>Vehicle preflight</h3>
+            <label class="check"><input type="checkbox" data-gate><span>Parking brake applied; transmission in neutral/park; wheels secured.</span></label>
+            <label class="check"><input type="checkbox" data-gate><span>Wiring inspected for shorts and bare conductors.</span></label>
+            <label class="check"><input type="checkbox" data-gate><span>Receive-only mode selected; no unverified command bytes will be sent.</span></label>
+            <label class="check"><input type="checkbox" data-gate><span>STOP / ABORT and restoration sequence are understood.</span></label>
+          </article>
+          <article class="wizard-step" data-step="5">
+            <span class="step-number">06</span><h3>Ready state</h3>
+            <div class="success-box"><strong>Software setup complete</strong><p>Save the selections, then use a bounded capture. K485-to-ECU connection is not required now.</p></div>
+            <label class="check"><input id="save-wizard" type="checkbox"><span>Save this guided setup as completed.</span></label>
+          </article>
+          <div class="wizard-actions"><button id="wizard-back" class="secondary" disabled>Back</button><button id="wizard-next" class="primary">Continue</button></div>
+        </div>
+      </section>
+
+      <section class="page" id="page-capture">
+        <div class="section-intro"><div><p class="eyebrow">Immutable acquisition</p><h2>Live capture workspace</h2></div><div class="button-row"><button id="capture-start" class="primary">Start capture</button><button id="capture-stop" class="danger" disabled>Stop capture</button></div></div>
+        <div class="capture-layout">
+          <article class="panel capture-controls">
+            <div class="form-grid">
+              <label>Serial port<select id="capture-port"></select></label>
+              <label>Transport format<select id="capture-format"><option value="binary">Binary SLIP</option><option value="ascii">ASCII hex</option></select></label>
+              <label>USB baud<input id="capture-baud" type="number" min="1"></label>
+              <label>Duration (seconds)<input id="capture-duration" type="number" min="1" step="1"></label>
+              <label>Session label<input id="capture-label" maxlength="80"></label>
+              <label>DCL candidate<select id="capture-dcl-baud"><option value="9600">9600 baud</option><option value="19200">19200 baud</option></select></label>
+              <label>Ignition state<select id="capture-ignition"><option value="off">Off / bench</option><option value="koeo">KOEO</option><option value="running">Running</option><option value="cranking">Cranking</option></select></label>
+              <label>Engine state<input id="capture-engine" placeholder="stopped"></label>
+            </div>
+            <div class="capture-progress">
+              <div class="progress-track"><div id="capture-progress-bar"></div></div>
+              <div><strong id="capture-time">00:00</strong><span id="capture-state-text">Waiting to start</span></div>
+              <small id="capture-throughput">No live DCL bytes yet</small>
+            </div>
+            <div class="marker-pad">
+              <button data-marker="SESSION_START">Session start</button><button data-marker="BASELINE_STABLE">Baseline stable</button>
+              <button data-marker="TPS_SWEEP_START">TPS sweep</button><button data-marker="LOAD_ON">Load on</button>
+              <button data-marker="LOAD_OFF">Load off</button><button data-marker="OBSERVATION">Observation</button>
+              <button data-marker="ABORT" class="danger ghost">Abort marker</button>
+            </div>
+          </article>
+          <article class="panel console-panel">
+            <div class="panel-heading"><div><p class="eyebrow">Live execution</p><h3>Capture event stream</h3></div><button class="icon-button" data-clear-log>Clear</button></div>
+            <div id="capture-console" class="console"></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="page" id="page-analysis">
+        <div class="section-intro"><div><p class="eyebrow">Read-only processing</p><h2>Sessions and protocol analysis</h2></div><button id="refresh-sessions" class="secondary">Refresh sessions</button></div>
+        <div class="two-column analysis-columns">
+          <article class="panel"><h3>Capture sessions</h3><div id="session-list" class="session-list"><div class="empty">No sessions found.</div></div></article>
+          <article class="panel"><h3>Inspection result</h3><div id="inspection-result" class="result-view"><div class="empty">Select a session to inspect raw integrity, gaps, parity, and UART status.</div></div></article>
+        </div>
+        <article class="panel">
+          <div class="panel-heading"><div><p class="eyebrow">Manual evidence</p><h3>Payload decode and framing hypotheses</h3></div></div>
+          <label>Hex payload<textarea id="payload-hex" rows="4" placeholder="Example: 01 FF 20 5F"></textarea></label>
+          <div class="button-row"><button id="decode-payload" class="primary">Decode profile fields</button><button id="frame-payload" class="secondary">Score framing</button></div>
+          <div id="payload-result" class="result-view compact-result"></div>
+        </article>
+      </section>
+
+      <section class="page" id="page-dtc">
+        <div class="section-intro"><div><p class="eyebrow">Reference catalog</p><h2>Diagnostic Trouble Code lookup</h2></div><span class="evidence reference">Reference</span></div>
+        <article class="panel narrow">
+          <div class="form-grid">
+            <label>DTC codes<input id="dtc-codes" placeholder="Example: 111, 172, 0x157"></label>
+            <label>Test source<select id="dtc-source"><option value="continuous_memory">Continuous memory</option><option value="koeo">KOEO</option><option value="koer">KOER</option><option value="unknown">Unknown</option></select></label>
+          </div>
+          <button id="lookup-dtc" class="primary">Decode codes</button>
+          <div id="dtc-result" class="result-view"></div>
+        </article>
+      </section>
+
+      <section class="page" id="page-diagnosis">
+        <div class="section-intro"><div><p class="eyebrow">Conservative classifier</p><h2>High-idle evidence record</h2></div><span class="evidence inferred">Decision support</span></div>
+        <div class="two-column">
+          <article class="panel">
+            <div class="form-grid">
+              <label>Warm idle RPM<input id="diag-rpm" type="number" placeholder="1100"></label>
+              <label>ECT °C<input id="diag-ect" type="number" step="0.1" placeholder="90"></label>
+              <label>TPS closed<select id="diag-tps"><option value="">Unknown</option><option value="true">Yes</option><option value="false">No</option></select></label>
+              <label>IAC command %<input id="diag-iac" type="number" step="0.1" placeholder="5"></label>
+              <label>Airflow isolation<select id="diag-airflow"><option value="not_performed">Not performed</option><option value="rpm_dropped_or_stalled">RPM dropped/stalled</option><option value="rpm_remained_high">RPM remained high</option></select></label>
+              <label>Mixture evidence<select id="diag-mixture"><option value="unknown">Unknown</option><option value="lean">Lean</option><option value="normal">Normal</option><option value="rich">Rich</option></select></label>
+              <label>Repeated sessions<input id="diag-repeats" type="number" min="0" value="0"></label>
+              <label>Capture IDs<input id="diag-captures" placeholder="Comma-separated session IDs"></label>
+            </div>
+            <button id="run-diagnosis" class="primary">Create decision record</button>
+          </article>
+          <article class="panel"><h3>Decision result</h3><div id="diagnosis-result" class="result-view"><div class="empty">Enter synchronized evidence. Missing physical tests remain explicit.</div></div></article>
+        </div>
+      </section>
+
+      <section class="page" id="page-firmware">
+        <div class="section-intro"><div><p class="eyebrow">ESP32 lifecycle</p><h2>Firmware build and upload</h2></div><span class="pill safe">Passive only</span></div>
+        <div class="two-column">
+          <article class="panel">
+            <div class="warning-box"><strong>Active master locked.</strong> Build inspection is allowed, but the GUI cannot upload active-master firmware or send DCL commands.</div>
+            <div class="form-grid">
+              <label>Firmware<select id="firmware-sketch"><option value="passive_binary">Passive binary</option><option value="passive_ascii">Passive ASCII</option><option value="dcl_master">Active-master shell — build only</option></select></label>
+              <label>Upload port<select id="firmware-port"></select></label>
+            </div>
+            <div class="button-row"><button id="firmware-build" class="secondary">Build firmware</button><button id="firmware-upload" class="primary">Upload receive-only firmware</button><button id="firmware-cancel" class="danger ghost">Cancel</button></div>
+            <label class="check"><input id="firmware-confirm" type="checkbox"><span>I confirm TX is disconnected and this is receive-only firmware.</span></label>
+            <div id="platformio-status" class="info-box">Checking PlatformIO…</div>
+          </article>
+          <article class="panel console-panel"><div class="panel-heading"><h3>Build / upload output</h3></div><div id="firmware-console" class="console"></div></article>
+        </div>
+      </section>
+
+      <section class="page" id="page-logs">
+        <div class="section-intro"><div><p class="eyebrow">Application observability</p><h2>Live code and data log</h2></div><div class="button-row"><label class="inline-check"><input id="log-autoscroll" type="checkbox" checked>Auto-scroll</label><button data-clear-log class="secondary">Clear</button></div></div>
+        <article class="panel console-panel full-console"><div id="global-console" class="console"></div></article>
+      </section>
+
+      <section class="page" id="page-reference">
+        <div class="section-intro"><div><p class="eyebrow">Embedded documentation</p><h2>Reference library</h2></div></div>
+        <div class="reference-layout"><nav id="guide-list" class="guide-list"></nav><article class="panel document-view"><h3 id="guide-title">Select a guide</h3><div id="guide-content" class="markdown-body">Safety, test procedure, protocol notes, and firmware documentation are available offline.</div></article></div>
+      </section>
+
+      <section class="page" id="page-settings">
+        <div class="section-intro"><div><p class="eyebrow">Persistent configuration</p><h2>Application settings</h2></div><button id="save-settings" class="primary">Save settings</button></div>
+        <div class="settings-sections">
+          <article class="panel"><h3>Storage and capture</h3><div class="form-grid">
+            <label>Capture directory<input data-setting="output_dir"></label><label>Analysis directory<input data-setting="analysis_dir"></label>
+            <label>Serial port<input data-setting="port"></label><label>USB baud<input data-setting="usb_baudrate" type="number"></label>
+            <label>Capture format<select data-setting="capture_format"><option value="binary">binary</option><option value="ascii">ascii</option></select></label>
+            <label>Duration seconds<input data-setting="duration_seconds" type="number"></label>
+            <label>Raw rotation bytes<input data-setting="rotate_size" type="number"></label><label>Host read bytes<input data-setting="read_size" type="number"></label>
+            <label>Reconnect delay seconds<input data-setting="reconnect_delay" type="number" step="0.1"></label><label class="check compact-check"><input data-setting="reconnect" type="checkbox"><span>Reconnect after disconnect</span></label>
+          </div></article>
+          <article class="panel"><h3>Interface identity</h3><div class="form-grid">
+            <label>Adapter<input data-setting="adapter"></label><label>Firmware identifier<input data-setting="firmware"></label>
+            <label>DCL candidate baud<input data-setting="dcl_baud" type="number"></label><label>DCL UART format<input data-setting="dcl_format"></label>
+            <label>Session label<input data-setting="session_label"></label><label>Ignition state<select data-setting="ignition_state"><option value="off">off</option><option value="koeo">koeo</option><option value="running">running</option><option value="cranking">cranking</option></select></label>
+            <label>Engine state<input data-setting="engine_state"></label><label>Profile path<input data-setting="profile_path"></label>
+          </div></article>
+          <article class="panel"><h3>Diagnosis thresholds</h3><div class="form-grid">
+            <label>High-idle RPM<input data-setting="high_idle_rpm" type="number"></label><label>Fully warm ECT °C<input data-setting="fully_warm_ect_deg_c" type="number"></label>
+            <label>Minimum IAC %<input data-setting="minimum_iac_percent" type="number"></label><label class="check compact-check"><input data-setting="expert_overrides" type="checkbox"><span>Enable expert overrides with warnings</span></label>
+          </div></article>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div id="toast-container" class="toast-container"></div>
+  <script src="app.js"></script>
+</body>
+</html>

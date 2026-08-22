@@ -1,0 +1,10 @@
+{
+  "rpm": null,
+  "ect_deg_c": null,
+  "tps_closed": null,
+  "iac_percent": null,
+  "airflow_isolation": "not_performed",
+  "mixture": "unknown",
+  "repeated_sessions": 0,
+  "source_capture_ids": []
+}
