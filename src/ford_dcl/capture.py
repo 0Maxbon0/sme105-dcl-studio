@@ -459,6 +459,18 @@ class SerialCapture:
         self.event_sink = event_sink
         self.stop_event = threading.Event()
         self.session_path: Path | None = None
+        self._connection: Any | None = None
+        self._write_lock = threading.Lock()
+
+    def write(self, data: bytes) -> None:
+        """Write bytes to the active serial connection."""
+        with self._write_lock:
+            conn = self._connection
+            if conn is not None and getattr(conn, "is_open", False):
+                conn.write(data)
+                conn.flush()
+            else:
+                raise RuntimeError("serial port is not currently connected")
 
     def stop(self) -> None:
         """Request clean shutdown."""
@@ -488,6 +500,8 @@ class SerialCapture:
                         baudrate=self.config.baudrate,
                         timeout=0.25,
                     )
+                    with self._write_lock:
+                        self._connection = connection
                     session.event(
                         "reconnected" if connected_once else "connected",
                         port=self.config.port,
@@ -559,6 +573,8 @@ class SerialCapture:
                         break
                     self.stop_event.wait(self.config.reconnect_delay)
                 finally:
+                    with self._write_lock:
+                        self._connection = None
                     if connection is not None:
                         try:
                             connection.close()

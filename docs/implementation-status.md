@@ -1,9 +1,9 @@
 # Implementation status
 
-See `ROADMAP.md` for the full phase plan, remaining gates, and next physical
-work. This file records verification state only.
+See `ROADMAP.md` for the phase plan and `STATUS_REPORT.md` for the 2026-08-22
+situation narrative. This file records verification state only.
 
-## Implemented and verified
+## Implemented and verified (host / bench)
 
 - ASCII USB capture with raw-byte preservation, rotation, reconnect handling,
   metadata, timestamps, and create-only session directories.
@@ -14,41 +14,44 @@ work. This file records verification state only.
 - Reference/unverified SME-105 live-data profile, DTC catalog, safe symbolic
   command state machine, operator markers, correlation helpers, and
   evidence-based high-idle branch classifier.
-- Receive-only ASCII and binary ESP32 sketches plus a default-receive active
-  master shell with no enabled wire transactions.
-- Localhost-only cross-platform Diagnostic Studio with token-protected REST and
-  WebSocket services, guided safety/setup questions, complete capture settings,
-  serial discovery, live logs, session analysis, DTC lookup, high-idle evidence
-  records, embedded documentation, and locked firmware controls.
-- Native Ubuntu PyInstaller bundle plus Windows-native build and launch scripts.
-- Host tests, Python compile checks, focused Ruff checks, editable package
-  installation, CLI/API smoke tests, and successful `esp32dev` board
-  compilation.
-- CP2102 detection at `/dev/ttyUSB0`, successful passive-binary firmware upload,
-  and guarded handling of the expected USB-only/unconnected RX break condition.
+- Receive-only ASCII, binary, and `sniffer` (9600 8N1, GPIO16, no UART TX pin)
+  sketches plus a default-receive active master shell with no enabled wire
+  transactions. Desk `bench_test` drives A+/B− and is not for the vehicle.
+- Localhost-only cross-platform Diagnostic Studio: token-protected REST and
+  WebSocket services, guided setup, capture until Stop, serial discovery, live
+  logs, session analysis, DTC lookup, high-idle records, firmware controls,
+  Desk Bench Test page, and locked active-master upload.
+- Windows launcher (`Launch Studio.bat`), venv bootstrap, PlatformIO in `.venv`.
+- Host tests passing on the Windows 3.14 venv; `esp32dev` compilation of
+  sniffer, bench_test, and the original three sketches.
+- CP2102 **Observed** on Linux `/dev/ttyUSB0` and Windows **COM7**,
+  VID:PID `10C4:EA60`, serial `0001`.
+- Desk XY-K485 differential loopback **Observed PASS**. On this clone, module
+  **RXD** is the TTL receiver output into GPIO16.
 
 ## Not vehicle-verified
 
-- The K485 is not connected to the ECU; the current physical state is ESP32 USB
-  only.
-- The group database includes the user in `dialout`, but any Cursor process
-  started before logout/login must be fully restarted to inherit that group.
-- No SME-105 bytes, parity rate, baud/stop-bit observation, frame, PID, DTC,
-  warm-idle session, or airflow-isolation result has been captured.
-- Exact DCL request bytes remain unverified and disabled. The active firmware
-  cannot transmit a DCL request as shipped.
+- No preserved SME-105 KOEO/KOER capture exists yet.
+- OBD pins 3 and 11 remain **Reference** polarity candidates, not Observed
+  DCL+ / DCL− on this ECU.
+- 9600 8N1 is the operator-selected sniffer setting. Public EEC-IV notes use
+  8N2 (**Reference**). Neither is proven on SME-105.
+- Exact DCL request bytes remain unverified and disabled.
 - No diagnosis has been made. The example evidence file intentionally produces
   `insufficient_evidence`.
 
 ## Required external evidence
 
-1. Fully restart Cursor/terminal so the process inherits `dialout`.
-2. When vehicle access is available, connect the common reference and K485 in
-   receive-only mode using the guided wiring checklist.
-3. Run a bounded KOEO passive capture and preserve the raw session.
-4. Validate electrical polarity and UART candidates before active work.
-5. Replace the XY-K485 with an explicit-DE/RE protected 3.3 V transceiver
+1. Flash listen-only firmware (`sniffer` or 8N2 passive sketch). Remove
+   `bench_test` from the ESP32. Pull module DI/TXD idle-high.
+2. Connect receive-only with ignition off: ground first, then A/B; never pin 16.
+3. Start host capture, then KOEO. Preserve the raw session even if silent.
+4. If BREAK persists, power down before polarity/ground checks. New session
+   after any wiring change.
+5. Validate UART candidates (8N1 vs 8N2, 9600 vs 19200) with separately labelled
+   captures before active work.
+6. Replace the XY-K485 with an explicit-DE/RE protected 3.3 V transceiver
    before commissioning any active master.
-6. Obtain or independently verify complete safe DCL request transactions.
-7. Run three synchronized warm-idle sessions and the reversible physical
+7. Obtain or independently verify complete safe DCL request transactions.
+8. Run three synchronized warm-idle sessions and the reversible physical
    IAC-airflow isolation procedure before accepting a diagnosis branch.

@@ -169,3 +169,11 @@ RX T=123456 BYTE=AB
 ```
 
 These are timestamped UART bytes, not decoded DCL frames.
+
+## Desk bench test (separate sketch)
+
+`firmware/bench_test/` is not sniffer firmware. It drives GPIO4 into K485 A+ on
+the desk only. In the Diagnostic Studio open **Desk Bench Test** in the left
+nav. Read `firmware/bench_test/README.md` before flashing. Re-upload
+`passive_binary` before any vehicle connection.
+

@@ -2,7 +2,7 @@
 
 **Made by Eng. Maxim Salib**  
 **Date:** 2026-08-22  
-**Status:** software and GUI complete; vehicle DCL evidence not started  
+**Status:** desk K485 loopback PASS; vehicle DCL evidence not started  
 **Vehicle:** 1998 European Ford Escort Sedan, 1.6 L 16V Zetec, EEC-IV ECU SME-105  
 **Symptom target:** persistent warm high idle (> 1000 RPM)
 
@@ -30,25 +30,23 @@ to vehicle fact.
 
 | Item | State |
 |---|---|
-| Host pipeline | Complete and unit-tested |
-| Local GUI (Ubuntu/Windows) | Complete, localhost-only, token-protected |
-| Ubuntu portable bundle | Built at `dist/SME105-DCL-Studio/` |
-| Windows portable bundle | Scripts ready; must be built on Windows |
-| ESP32 passive binary firmware | Built, flashed, break/flood hardened |
+| Host pipeline | Complete and unit-tested on Windows venv |
+| Local GUI (Ubuntu/Windows) | Complete, localhost-only, token-protected; capture runs until Stop |
+| Ubuntu portable bundle | Scripts ready; last validated bundle was Linux-built |
+| Windows launch | `Launch Studio.bat`; `.venv` + PlatformIO 6.1.19 |
+| ESP32 listen-only sniffer | `firmware/sniffer` GPIO16, 9600 8N1, USB 115200 hex |
+| ESP32 passive binary | GPIO16, 9600 8N2, USB 460800 SLIP; still preferred once UART format is trusted |
 | Active DCL transmit | Locked. No request bytes enabled |
-| CP2102 | **Observed** at `/dev/ttyUSB0`, VID:PID `10C4:EA60`, serial `0001` |
-| `dialout` | Account is a member; Cursor-launched GUI may lack the group until relaunch |
-| XY-K485 to ECU | **Not connected** |
+| CP2102 | **Observed** Linux `/dev/ttyUSB0` and Windows **COM7**, VID:PID `10C4:EA60`, serial `0001` |
+| Desk XY-K485 loopback | **Observed PASS** (differential GPIO4/21 → A+/B− → RXD/RO → GPIO16) |
+| Module RO pin on this clone | **Observed:** silk **RXD** → GPIO16 |
+| XY-K485 to ECU | Planned receive-only KOEO; pins 3/11 are **Reference** candidates |
 | SME-105 DCL bytes | **None observed** |
 | DTCs / live data / idle cause | **Unknown** |
 
-Immediate operator action: keep K485 disconnected until a receive-only KOEO
-session is intentionally started. For serial access from this login, fully quit
-Cursor or launch:
+Full narrative: `STATUS_REPORT.md`.
 
-```bash
-sg dialout -c 'ford-dcl-gui'
-```
+Immediate operator action: flash listen-only firmware (not `bench_test`) before the car. Pull module DI/TXD idle-high. Ground first. Never OBD pin 16.
 
 ---
 

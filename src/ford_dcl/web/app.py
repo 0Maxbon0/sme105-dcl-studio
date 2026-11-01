@@ -47,7 +47,17 @@ GUIDES = {
     "protocol-notes": ("Protocol evidence ledger", "docs/protocol-notes.md"),
     "implementation-status": ("Implementation status", "docs/implementation-status.md"),
     "firmware": ("Firmware reference", "firmware/README.md"),
+    "bench-test": ("Desk bench test", "firmware/bench_test/README.md"),
 }
+
+
+class NoCacheStaticFiles(StaticFiles):
+    """Prevent the browser from keeping a stale GUI after a source update."""
+
+    async def get_response(self, path: str, scope: Any) -> Any:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        return response
 
 
 class SettingsUpdate(BaseModel):
@@ -61,6 +71,10 @@ class CaptureStart(BaseModel):
 class MarkerRequest(BaseModel):
     label: str = Field(min_length=1, max_length=80)
     detail: str | None = Field(default=None, max_length=500)
+
+
+class SendCommandRequest(BaseModel):
+    command: str = Field(min_length=1, max_length=120)
 
 
 class PayloadRequest(BaseModel):
@@ -88,6 +102,10 @@ class FirmwareRequest(BaseModel):
     action: str
     port: str | None = None
     confirmation: str | None = None
+
+
+class MonitorRequest(BaseModel):
+    port: str
 
 
 def create_app(
@@ -166,6 +184,7 @@ def create_app(
 
     @app.post("/api/capture/start", dependencies=[Depends(authorize)])
     def capture_start(request: CaptureStart) -> dict[str, Any]:
+        firmware.stop_monitor()
         selected = settings.load()
         selected.update(request.overrides)
         return manager.start(selected)
@@ -177,6 +196,10 @@ def create_app(
     @app.post("/api/capture/marker", dependencies=[Depends(authorize)])
     def capture_marker(request: MarkerRequest) -> dict[str, Any]:
         return manager.marker(request.label.strip(), request.detail)
+
+    @app.post("/api/capture/send", dependencies=[Depends(authorize)])
+    def capture_send(request: SendCommandRequest) -> dict[str, Any]:
+        return manager.send_command(request.command.strip())
 
     @app.get("/api/events", dependencies=[Depends(authorize)])
     def events(sequence: int = 0) -> list[dict[str, Any]]:
@@ -299,6 +322,22 @@ def create_app(
     def firmware_cancel() -> dict[str, Any]:
         return firmware.cancel()
 
+    @app.post("/api/firmware/monitor/start", dependencies=[Depends(authorize)])
+    def firmware_monitor_start(request: MonitorRequest) -> dict[str, Any]:
+        if manager.status()["running"]:
+            raise HTTPException(
+                status_code=409,
+                detail="stop live capture before opening the bench serial monitor",
+            )
+        try:
+            return firmware.start_monitor(request.port)
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/firmware/monitor/stop", dependencies=[Depends(authorize)])
+    def firmware_monitor_stop() -> dict[str, Any]:
+        return firmware.stop_monitor()
+
     @app.post("/api/commands/transmit", dependencies=[Depends(authorize)])
     def transmit_locked() -> None:
         raise HTTPException(
@@ -307,7 +346,7 @@ def create_app(
         )
 
     static_dir = Path(__file__).resolve().parent / "static"
-    app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
+    app.mount("/", NoCacheStaticFiles(directory=static_dir, html=True), name="static")
     return app
 
 

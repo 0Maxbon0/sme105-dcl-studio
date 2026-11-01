@@ -19,7 +19,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "capture_format": "binary",
     "reconnect": True,
     "reconnect_delay": 1.0,
-    "duration_seconds": 30.0,
+    "duration_seconds": 0.0,
     "rotate_size": 64 * 1024 * 1024,
     "read_size": 16 * 1024,
     "dcl_baud": 9600,
@@ -106,8 +106,6 @@ def validate_settings(document: Mapping[str, Any]) -> dict[str, Any]:
         value = result[key]
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
             raise ValueError(f"{key} must be a non-negative number")
-    if result["duration_seconds"] == 0:
-        raise ValueError("duration_seconds must be positive")
     if not isinstance(result["reconnect"], bool):
         raise ValueError("reconnect must be boolean")
     if not isinstance(result["expert_overrides"], bool):

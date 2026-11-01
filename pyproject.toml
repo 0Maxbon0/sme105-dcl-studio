@@ -7,10 +7,11 @@ name = "ford-dcl"
 version = "0.1.0"
 description = "Host capture and read-only analysis for Ford EEC-IV DCL diagnostics"
 requires-python = ">=3.10"
-dependencies = ["fastapi", "httpx", "pyserial", "uvicorn"]
+dependencies = ["fastapi", "httpx", "pyserial", "uvicorn", "websockets"]
 
 [project.optional-dependencies]
 build = ["httpx", "pyinstaller"]
+firmware = ["platformio"]
 
 [project.scripts]
 ford-dcl = "ford_dcl.cli:main"

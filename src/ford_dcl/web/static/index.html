@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark">
   <title>SME-105 DCL Diagnostic Studio</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=0.2.4">
 </head>
 <body>
   <div id="loading" class="loading-screen">
@@ -29,6 +29,7 @@
         <button data-page="dtc">DTC Lookup</button>
         <button data-page="diagnosis">High-Idle Diagnosis</button>
         <button data-page="firmware">Firmware</button>
+        <button data-page="bench">Desk Bench Test</button>
         <button data-page="logs">Live Logs <span id="log-count" class="nav-badge">0</span></button>
         <button data-page="reference">Reference Library</button>
         <button data-page="settings">Settings</button>
@@ -168,7 +169,7 @@
           </article>
           <article class="wizard-step" data-step="5">
             <span class="step-number">06</span><h3>Ready state</h3>
-            <div class="success-box"><strong>Software setup complete</strong><p>Save the selections, then use a bounded capture. K485-to-ECU connection is not required now.</p></div>
+            <div class="success-box"><strong>Software setup complete</strong><p>Save the selections, then start capture. It runs until Stop. K485-to-ECU connection is not required now.</p></div>
             <label class="check"><input id="save-wizard" type="checkbox"><span>Save this guided setup as completed.</span></label>
           </article>
           <div class="wizard-actions"><button id="wizard-back" class="secondary" disabled>Back</button><button id="wizard-next" class="primary">Continue</button></div>
@@ -183,13 +184,13 @@
               <label>Serial port<select id="capture-port"></select></label>
               <label>Transport format<select id="capture-format"><option value="binary">Binary SLIP</option><option value="ascii">ASCII hex</option></select></label>
               <label>USB baud<input id="capture-baud" type="number" min="1"></label>
-              <label>Duration (seconds)<input id="capture-duration" type="number" min="1" step="1"></label>
+              <input id="capture-duration" type="hidden" value="0">
               <label>Session label<input id="capture-label" maxlength="80"></label>
               <label>DCL candidate<select id="capture-dcl-baud"><option value="9600">9600 baud</option><option value="19200">19200 baud</option></select></label>
               <label>Ignition state<select id="capture-ignition"><option value="off">Off / bench</option><option value="koeo">KOEO</option><option value="running">Running</option><option value="cranking">Cranking</option></select></label>
               <label>Engine state<input id="capture-engine" placeholder="stopped"></label>
             </div>
-            <div class="capture-progress">
+            <div id="capture-progress" class="capture-progress until-stop">
               <div class="progress-track"><div id="capture-progress-bar"></div></div>
               <div><strong id="capture-time">00:00</strong><span id="capture-state-text">Waiting to start</span></div>
               <small id="capture-throughput">No live DCL bytes yet</small>
@@ -200,9 +201,43 @@
               <button data-marker="LOAD_OFF">Load off</button><button data-marker="OBSERVATION">Observation</button>
               <button data-marker="ABORT" class="danger ghost">Abort marker</button>
             </div>
+            <div class="master-commands" style="margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line);">
+              <div class="panel-heading" style="margin-bottom: 8px;">
+                <div><p class="eyebrow">DCL Master Interrogation</p><h4 style="margin:0; font-size:15px;">Active serial commands</h4></div>
+                <span class="pill live">Master Polling</span>
+              </div>
+              <div class="form-grid" style="grid-template-columns: 1fr auto; gap: 8px; align-items: end;">
+                <label>Command
+                  <input id="capture-cmd-input" type="text" placeholder="e.g. SEND LIVE_BLOCK_32B" list="dcl-command-suggestions">
+                  <datalist id="dcl-command-suggestions">
+                    <option value="SEND LIVE_BLOCK_32B">
+                    <option value="POLL ON 250">
+                    <option value="POLL OFF">
+                    <option value="SEND DTC_CONTINUOUS">
+                    <option value="SEND DTC_KOEO">
+                    <option value="SEND INIT_PING">
+                    <option value="SEND MODULE_SELECT">
+                    <option value="SEND LIVE_PIDS_ALT">
+                    <option value="STATUS">
+                    <option value="LIST">
+                    <option value="HELP">
+                  </datalist>
+                </label>
+                <button id="capture-cmd-send" class="primary" style="padding: 9px 14px; margin-bottom: 1px;">Send</button>
+              </div>
+              <div class="button-row" style="margin-top: 10px; gap: 6px;">
+                <button class="secondary compact" data-quick-cmd="SEND LIVE_BLOCK_32B">32B Live Data</button>
+                <button class="secondary compact" data-quick-cmd="POLL ON 250">Auto-Poll (250ms)</button>
+                <button class="danger ghost compact" data-quick-cmd="POLL OFF">Stop Poll</button>
+                <button class="secondary compact" data-quick-cmd="SEND DTC_CONTINUOUS">DTCs (Cont.)</button>
+                <button class="secondary compact" data-quick-cmd="SEND DTC_KOEO">DTCs (KOEO)</button>
+                <button class="secondary compact" data-quick-cmd="SEND INIT_PING">Ping</button>
+                <button class="secondary compact" data-quick-cmd="STATUS">Status</button>
+              </div>
+            </div>
           </article>
           <article class="panel console-panel">
-            <div class="panel-heading"><div><p class="eyebrow">Live execution</p><h3>Capture event stream</h3></div><button class="icon-button" data-clear-log>Clear</button></div>
+            <div class="panel-heading"><div><p class="eyebrow">Live execution</p><h3>Capture event stream</h3></div><div class="button-row"><button class="icon-button" data-copy-log="#capture-console">Copy</button><button class="icon-button" data-clear-log="#capture-console">Clear</button></div></div>
             <div id="capture-console" class="console"></div>
           </article>
         </div>
@@ -260,19 +295,46 @@
           <article class="panel">
             <div class="warning-box"><strong>Active master locked.</strong> Build inspection is allowed, but the GUI cannot upload active-master firmware or send DCL commands.</div>
             <div class="form-grid">
-              <label>Firmware<select id="firmware-sketch"><option value="passive_binary">Passive binary</option><option value="passive_ascii">Passive ASCII</option><option value="dcl_master">Active-master shell — build only</option></select></label>
+              <label>Firmware<select id="firmware-sketch"><option value="sniffer">Passive sniffer — GPIO16 9600 8N1 hex</option><option value="passive_binary">Passive binary — GPIO16 9600 8N2 SLIP</option><option value="passive_ascii">Passive ASCII — GPIO16 9600 8N2 hex</option><option value="bench_test">Desk bench test — GPIO4/21 drive A+/B−</option><option value="dcl_master">Active-master shell — build only</option></select></label>
               <label>Upload port<select id="firmware-port"></select></label>
             </div>
             <div class="button-row"><button id="firmware-build" class="secondary">Build firmware</button><button id="firmware-upload" class="primary">Upload receive-only firmware</button><button id="firmware-cancel" class="danger ghost">Cancel</button></div>
-            <label class="check"><input id="firmware-confirm" type="checkbox"><span>I confirm TX is disconnected and this is receive-only firmware.</span></label>
+            <label class="check"><input id="firmware-confirm" type="checkbox"><span id="firmware-confirm-label">I confirm TX is disconnected and this is receive-only firmware.</span></label>
             <div id="platformio-status" class="info-box">Checking PlatformIO…</div>
           </article>
-          <article class="panel console-panel"><div class="panel-heading"><h3>Build / upload output</h3></div><div id="firmware-console" class="console"></div></article>
+          <article class="panel console-panel"><div class="panel-heading"><h3>Build / upload output</h3><div class="button-row"><button class="icon-button" data-copy-log="#firmware-console">Copy</button><button class="icon-button" data-clear-log="#firmware-console">Clear</button></div></div><div id="firmware-console" class="console"></div></article>
+        </div>
+      </section>
+
+      <section class="page" id="page-bench">
+        <div class="section-intro"><div><p class="eyebrow">Desk-only physical path</p><h2>XY-K485 loopback self-test</h2></div><span class="pill safe">No vehicle</span></div>
+        <div class="two-column">
+          <article class="panel">
+            <div class="warning-box"><strong>Car wiring must be disconnected.</strong> GPIO4 drives A+ and GPIO21 drives B− as a differential pair. Do not tie B− to ground. Do not use Live Capture while this firmware is loaded. Re-flash Passive binary before any DCL session.</div>
+            <p class="bench-wiring">3V3→VCC, GND common, TXD→GPIO16, RXD idle-high to 3V3, GPIO4–1 kΩ→A+, GPIO21–1 kΩ→B−, GPIO17 unconnected. Do not connect B− to GND.</p>
+            <div class="form-grid">
+              <label>ESP32 port<select id="bench-port"></select></label>
+            </div>
+            <div class="button-row">
+              <button id="bench-build" class="secondary">Build bench test</button>
+              <button id="bench-upload" class="primary">Upload bench test</button>
+            </div>
+            <div class="button-row">
+              <button id="bench-monitor-start" class="secondary">Start serial monitor</button>
+              <button id="bench-monitor-stop" class="danger ghost">Stop monitor</button>
+            </div>
+            <label class="check"><input id="bench-confirm" type="checkbox"><span>I confirm the vehicle is disconnected and GPIO4/GPIO21 may drive A+/B−.</span></label>
+            <div id="bench-status" class="info-box">Open this page, upload, then start the 115200 serial monitor. PASS/FAIL lines appear below.</div>
+          </article>
+          <article class="panel console-panel">
+            <div class="panel-heading"><h3>Bench serial and build log</h3><div class="button-row"><button class="icon-button" data-copy-log="#bench-console">Copy</button><button class="icon-button" data-clear-log="#bench-console">Clear</button></div></div>
+            <div id="bench-console" class="console"></div>
+          </article>
         </div>
       </section>
 
       <section class="page" id="page-logs">
-        <div class="section-intro"><div><p class="eyebrow">Application observability</p><h2>Live code and data log</h2></div><div class="button-row"><label class="inline-check"><input id="log-autoscroll" type="checkbox" checked>Auto-scroll</label><button data-clear-log class="secondary">Clear</button></div></div>
+        <div class="section-intro"><div><p class="eyebrow">Application observability</p><h2>Live code and data log</h2></div><div class="button-row"><label class="inline-check"><input id="log-autoscroll" type="checkbox" checked>Auto-scroll</label><button data-copy-log="#global-console" class="secondary">Copy</button><button data-clear-log class="secondary">Clear</button></div></div>
         <article class="panel console-panel full-console"><div id="global-console" class="console"></div></article>
       </section>
 
@@ -288,7 +350,7 @@
             <label>Capture directory<input data-setting="output_dir"></label><label>Analysis directory<input data-setting="analysis_dir"></label>
             <label>Serial port<input data-setting="port"></label><label>USB baud<input data-setting="usb_baudrate" type="number"></label>
             <label>Capture format<select data-setting="capture_format"><option value="binary">binary</option><option value="ascii">ascii</option></select></label>
-            <label>Duration seconds<input data-setting="duration_seconds" type="number"></label>
+            <label>Optional auto-stop seconds (0 = until Stop)<input data-setting="duration_seconds" type="number" min="0" step="1"></label>
             <label>Raw rotation bytes<input data-setting="rotate_size" type="number"></label><label>Host read bytes<input data-setting="read_size" type="number"></label>
             <label>Reconnect delay seconds<input data-setting="reconnect_delay" type="number" step="0.1"></label><label class="check compact-check"><input data-setting="reconnect" type="checkbox"><span>Reconnect after disconnect</span></label>
           </div></article>
@@ -307,6 +369,6 @@
     </main>
   </div>
   <div id="toast-container" class="toast-container"></div>
-  <script src="app.js"></script>
+  <script src="app.js?v=0.2.4"></script>
 </body>
 </html>

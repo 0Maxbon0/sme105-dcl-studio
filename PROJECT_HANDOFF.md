@@ -49,8 +49,12 @@ evidence by itself. Raw capture files are append-only evidence.
 - Stable Linux path:
   `/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0`
 - Initial adapter: XY-K485 automatic-direction RS-485 module
-- Current physical state at handoff: **ESP32 USB only; K485 is not connected to
-  the ECU**
+- Windows device (2026-08-22): `COM7` after Silicon Labs VCP install
+- Desk loopback: **Observed PASS**. This clone’s TTL **RXD** is RO → GPIO16
+- Vehicle connection: **not yet an SME-105 capture**. Planned receive-only KOEO
+  uses OBD pin 4/5 ground, pin 3/11 as **Reference** A/B candidates, pin 16 isolated
+
+See `STATUS_REPORT.md` for the full current-state narrative.
 
 The XY-K485 is restricted to receive-only experiments. It is unsuitable for
 active-master work because DE and `/RE` cannot be controlled deterministically.

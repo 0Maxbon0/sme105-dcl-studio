@@ -30,6 +30,7 @@ class CaptureManager:
         self._session_path: Path | None = None
         self._last_error: str | None = None
         self._started_monotonic: float | None = None
+        self._duration_seconds = 0.0
         self._volume: dict[str, int] = {}
         self._last_volume_emit = 0.0
 
@@ -126,16 +127,20 @@ class CaptureManager:
                 name="ford-dcl-capture",
                 daemon=True,
             )
-            duration = float(settings["duration_seconds"])
-            self._timer = threading.Timer(duration, self.stop)
-            self._timer.daemon = True
+            duration = float(settings.get("duration_seconds") or 0)
+            self._duration_seconds = duration
+            self._timer = None
             self._thread.start()
-            self._timer.start()
+            if duration > 0:
+                self._timer = threading.Timer(duration, self.stop)
+                self._timer.daemon = True
+                self._timer.start()
             self.publish(
                 {
                     "event": "application_capture_started",
                     "utc": utc_now(),
                     "duration_seconds": duration,
+                    "until_stop": duration <= 0,
                     "port": port,
                 }
             )
@@ -208,6 +213,8 @@ class CaptureManager:
                 "session": str(session) if session is not None else None,
                 "last_error": self._last_error,
                 "elapsed_seconds": elapsed,
+                "duration_seconds": self._duration_seconds,
+                "until_stop": self._duration_seconds <= 0,
                 "latest_sequence": self._sequence,
             }
 
@@ -227,3 +234,22 @@ class CaptureManager:
         record = append_marker(session / "operator-events.jsonl", label, detail)
         self.publish({"event": "operator_marker", **record})
         return record
+
+    def send_command(self, command: str) -> dict[str, Any]:
+        """Send an ASCII command to the active serial capture."""
+        with self._lock:
+            if self._runner is None:
+                raise RuntimeError("no capture session is currently running")
+            clean = command.strip()
+            if not clean:
+                raise ValueError("command cannot be empty")
+            line = (clean + "\n").encode("ascii", errors="replace")
+            self._runner.write(line)
+            self.publish(
+                {
+                    "event": "serial_command_sent",
+                    "utc": utc_now(),
+                    "command": clean,
+                }
+            )
+            return {"ok": True, "command": clean}

@@ -177,6 +177,14 @@ textarea { resize: vertical; font-family: "Cascadia Code", "SFMono-Regular", Con
 .capture-progress > div:last-of-type { display: flex; justify-content: space-between; margin-top: 9px; color: var(--muted); font-size: 11px; }
 .capture-progress strong { color: var(--text); }
 .capture-progress small { display: block; margin-top: 8px; color: var(--cyan); }
+.capture-progress.until-stop .progress-track > div {
+  width: 40%;
+  animation: captureSweep 1.6s ease-in-out infinite;
+}
+@keyframes captureSweep {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(280%); }
+}
 .wiring-card { margin-top: 16px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: #09141d; }
 .wiring-card svg { width: 100%; height: auto; }
 .wiring-card p { margin: 10px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
@@ -198,6 +206,8 @@ textarea { resize: vertical; font-family: "Cascadia Code", "SFMono-Regular", Con
 .console-line strong { overflow: hidden; color: var(--cyan); text-overflow: ellipsis; }
 .console-line.error strong { color: var(--red); }
 .console-line.warning strong { color: var(--gold); }
+.console-line.ok strong { color: var(--green); }
+.bench-wiring { margin: 0 0 14px; color: var(--muted); font-size: 12px; line-height: 1.55; }
 .full-console .console { height: calc(100vh - 250px); min-height: 500px; }
 
 .session-list { display: grid; gap: 8px; max-height: 560px; overflow: auto; }

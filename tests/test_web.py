@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib.util
 import json
+import sys
 import tempfile
 import threading
 import unittest
@@ -14,6 +16,7 @@ from ford_dcl.capture import CaptureConfig, CaptureSession, utc_now
 from ford_dcl.transport import RecordType
 from ford_dcl.web.app import _session_path, create_app
 from ford_dcl.web.capture_service import CaptureManager
+from ford_dcl.web.firmware_service import platformio_command
 from ford_dcl.web.ports import serial_access_status
 from ford_dcl.web.settings import SettingsStore, validate_settings
 
@@ -24,6 +27,10 @@ class _FakeSerialCapture:
         self.event_sink = event_sink
         self.session_path = None
         self.stop_event = threading.Event()
+        self.written_bytes = bytearray()
+
+    def write(self, data: bytes) -> None:
+        self.written_bytes.extend(data)
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -71,6 +78,7 @@ class WebApplicationTests(unittest.TestCase):
         body = bootstrap.json()
         self.assertEqual(body["application"]["author"], "Eng. Maxim Salib")
         self.assertFalse(body["application"]["active_transmission"])
+        self.assertIn("bench_test", body["firmware"]["uploadable_sketches"])
         self.assertIn("serial_access", body)
         self.assertIn("hint", body["serial_access"])
         home = self.client.get("/")
@@ -89,9 +97,16 @@ class WebApplicationTests(unittest.TestCase):
         duration = self.client.put(
             "/api/settings",
             headers=self.headers,
-            json={"values": {"duration_seconds": 0}},
+            json={"values": {"duration_seconds": -1}},
         )
         self.assertEqual(duration.status_code, 422)
+        unlimited = self.client.put(
+            "/api/settings",
+            headers=self.headers,
+            json={"values": {"duration_seconds": 0}},
+        )
+        self.assertEqual(unlimited.status_code, 200)
+        self.assertEqual(unlimited.json()["duration_seconds"], 0)
 
     def test_nested_session_listing_and_path_traversal_rejection(self) -> None:
         nested = self.root / "captures" / "group" / "session-a"
@@ -139,6 +154,17 @@ class WebApplicationTests(unittest.TestCase):
             json={"sketch": "dcl_master", "action": "upload", "port": "/dev/ttyUSB0"},
         )
         self.assertEqual(upload.status_code, 423)
+        bench = self.client.post(
+            "/api/firmware/run",
+            headers=self.headers,
+            json={
+                "sketch": "bench_test",
+                "action": "upload",
+                "port": "COM7",
+                "confirmation": "FLASH_RECEIVE_ONLY_FIRMWARE",
+            },
+        )
+        self.assertEqual(bench.status_code, 423)
 
     def test_dtc_and_diagnosis_endpoints(self) -> None:
         dtc = self.client.post(
@@ -170,9 +196,22 @@ class WebApplicationTests(unittest.TestCase):
                 json={"overrides": {}},
             )
             self.assertEqual(second.status_code, 409)
+            send = self.client.post(
+                "/api/capture/send",
+                headers=self.headers,
+                json={"command": "SEND LIVE_BLOCK_32B"},
+            )
+            self.assertEqual(send.status_code, 200)
+            self.assertEqual(send.json()["command"], "SEND LIVE_BLOCK_32B")
             stop = self.client.post("/api/capture/stop", headers=self.headers)
             self.assertEqual(stop.status_code, 200)
             self.assertTrue(self.app.state.capture_manager.wait(2))
+
+    def test_runtime_includes_a_websocket_implementation(self) -> None:
+        self.assertTrue(
+            importlib.util.find_spec("websockets") or importlib.util.find_spec("wsproto"),
+            "uvicorn needs websockets or wsproto for live GUI logs",
+        )
 
     def test_websocket_requires_token_and_forwards_events(self) -> None:
         with self.assertRaises(Exception):
@@ -185,6 +224,28 @@ class WebApplicationTests(unittest.TestCase):
 
 
 class CaptureManagerAndSettingsTests(unittest.TestCase):
+    def test_zero_duration_capture_runs_until_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manager = CaptureManager()
+            settings = {
+                **SettingsStore(root / "settings.json").load(),
+                "port": "COM7",
+                "output_dir": str(root / "captures"),
+                "duration_seconds": 0,
+            }
+            with patch(
+                "ford_dcl.web.capture_service.SerialCapture", _FakeSerialCapture
+            ):
+                started = manager.start(settings)
+                self.assertTrue(started["running"])
+                self.assertTrue(started["until_stop"])
+                self.assertIsNone(manager._timer)
+                self.assertTrue(manager.status()["running"])
+                manager.stop()
+                self.assertTrue(manager.wait(2))
+                self.assertFalse(manager.status()["running"])
+
     def test_high_volume_events_are_coalesced_except_uart_status(self) -> None:
         manager = CaptureManager()
         manager.publish(
@@ -206,14 +267,23 @@ class CaptureManagerAndSettingsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             document = SettingsStore(Path(temporary) / "settings.json").load()
         self.assertEqual(document["capture_format"], "binary")
-        self.assertGreater(document["duration_seconds"], 0)
+        self.assertEqual(document["duration_seconds"], 0)
         with self.assertRaises(ValueError):
             validate_settings({**document, "usb_baudrate": 0})
+        with self.assertRaises(ValueError):
+            validate_settings({**document, "duration_seconds": -1})
 
     def test_serial_access_status_reports_process_groups(self) -> None:
         status = serial_access_status()
         self.assertIn("ok", status)
         self.assertIn("hint", status)
+
+    def test_platformio_command_uses_running_interpreter(self) -> None:
+        command = platformio_command()
+        if importlib.util.find_spec("platformio") is None:
+            self.assertIsNone(command)
+            return
+        self.assertEqual(command[:3], [sys.executable, "-m", "platformio"])
 
 
 if __name__ == "__main__":

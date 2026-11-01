@@ -11,6 +11,9 @@ engineering tool and is not affiliated with Ford Motor Company.
 
 ## Current status
 
+See [STATUS_REPORT.md](STATUS_REPORT.md) for the 2026-08-22 situation report
+(desk loopback PASS, Windows Studio operational, vehicle DCL still uncaptured).
+
 The project is experimental. No command, address, scaling formula, wiring
 polarity, baud rate, or SME-105 parameter mapping is treated as verified until
 it is reproduced on the target vehicle and recorded with an immutable capture.

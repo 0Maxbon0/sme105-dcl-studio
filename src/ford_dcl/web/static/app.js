@@ -53,6 +53,7 @@
     dtc: "DTC Lookup",
     diagnosis: "High-Idle Diagnosis",
     firmware: "Firmware Management",
+    bench: "Desk Bench Test",
     logs: "Live Application Logs",
     reference: "Reference Library",
     settings: "Application Settings",
@@ -67,7 +68,7 @@
   }
 
   function renderPorts() {
-    const selects = ["#wizard-port", "#capture-port", "#firmware-port"];
+    const selects = ["#wizard-port", "#capture-port", "#firmware-port", "#bench-port"];
     for (const selector of selects) {
       const select = $(selector);
       const previous = select.value || state.settings.port;
@@ -87,18 +88,24 @@
     $("#metric-port-detail").textContent = selected?.description || "Scan required";
   }
 
+  function setValue(selector, next) {
+    const node = $(selector);
+    if (node) node.value = next ?? "";
+  }
+
   function applySettings() {
     const s = state.settings;
-    $("#capture-port").value = s.port || "";
-    $("#wizard-port").value = s.port || "";
-    $("#firmware-port").value = s.port || "";
-    $("#capture-format").value = s.capture_format;
-    $("#capture-baud").value = s.usb_baudrate;
-    $("#capture-duration").value = s.duration_seconds;
-    $("#capture-label").value = s.session_label;
-    $("#capture-dcl-baud").value = String(s.dcl_baud);
-    $("#capture-ignition").value = s.ignition_state;
-    $("#capture-engine").value = s.engine_state;
+    setValue("#capture-port", s.port || "");
+    setValue("#wizard-port", s.port || "");
+    setValue("#firmware-port", s.port || "");
+    setValue("#bench-port", s.port || "");
+    setValue("#capture-format", s.capture_format);
+    setValue("#capture-baud", s.usb_baudrate);
+    setValue("#capture-duration", 0);
+    setValue("#capture-label", s.session_label);
+    setValue("#capture-dcl-baud", String(s.dcl_baud));
+    setValue("#capture-ignition", s.ignition_state);
+    setValue("#capture-engine", s.engine_state);
     $("#metric-firmware").textContent = s.firmware;
     $$("[data-setting]").forEach((input) => {
       const setting = input.dataset.setting;
@@ -167,8 +174,10 @@
   }
 
   function eventSeverity(event) {
-    if (/failed|error|abort|overflow|break/.test(event.event)) return "error";
-    if (/concern|warning|disconnect/.test(event.event)) return "warning";
+    const text = `${event.event || ""} ${event.message || ""}`;
+    if (/RESULT: PASS/.test(text)) return "ok";
+    if (/failed|error|abort|overflow|break|RESULT: FAIL/.test(text)) return "error";
+    if (/concern|warning|disconnect/.test(text)) return "warning";
     return "";
   }
 
@@ -180,6 +189,7 @@
   }
 
   function appendConsole(consoleNode, event) {
+    if (!consoleNode) return;
     const line = document.createElement("div");
     line.className = `console-line ${eventSeverity(event)}`;
     const time = document.createElement("time");
@@ -193,13 +203,55 @@
     while (consoleNode.children.length > 1000) consoleNode.firstElementChild.remove();
   }
 
+  async function copyConsole(targetSelector, button) {
+    const consoleNode = $(targetSelector);
+    if (!consoleNode) return;
+    const lines = Array.from(consoleNode.querySelectorAll(".console-line")).map((line) => {
+      const time = line.querySelector("time")?.textContent || "";
+      const name = line.querySelector("strong")?.textContent || "";
+      const msg = line.querySelector("span")?.textContent || "";
+      return [time, name, msg].filter(Boolean).join("\n");
+    });
+    const text = lines.length > 0 ? lines.join("\n") : (consoleNode.innerText || consoleNode.textContent || "");
+    if (!text.trim()) {
+      toast("Nothing to copy", "info");
+      return;
+    }
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+      toast("Log copied to clipboard");
+      if (button) {
+        const originalText = button.textContent;
+        button.textContent = "Copied!";
+        setTimeout(() => { button.textContent = originalText; }, 1500);
+      }
+    } catch (err) {
+      toast(`Failed to copy: ${err.message}`, "error");
+    }
+  }
+
   function receiveEvent(event) {
     state.latestSequence = Math.max(state.latestSequence, Number(event.sequence || 0));
     state.events.push(event);
     if (state.events.length > 1000) state.events.shift();
     appendConsole($("#global-console"), event);
     appendConsole($("#capture-console"), event);
-    if (event.event?.startsWith("firmware_")) appendConsole($("#firmware-console"), event);
+    if (event.event?.startsWith("firmware_") || event.event?.startsWith("bench_")) {
+      appendConsole($("#firmware-console"), event);
+      appendConsole($("#bench-console"), event);
+    }
     $("#log-count").textContent = String(state.events.length);
     if ($("#log-autoscroll").checked) scrollLogs();
     if (event.event === "capture_throughput") {
@@ -233,7 +285,7 @@
       port: $("#capture-port").value,
       capture_format: $("#capture-format").value,
       usb_baudrate: Number($("#capture-baud").value),
-      duration_seconds: Number($("#capture-duration").value),
+      duration_seconds: 0,
       session_label: value("#capture-label"),
       dcl_baud: Number($("#capture-dcl-baud").value),
       ignition_state: $("#capture-ignition").value,
@@ -247,7 +299,7 @@
       await saveCaptureSettings();
       const status = await api("/api/capture/start", { method: "POST", body: JSON.stringify({ overrides: {} }) });
       updateCaptureStatus(status);
-      toast("Bounded receive-only capture started.");
+      toast("Capture started. It runs until you press Stop.");
     } catch (error) { toast(error.message, "error"); }
   }
 
@@ -266,10 +318,20 @@
     $("#capture-pill").textContent = running ? "Capture running" : "Capture idle";
     $("#capture-pill").className = `pill ${running ? "live" : "neutral"}`;
     const elapsed = Number(status.elapsed_seconds || 0);
-    const duration = Number($("#capture-duration").value || state.settings.duration_seconds || 1);
-    $("#capture-progress-bar").style.width = `${Math.min(100, (elapsed / duration) * 100)}%`;
+    const untilStop = status.until_stop !== false;
+    const duration = Number(status.duration_seconds || 0);
+    const progress = $("#capture-progress");
+    if (progress) progress.classList.toggle("until-stop", running && untilStop);
+    const bar = $("#capture-progress-bar");
+    if (bar) {
+      if (running && untilStop) bar.style.width = "40%";
+      else if (!running) bar.style.width = "0%";
+      else bar.style.width = `${Math.min(100, (elapsed / Math.max(duration, 1)) * 100)}%`;
+    }
     $("#capture-time").textContent = `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(Math.floor(elapsed % 60)).padStart(2, "0")}`;
-    $("#capture-state-text").textContent = status.last_error || (running ? "Preserving raw USB stream" : "Waiting to start");
+    $("#capture-state-text").textContent = status.last_error || (running
+      ? (untilStop ? "Recording until Stop" : "Preserving raw USB stream")
+      : "Waiting to start");
     if (status.session) $("#metric-session").textContent = status.session.split(/[\\/]/).pop();
   }
 
@@ -283,6 +345,17 @@
         : "PlatformIO is not on PATH. Install PlatformIO Core to build or upload firmware.";
       $("#firmware-build").disabled = firmware.running;
       $("#firmware-upload").disabled = firmware.running;
+      $("#bench-build").disabled = firmware.running;
+      $("#bench-upload").disabled = firmware.running;
+      $("#bench-monitor-start").disabled = firmware.running || firmware.monitor_running;
+      $("#bench-monitor-stop").disabled = !firmware.monitor_running;
+      if ($("#bench-status")) {
+        $("#bench-status").textContent = firmware.monitor_running
+          ? `Serial monitor open on ${firmware.monitor_port} at ${firmware.monitor_baud} baud. Watch for RESULT: PASS.`
+          : firmware.platformio
+            ? `PlatformIO ready. Upload bench test, then start the serial monitor.${firmware.running ? " Task running." : ""}`
+            : "PlatformIO is not on PATH. Install PlatformIO Core to build or upload the bench sketch.";
+      }
     } catch (_) { /* launcher shutdown or transient refresh */ }
   }
 
@@ -433,18 +506,58 @@
     catch (error) { toast(error.message, "error"); }
   }
 
-  async function runFirmware(action) {
-    const sketch = $("#firmware-sketch").value;
+  function uploadConfirmation(sketch, checkbox) {
+    if (actionIsUploadMissing(checkbox)) return null;
+    if (sketch === "bench_test") return "FLASH_BENCH_TEST_DESK_ONLY";
+    return "FLASH_RECEIVE_ONLY_FIRMWARE";
+  }
+
+  function actionIsUploadMissing(checkbox) {
+    return !checkbox.checked;
+  }
+
+  async function runFirmware(action, sketch, portSelector, checkbox) {
+    const selected = sketch || $("#firmware-sketch").value;
+    const port = $(portSelector || "#firmware-port").value || null;
     const request = {
-      sketch,
+      sketch: selected,
       action,
-      port: $("#firmware-port").value || null,
-      confirmation: action === "upload" && $("#firmware-confirm").checked ? "FLASH_RECEIVE_ONLY_FIRMWARE" : null,
+      port,
+      confirmation: action === "upload" ? uploadConfirmation(selected, checkbox || $("#firmware-confirm")) : null,
     };
+    if (action === "upload" && !request.confirmation) {
+      toast("Confirm the safety checkbox before upload.", "error");
+      return;
+    }
     try {
       await api("/api/firmware/run", { method: "POST", body: JSON.stringify(request) });
       toast(`Firmware ${action} started.`);
     } catch (error) { toast(error.message, "error"); }
+  }
+
+  async function runBenchMonitor(start) {
+    try {
+      if (start) {
+        const port = $("#bench-port").value;
+        if (!port) {
+          toast("Select the ESP32 COM port first.", "error");
+          return;
+        }
+        await api("/api/firmware/monitor/start", { method: "POST", body: JSON.stringify({ port }) });
+        toast("Bench serial monitor started.");
+      } else {
+        await api("/api/firmware/monitor/stop", { method: "POST" });
+        toast("Bench serial monitor stopped.");
+      }
+    } catch (error) { toast(error.message, "error"); }
+  }
+
+  function syncFirmwareConfirmLabel() {
+    const label = $("#firmware-confirm-label");
+    if (!label) return;
+    label.textContent = $("#firmware-sketch").value === "bench_test"
+      ? "I confirm the vehicle is disconnected and GPIO4/GPIO21 may drive A+/B−."
+      : "I confirm TX is disconnected and this is receive-only firmware.";
   }
 
   async function loadGuide(id, button) {
@@ -482,6 +595,27 @@
     } catch (error) { toast(error.message, "error"); }
   }
 
+  async function sendSerialCommand(cmdText) {
+    const input = $("#capture-cmd-input");
+    const command = (cmdText || (input ? input.value : "") || "").trim();
+    if (!command) {
+      toast("Please enter a command to send", "error");
+      return;
+    }
+    try {
+      await api("/api/capture/send", {
+        method: "POST",
+        body: JSON.stringify({ command }),
+      });
+      toast(`Sent: ${command}`);
+      if (!cmdText && input) {
+        input.value = "";
+      }
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  }
+
   function bindEvents() {
     $("#nav").addEventListener("click", (event) => {
       const button = event.target.closest("[data-page]");
@@ -502,6 +636,18 @@
     });
     $("#capture-start").addEventListener("click", startCapture);
     $("#capture-stop").addEventListener("click", stopCapture);
+    const sendBtn = $("#capture-cmd-send");
+    if (sendBtn) sendBtn.addEventListener("click", () => sendSerialCommand());
+    const cmdInput = $("#capture-cmd-input");
+    if (cmdInput) cmdInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        sendSerialCommand();
+      }
+    });
+    $$("[data-quick-cmd]").forEach((button) => button.addEventListener("click", () => {
+      sendSerialCommand(button.dataset.quickCmd);
+    }));
     $("#abort-button").addEventListener("click", async () => {
       await Promise.allSettled([api("/api/capture/stop", { method: "POST" }), api("/api/firmware/cancel", { method: "POST" })]);
       try { await api("/api/capture/marker", { method: "POST", body: JSON.stringify({ label: "ABORT", detail: "Operator pressed global STOP / ABORT" }) }); } catch (_) {}
@@ -513,19 +659,33 @@
         toast(`Marker: ${button.dataset.marker}`);
       } catch (error) { toast(error.message, "error"); }
     }));
+    $$("[data-copy-log]").forEach((button) => button.addEventListener("click", () => {
+      copyConsole(button.dataset.copyLog, button);
+    }));
     $$("[data-clear-log]").forEach((button) => button.addEventListener("click", () => {
-      state.events = [];
-      $$(".console").forEach((node) => node.replaceChildren());
-      $("#log-count").textContent = "0";
+      const target = button.dataset.clearLog;
+      if (target && target !== "all") {
+        const node = $(target);
+        if (node) node.replaceChildren();
+      } else {
+        state.events = [];
+        $$(".console").forEach((node) => node.replaceChildren());
+        $("#log-count").textContent = "0";
+      }
     }));
     $("#refresh-sessions").addEventListener("click", loadSessions);
     $("#decode-payload").addEventListener("click", () => analyzePayload("decode"));
     $("#frame-payload").addEventListener("click", () => analyzePayload("frame"));
     $("#lookup-dtc").addEventListener("click", lookupDTC);
     $("#run-diagnosis").addEventListener("click", diagnose);
+    $("#firmware-sketch").addEventListener("change", syncFirmwareConfirmLabel);
     $("#firmware-build").addEventListener("click", () => runFirmware("build"));
     $("#firmware-upload").addEventListener("click", () => runFirmware("upload"));
     $("#firmware-cancel").addEventListener("click", () => api("/api/firmware/cancel", { method: "POST" }).catch((error) => toast(error.message, "error")));
+    $("#bench-build").addEventListener("click", () => runFirmware("build", "bench_test", "#bench-port", $("#bench-confirm")));
+    $("#bench-upload").addEventListener("click", () => runFirmware("upload", "bench_test", "#bench-port", $("#bench-confirm")));
+    $("#bench-monitor-start").addEventListener("click", () => runBenchMonitor(true));
+    $("#bench-monitor-stop").addEventListener("click", () => runBenchMonitor(false));
     $("#save-settings").addEventListener("click", saveSettings);
   }
 
@@ -542,6 +702,7 @@
       updateCaptureStatus(state.bootstrap.capture);
       connectEvents();
       await loadSessions();
+      syncFirmwareConfirmLabel();
       state.captureTimer = setInterval(pollStatus, 700);
       if (state.bootstrap.serial_access && !state.bootstrap.serial_access.ok) {
         toast(state.bootstrap.serial_access.hint, "error");
