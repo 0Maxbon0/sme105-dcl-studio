@@ -44,7 +44,83 @@ def native_transcript(*, coalesced=0, prefix_frames=0):
     return ("\n".join(lines) + "\n").encode()
 
 
+def active_candidate_transcript(*, variant="26A4", stopped=0):
+    """Native *synthetic* active prototype trace, not physical ECU evidence."""
+    incoming = events(cycles=4, response=True, include_command=True, offset=10_000)
+    if variant == "260E":
+        incoming = [type(e)(e.complete_us, 0x0E if e.byte == 0xA4 else e.byte)
+                    for e in incoming]
+    timed = parse_timed_cart(incoming)
+    words = ["01B0", "FF5F", variant, "00A0"]
+    witnesses = []
+    for frame, opcode in enumerate(words):
+        start = round(timed.frame_sync_end_us[16 + frame] + SYNC_REARM_US + SLOT_US)
+        witnesses.append(
+            f"CART_TX start_us={start} end_us={round(start + 2 * BYTE_US)} "
+            f"frame={frame} slot=1 opcode={opcode} uart_errors=0 cutoff=0 echo_verified=1"
+        )
+    lines = [
+        "REF_TX frame=ECHO_ID n=11 cutoff=0",
+        "ACK_CANDIDATE echo_11_plus_01 origin=UNVERIFIED",
+        "REF_TX frame=GO_CART n=11 cutoff=0",
+        f"CART_RUN mode=ACTIVE_CANDIDATE stopped={stopped}",
+        (f"CART_CAPTURE n={len(incoming)} uart_errors=0 coalesced=0 "
+         "dropped=0 capped=0 cutoff=0"),
+        f"CART_B_STATE stage=3 reason=0 baseline=16 scheduled=4 echoed=4 variant={variant}",
+        *witnesses,
+        "CART_TIMEBASE source=UART2_RX_FIFO_ISR time=us latency_uncalibrated=1",
+        *[f"CART_EVT t_us={e.complete_us} byte={e.byte:02X}" for e in incoming],
+        (f"CART_END bytes={len(incoming)} uart_errors=0 dropped=0 "
+         "cutoff=0 ecu_verified=0 dtc_verified=0"),
+    ]
+    return ("\n".join(lines) + "\n").encode()
+
+
 class EvidenceParserTests(unittest.TestCase):
+    def test_active_candidate_four_word_native_trace_remains_unverified(self):
+        for variant in ("26A4", "260E"):
+            with self.subTest(variant=variant):
+                result = analyze(active_candidate_transcript(variant=variant))
+                self.assertEqual(result["classification"],
+                                 "reference-compatible-unverified-DTC-candidates")
+                self.assertEqual(result["command_variant"].replace(" ", ""), variant)
+                self.assertEqual([c["code_text"] for c in result["reference_dtc_candidates"]],
+                                 ["116", "538"])
+                self.assertFalse(result["is_ecu_source_authenticated"])
+                self.assertFalse(result["is_dtc_read_verified"])
+
+    def test_active_candidate_fails_closed_for_partial_corrupt_or_mixed_trace(self):
+        good = active_candidate_transcript()
+        invalid = (
+            active_candidate_transcript(stopped=1),
+            good.replace(b"REF_TX frame=ECHO_ID n=11 cutoff=0\n", b"", 1),
+            good.replace(b"ACK_CANDIDATE echo_11_plus_01", b"ACK_CANDIDATE echo_11_plus_02", 1),
+            good.replace(b"REF_TX frame=GO_CART n=11", b"REF_TX frame=GO_CART n=10", 1),
+            good.replace(b"REF_TX frame=ECHO_ID", b"REF_TX frame=GO_CART", 1),
+            good.replace(b"stage=3", b"stage=4", 1),
+            good.replace(b"echoed=4", b"echoed=3", 1),
+            good.replace(b"scheduled=4", b"scheduled=3", 1),
+            good.replace(b"variant=26A4", b"variant=260E", 1),
+            good.replace(b"frame=0 slot=1", b"frame=1 slot=1", 1),
+            good.replace(b"echo_verified=1", b"echo_verified=0", 1),
+            good.replace(b"CART_TX start_us=", b"CART_TX_ATTEMPT start_us=", 1),
+            good.replace(b" uart_errors=0 coalesced=0", b" uart_errors=1 coalesced=0", 1),
+            good.replace(b"dropped=0 capped=0", b"dropped=1 capped=0", 1),
+            good.replace(b"cutoff=0 ecu_verified=0", b"cutoff=1 ecu_verified=0", 1),
+            good.replace(b" ecu_verified=0 dtc_verified=0", b" ecu_verified=1 dtc_verified=1", 1),
+            good.replace(b"CART_TIMEBASE source=UART2_RX_FIFO_ISR", b"CART_TIMEBASE source=USB"),
+            good.replace(b"opcode=FF5F", b"opcode=FF50", 1),
+            good.replace(b"frame=3 slot=1", b"frame=2 slot=1", 1),
+            good.replace(b"CART_TX start_us=", b"REF_TX start_us=", 1),
+            good.replace(b"CART_EVT t_us=", b"CART_EVT t_ms=", 1),
+            good.replace(b"CART_END bytes=", b"CART_END bytes=0\nCART_END bytes=", 1),
+            good + b"junk\n",
+        )
+        for raw in invalid:
+            with self.subTest(reason=raw[:130]):
+                self.assertEqual(analyze(raw)["classification"],
+                                 "incomplete-or-unvalidated-timing-or-response")
+
     def test_reference_candidates_preserve_unverified_label(self):
         result = analyze(transcript())
         self.assertEqual(result["classification"],

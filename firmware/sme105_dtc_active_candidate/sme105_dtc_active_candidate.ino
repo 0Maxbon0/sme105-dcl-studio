@@ -9,6 +9,7 @@
 #include <soc/uart_struct.h>
 #include <cstring>
 #include "cart_b_active_model.h"
+#include "stop_line_matcher.h"
 
 // UNQUALIFIED EXPERIMENT. No vehicle/EEC-IV source proof or physical TX
 // timing proof. Build default cannot transmit B, even if the operator sends
@@ -44,6 +45,9 @@ volatile uint32_t coalesced = 0;
 volatile uint32_t dropped = 0;
 volatile bool cutoffTriggered = false;
 volatile bool slotInFlight = false;
+// Host STOP and the timer ISR must serialize the final decision to assert DE.
+volatile bool stopLatched = false;
+portMUX_TYPE slotGuard = portMUX_INITIALIZER_UNLOCKED;
 bool rawEnabled = false;
 bool referenceUartEnabled = false;
 bool oneShotConsumed = false;
@@ -57,6 +61,8 @@ hw_timer_t* watchdog = nullptr;  // Arduino timer 0: TIMERG0 timer0
 hw_timer_t* slotTimer = nullptr; // Arduino timer 2: TIMERG0 timer1
 uart_isr_handle_t rawHandle = nullptr;
 cart_candidate::FourWordRequest request(cart_candidate::Variant::FlxA4);
+
+bool hostStopRequested();
 
 void driverOff() { gpio_set_level(kDe, 0); }
 
@@ -113,18 +119,24 @@ void IRAM_ATTR watchdogISR() {
 // source-pinned pairs; never accepts externally supplied bytes or lengths.
 void IRAM_ATTR slotISR() {
   disableSlotAlarm();
+  portENTER_CRITICAL_ISR(&slotGuard);
   if (!requestMode || request.stage != cart_candidate::Stage::Request ||
-      !SME105_ACTIVE_B_TX) return;
+      !SME105_ACTIVE_B_TX || stopLatched) {
+    portEXIT_CRITICAL_ISR(&slotGuard);
+    return;
+  }
   const uint32_t now = static_cast<uint32_t>(esp_timer_get_time());
   if (!request.onTimer(now) || slotInFlight ||
       UART2.status.txfifo_cnt != 0 ||
       !(GPIO.in & (1UL << 16))) {
     failIsr(cart_candidate::Fault::LateTimer);
+    portEXIT_CRITICAL_ISR(&slotGuard);
     return;
   }
   // A disabled 2400 TX UART must not compete with this dedicated raw UART.
   if (!armAbsoluteTimer(0, kSlotCutoffUs)) {
     failIsr(cart_candidate::Fault::Timeout);
+    portEXIT_CRITICAL_ISR(&slotGuard);
     return;
   }
   UART2.int_clr.tx_done = 1;
@@ -135,6 +147,23 @@ void IRAM_ATTR slotISR() {
       cart_candidate::word(request.variant(), request.completed);
   UART2.fifo.rw_byte = next.first;
   UART2.fifo.rw_byte = next.second;
+  portEXIT_CRITICAL_ISR(&slotGuard);
+}
+
+void stopActiveRequest() {
+  // STOP is a hard local interrupt interlock, not merely a flag examined on
+  // the following frame. No timer ISR may drive DE after this returns.
+  portENTER_CRITICAL(&slotGuard);
+  stopLatched = true;
+  offISR();
+  disableSlotAlarm();
+  disableCutoffAlarm();
+  UART2.int_ena.tx_done = 0;
+  UART2.conf0.txfifo_rst = 1;
+  UART2.conf0.txfifo_rst = 0;
+  slotInFlight = false;
+  if (requestMode) request.abort(cart_candidate::Fault::Timeout);
+  portEXIT_CRITICAL(&slotGuard);
 }
 
 void IRAM_ATTR uartISR(void*) {
@@ -219,6 +248,11 @@ void end2400() {
 
 bool transmitReference(const uint8_t (&bytes)[11], const char* name) {
   driverOff();
+  if (hostStopRequested()) {
+    stopByHost = true;
+    stopActiveRequest();
+    return false;
+  }
   if (!watchdog || uartErrors || digitalRead(kRx) != HIGH) return false;
   cutoffTriggered = false;
   timerWrite(watchdog, 0);
@@ -242,6 +276,11 @@ bool exactCandidateAck() {
   const uint32_t began = millis();
   uint32_t last = began;
   while (millis() - began < kAckWindowMs) {
+    if (hostStopRequested()) {
+      stopByHost = true;
+      stopActiveRequest();
+      return false;
+    }
     while (referenceBus.available()) {
       const int ch = referenceBus.read();
       if (ch < 0 || n >= sizeof(answer)) return false;
@@ -307,13 +346,9 @@ void close9600() {
 }
 
 bool hostStopRequested() {
-  static const char stop[] = "STOP\n";
-  static uint8_t position = 0;
+  static StopLineMatcher matcher;
   while (Serial.available()) {
-    const char ch = static_cast<char>(Serial.read());
-    if (ch == stop[position]) {
-      if (++position == sizeof(stop) - 1) { position = 0; return true; }
-    } else position = ch == 'S' ? 1 : 0;
+    if (matcher.consume(static_cast<char>(Serial.read()))) return true;
   }
   return false;
 }
@@ -366,6 +401,7 @@ void dumpReport() {
 
 void attempt(cart_candidate::Variant variant, bool sendB) {
   oneShotConsumed = true; // consume before the first handshake TX
+  stopLatched = false; // no slot alarm or active transmit exists yet
   requestMode = sendB;
   stopByHost = false;
   request = cart_candidate::FourWordRequest(variant);
@@ -386,8 +422,7 @@ void attempt(cart_candidate::Variant variant, bool sendB) {
   while (millis() - begun < kObserveMs) {
     if (hostStopRequested()) {
       stopByHost = true;
-      driverOff();
-      if (sendB) request.abort(cart_candidate::Fault::Timeout);
+      stopActiveRequest();
       break;
     }
     if (uartErrors || coalesced || dropped || rxCount == kMaxEvents ||

@@ -30,6 +30,15 @@ The substantive but hardware-unverified active implementation is present in
   to be captured. Only all-four-word echo plus TX_DONE completion qualifies
   the informational `CART_TX` witness; incomplete attempts are reported
   under `CART_TX_ATTEMPT`.
+* An operator `STOP` ending in LF, CR or CRLF is recognized during the ACK
+  handshake and active CART observation. It latches a critical-section
+  driver-off interlock and cancels pending slot/cutoff timers; STOP cannot be
+  followed by another scheduled word. An already-running 11-byte reference
+  UART flush remains bounded by its separate 100 ms cutoff. This is not
+  external proof of safe bus turnaround.
+* The offline `scripts/analyze_timed_dtc.py` now recognizes the candidate's
+  entire native four-word `CART_TX` trace and exact reference handshake,
+  rejects partial/faulted traces, and still marks every DTC unverified.
 
 No clear-codes, KOEO self-test, actuator, generic PID, arbitrary write or
 repeat-TX command exists. The only other explicitly invoked bus command is
@@ -43,9 +52,9 @@ capture. Boot/STATUS/HELP never transmit on the vehicle bus.
 ./.venv/bin/python -m platformio run -d firmware/sme105_dtc_active_candidate
 ```
 
-On 2026-11-02, the native host C++11 synthetic state-machine tests passed
-**11/11**, and the ESP32 Arduino 2.0.17/IDF 4.4 firmware compiled and linked
-with `-mtext-section-literals` (RAM 87,256 bytes; flash 276,521 bytes).
+On 2026-11-02, the native host C++11 synthetic state-machine and STOP token
+tests passed **12/12**, and the ESP32 Arduino 2.0.17/IDF 4.4 firmware compiled
+and linked with `-mtext-section-literals` (RAM 87,272 bytes; flash 276,909 bytes).
 Deliberate attempted active-B compile must fail with `#error`.
 
 This is **software verification only**. It cannot prove interrupt jitter,

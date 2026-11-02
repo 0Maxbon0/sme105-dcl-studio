@@ -1,14 +1,16 @@
-#!/usr/bin/env python3
 """Host-only synthetic model verification; no USB port, ECU or ESP32 upload."""
-from pathlib import Path
+
 import subprocess
 import tempfile
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 CPP = r'''
 #include "cart_b_active_model.h"
+#include "stop_line_matcher.h"
 #include <cassert>
 #include <cstdio>
+#include <initializer_list>
 using namespace cart_candidate;
 
 Event frame(FourWordRequest& m, unsigned absoluteId, unsigned phase,
@@ -115,13 +117,29 @@ void sourcePins() {
   assert(word(Variant::Don0E,2).first == 0x26 && word(Variant::Don0E,2).second == 0x0E);
   assert(word(Variant::FlxA4,3).first == 0 && word(Variant::FlxA4,3).second == 0xA0);
 }
+void stopTokens() {
+  for (const char* token : {"STOP\n", "STOP\r", "STOP\r\n", "garbage STOP\n"}) {
+    StopLineMatcher matcher;
+    unsigned hits = 0;
+    for (const char* p = token; *p; ++p) if (matcher.consume(*p)) ++hits;
+    assert(hits == 1);
+  }
+  StopLineMatcher matcher;
+  for (const char* p = "STO\nSTOPXSTOP\n"; *p; ++p) {
+    if (matcher.consume(*p)) {
+      assert(p[0] == '\n');
+      return;
+    }
+  }
+  assert(false && "complete STOP must be recognized");
+}
 int main() {
   happy(Variant::FlxA4,0);
   happy(Variant::FlxA4,4);
   happy(Variant::Don0E,0);
   badBaseline(); missingEcho(); wrongEcho(); timerLate(); cutoffDuration();
-  premature(); extraDone(); sourcePins();
-  std::puts("11/11 synthetic CART B candidate state-machine checks PASS");
+  premature(); extraDone(); sourcePins(); stopTokens();
+  std::puts("12/12 synthetic CART B candidate state-machine/STOP checks PASS");
 }
 '''
 

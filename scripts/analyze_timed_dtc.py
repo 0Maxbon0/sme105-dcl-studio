@@ -27,10 +27,29 @@ TX = re.compile(
     rb"^CART_TX start_us=([0-9]+) end_us=([0-9]+) frame=([0-9]+) "
     rb"slot=([0-9]+) opcode=([0-9A-Fa-f]{4}) uart_errors=([0-9]+) cutoff=([01])$"
 )
+ACTIVE_TX = re.compile(
+    rb"^CART_TX start_us=([0-9]+) end_us=([0-9]+) frame=([0-3]) "
+    rb"slot=1 opcode=([0-9A-F]{4}) uart_errors=([0-9]+) "
+    rb"cutoff=([01]) echo_verified=([01])$"
+)
 END = re.compile(rb"^CART_END bytes=([0-9]+) uart_errors=([0-9]+) dropped=([0-9]+)$")
+ACTIVE_END = re.compile(
+    rb"^CART_END bytes=([0-9]+) uart_errors=([0-9]+) dropped=([0-9]+) "
+    rb"cutoff=([01]) ecu_verified=0 dtc_verified=0$"
+)
 NATIVE = re.compile(
     rb"^CART_CAPTURE n=([0-9]+) uart_errors=([0-9]+) "
     rb"coalesced=([0-9]+) overflow=([0-9]+) cutoff=([01]) capped=([01])$"
+)
+ACTIVE_CAPTURE = re.compile(
+    rb"^CART_CAPTURE n=([0-9]+) uart_errors=([0-9]+) "
+    rb"coalesced=([0-9]+) dropped=([0-9]+) capped=([01]) cutoff=([01])$"
+)
+ACTIVE_RUN = b"CART_RUN mode=ACTIVE_CANDIDATE stopped=0"
+ACTIVE_TIMEBASE = b"CART_TIMEBASE source=UART2_RX_FIFO_ISR time=us latency_uncalibrated=1"
+ACTIVE_STATE = re.compile(
+    rb"^CART_B_STATE stage=3 reason=0 baseline=16 scheduled=4 echoed=4 "
+    rb"variant=(26A4|260E)$"
 )
 NATIVE_TIMEBASE = (
     b"CART_TIMEBASE source=UART2_RX_ISR unit=us event=FIFO_interrupt_after_stop_bit"
@@ -56,6 +75,13 @@ NATIVE_BEGIN = (
 REFERENCE_TX = re.compile(rb"^REF_TX frame=(ECHO_ID|GO_CART) bytes=11 cutoff=0$")
 REFERENCE_ACK = re.compile(rb"^REF_ACK bytes=12 raw=(?:[0-9A-F]{2} ){11}[0-9A-F]{2}$")
 REFERENCE_CANDIDATE = b"ACK_CANDIDATE origin=UNVERIFIED"
+ACTIVE_REF_TX = re.compile(rb"^REF_TX frame=(ECHO_ID|GO_CART) n=11 cutoff=0$")
+ACTIVE_REF_ACK = b"ACK_CANDIDATE echo_11_plus_01 origin=UNVERIFIED"
+ACTIVE_REF_SEQUENCE = (
+    b"REF_TX frame=ECHO_ID n=11 cutoff=0",
+    ACTIVE_REF_ACK,
+    b"REF_TX frame=GO_CART n=11 cutoff=0",
+)
 
 
 def parse_evidence(raw: bytes) -> tuple[list[TimedOctet], CartCommandWitness | None]:
@@ -72,6 +98,13 @@ def parse_evidence(raw: bytes) -> tuple[list[TimedOctet], CartCommandWitness | N
     native_baseline = 0
     native_plan = 0
     native_slots = 0
+    active_run = 0
+    active_summary = []
+    active_timebase = 0
+    active_state: bytes | None = None
+    active_ending = []
+    active_witnesses: list[CartCommandWitness] = []
+    active_references: list[bytes] = []
     seen_line = False
     structured_started = False
     finished = False
@@ -94,31 +127,62 @@ def parse_evidence(raw: bytes) -> tuple[list[TimedOctet], CartCommandWitness | N
             records.append(TimedOctet(int(match[1]), int(match[2], 16)))
             seen_line = True
         elif line.startswith(b"CART_TX "):
-            match = TX.fullmatch(line)
-            if match is None or witness is not None:
-                raise CartReferenceError("invalid or duplicate TX witness")
-            witness = CartCommandWitness(
-                start_us=int(match[1]), completed_us=int(match[2]),
-                frame_id=int(match[3]), slot_index=int(match[4]),
-                opcode=bytes.fromhex(match[5].decode("ascii")),
-                uart_errors=int(match[6]), tx_cutoff_triggered=bool(int(match[7])),
-            )
+            active_match = ACTIVE_TX.fullmatch(line)
+            if active_match is not None:
+                if not bool(int(active_match[7])):
+                    raise CartReferenceError("active TX has no verified local echo")
+                active_witnesses.append(CartCommandWitness(
+                    start_us=int(active_match[1]), completed_us=int(active_match[2]),
+                    frame_id=int(active_match[3]), slot_index=1,
+                    opcode=bytes.fromhex(active_match[4].decode("ascii")),
+                    uart_errors=int(active_match[5]),
+                    tx_cutoff_triggered=bool(int(active_match[6])),
+                ))
+            else:
+                match = TX.fullmatch(line)
+                if match is None or witness is not None:
+                    raise CartReferenceError("invalid or duplicate TX witness")
+                witness = CartCommandWitness(
+                    start_us=int(match[1]), completed_us=int(match[2]),
+                    frame_id=int(match[3]), slot_index=int(match[4]),
+                    opcode=bytes.fromhex(match[5].decode("ascii")),
+                    uart_errors=int(match[6]), tx_cutoff_triggered=bool(int(match[7])),
+                )
             seen_line = True
+        elif line.startswith(b"CART_TX_ATTEMPT "):
+            raise CartReferenceError("partial or failed active B command")
         elif line.startswith(b"CART_END "):
             if line == NATIVE_END:
                 native_ended += 1
             else:
-                match = END.fullmatch(line)
-                if match is None:
-                    raise CartReferenceError("malformed capture ending")
-                endings.append(tuple(int(group) for group in match.groups()))
+                active_match = ACTIVE_END.fullmatch(line)
+                if active_match is not None:
+                    active_ending.append(tuple(int(group) for group in active_match.groups()))
+                else:
+                    match = END.fullmatch(line)
+                    if match is None:
+                        raise CartReferenceError("malformed capture ending")
+                    endings.append(tuple(int(group) for group in match.groups()))
             seen_line = True
             finished = True
         elif line.startswith(b"CART_CAPTURE "):
             match = NATIVE.fullmatch(line)
-            if match is None:
+            active_match = ACTIVE_CAPTURE.fullmatch(line)
+            if match is not None:
+                native_summary.append(tuple(int(group) for group in match.groups()))
+            elif active_match is not None:
+                active_summary.append(tuple(int(group) for group in active_match.groups()))
+            else:
                 raise CartReferenceError("malformed hardware UART capture summary")
-            native_summary.append(tuple(int(group) for group in match.groups()))
+        elif line == ACTIVE_RUN:
+            active_run += 1
+        elif line.startswith(b"CART_RUN "):
+            raise CartReferenceError("stopped or unsupported active capture mode")
+        elif line.startswith(b"CART_B_STATE "):
+            match = ACTIVE_STATE.fullmatch(line)
+            if match is None or active_state is not None:
+                raise CartReferenceError("active B request did not complete all four words")
+            active_state = match[1]
         elif line.startswith(b"CART_BASELINE "):
             if NATIVE_BASELINE.fullmatch(line) is None:
                 raise CartReferenceError("malformed native baseline observation")
@@ -133,8 +197,14 @@ def parse_evidence(raw: bytes) -> tuple[list[TimedOctet], CartCommandWitness | N
             native_slots += 1
         elif line == NATIVE_TIMEBASE:
             native_timebase += 1
+        elif line == ACTIVE_TIMEBASE:
+            active_timebase += 1
         elif line == NATIVE_BEGIN:
             native_begin += 1
+        elif ACTIVE_REF_TX.fullmatch(line) or line == ACTIVE_REF_ACK:
+            if structured_started:
+                raise CartReferenceError("active handshake evidence after CART recording began")
+            active_references.append(line)
         elif line.startswith((b"CART_", b"CAPTURE_")):
             # Do not silently ignore unknown structured records.
             raise CartReferenceError("unrecognized structured capture evidence")
@@ -143,27 +213,68 @@ def parse_evidence(raw: bytes) -> tuple[list[TimedOctet], CartCommandWitness | N
         elif not (REFERENCE_TX.fullmatch(line) or REFERENCE_ACK.fullmatch(line) or
                   line == REFERENCE_CANDIDATE):
             raise CartReferenceError("unexpected preface before structured capture")
-    if not seen_line or len(endings) + native_ended != 1:
+    if not seen_line or len(endings) + native_ended + len(active_ending) != 1:
         raise CartReferenceError("missing or duplicate CART_END")
     if endings:
         if (native_summary or native_ended or native_timebase or native_begin or
-                native_baseline or native_plan or native_slots):
+                native_baseline or native_plan or native_slots or active_run or
+                active_summary or active_timebase or active_state is not None or
+                active_witnesses or active_references):
             raise CartReferenceError("mixed incompatible capture formats")
         expected_count, errors, dropped = endings[0]
         if expected_count != len(records):
             raise CartReferenceError("CART byte count does not match raw events")
         if errors or dropped:
             raise CartReferenceError("UART errors / dropped hardware bytes")
-    else:
+    elif native_ended:
         if (len(native_summary) != 1 or native_ended != 1 or
                 native_begin != 1 or native_timebase != 1 or native_baseline != 1 or
-                witness is not None or native_plan > 1 or native_slots > 4):
+                witness is not None or native_plan > 1 or native_slots > 4 or
+                active_run or active_summary or active_timebase or
+                active_state is not None or active_witnesses or active_references):
             raise CartReferenceError("incomplete native UART ISR capture protocol")
         expected_count, errors, coalesced, overflow, cutoff, capped = native_summary[0]
         if expected_count != len(records):
             raise CartReferenceError("native UART capture byte count mismatch")
         if any((errors, coalesced, overflow, capped, cutoff)):
             raise CartReferenceError("UART error / ISR coalescing / capped or TX cutoff")
+    else:
+        if (len(active_ending) != 1 or len(active_summary) != 1 or active_run != 1 or
+                active_timebase != 1 or active_state is None or
+                len(active_witnesses) != 4 or witness is not None or native_summary or
+                native_timebase or native_begin or native_baseline or native_plan or
+                native_slots or tuple(active_references) != ACTIVE_REF_SEQUENCE):
+            raise CartReferenceError("incomplete or mixed active candidate UART capture")
+        expected_count, errors, coalesced, dropped, capped, cutoff = active_summary[0]
+        ending_count, ending_errors, ending_dropped, ending_cutoff = active_ending[0]
+        if (expected_count != len(records) or ending_count != expected_count or
+                ending_errors != errors or ending_dropped != dropped or
+                ending_cutoff != cutoff):
+            raise CartReferenceError("active candidate capture counts/health mismatch")
+        if any((errors, coalesced, dropped, capped, cutoff)):
+            raise CartReferenceError("active candidate reported UART or TX failure")
+        variant = bytes.fromhex(active_state.decode("ascii"))
+        words = (b"\x01\xb0", b"\xff\x5f", variant, b"\x00\xa0")
+        for frame_id, (tx, opcode) in enumerate(zip(active_witnesses, words)):
+            if (tx.frame_id != frame_id or tx.slot_index != 1 or tx.opcode != opcode or
+                    tx.uart_errors or tx.tx_cutoff_triggered or
+                    tx.completed_us <= tx.start_us or
+                    abs(tx.completed_us - tx.start_us - 2 * BYTE_US) > 175 or
+                    (frame_id and tx.start_us <= active_witnesses[frame_id - 1].completed_us)):
+                raise CartReferenceError("active four-word TX witness failed validation")
+        # Only ID2's documented B word is passed to the candidate decoder.
+        # The other three must also have locally timed echoes (checked below).
+        for tx in active_witnesses:
+            if not any(
+                abs(event.complete_us - tx.start_us - BYTE_US) <= 175 and
+                event.byte == tx.opcode[0] and
+                index + 1 < len(records) and
+                abs(records[index + 1].complete_us - tx.start_us - 2 * BYTE_US) <= 175 and
+                records[index + 1].byte == tx.opcode[1]
+                for index, event in enumerate(records)
+            ):
+                raise CartReferenceError("active TX witness lacks timed local RX echo")
+        witness = active_witnesses[2]
     return records, witness
 
 
