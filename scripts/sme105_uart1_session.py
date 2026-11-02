@@ -111,7 +111,18 @@ def capture(conn: object, *, deadline_seconds: float = 60,
             )
         normalized = bytes(stream[-256:]).replace(b"\r\n", b"\n")
         if any(ABORT_LINE.fullmatch(line) for line in normalized.split(b"\n")[:-1]):
-            raise CaptureIncomplete("firmware aborted its one-shot session", bytes(stream))
+            if b"PREHANDSHAKE_BUSY " in stream:
+                cause = ("reference handshake inhibited: bus activity or RX line fault "
+                         "detected before Echo-ID (zero TX); ignition/session state needs inspection")
+            elif b"ACK_REJECT overflow" in stream:
+                cause = ("reference ACK overflow after Echo-ID (>16 received at 2400 baud); "
+                         "no Go-CART or B TX, possible prior ECU session or invalid reply")
+            elif b"ABORT_PRECHECK " in stream:
+                cause = ("Echo-ID precheck refused: RX not idle high, unavailable cutoff "
+                         "or UART error; no reference frame transmitted")
+            else:
+                cause = "firmware aborted its one-shot session"
+            raise CaptureIncomplete(cause, bytes(stream))
         if END in normalized:
             if not normalized.endswith(END):
                 raise CaptureIncomplete("extra data after CART_END", bytes(stream))

@@ -1,5 +1,31 @@
 # Experimental UART1 receiver for SME-105 CART (read only after reference handshake)
 
+## Reference ACK overflow recovery guard (2026-11-02)
+
+Vehicle test `captures/TIMED_CART/20261102T194847373892Z-cart-isr.txt`,
+SHA256 `a429715158a76c52eed350cbe811e212de71eb33ab4b1215a5cec3b4a60611f3`,
+contains `REF_TX ECHO_ID`, `ACK_REJECT overflow`, and immediate
+`CART_ABORT`. No Go-CART, B command, or timer plan was performed in that
+test. A prior attempt also overflowed; another attempt had an RX/precheck
+failure. The actual 2400 baud ACK bytes were not preserved in the old build,
+so the cause cannot be proven from those logs. Residual ECU CART mode,
+incorrect ACK framing or a noisy/busy line remain hypotheses.
+
+The next **source build**, not automatically uploaded, includes:
+
+* A DE=LOW, receive-only 200ms pre-handshake quiet check. Existing RX data,
+  UART errors or RX not idle-high deny Echo-ID; a bounded `PREHANDSHAKE_BUSY`
+  evidence line includes the first 8 bytes and summary.
+* On >16 ACK bytes, `ACK_FORENSIC` preserves the first 16 plus the first
+  extra byte and returns `ACK_REJECT overflow` without Go-CART.
+* No change to the compile-time B TX lock, no new vehicle request or retries.
+
+**Do not rerun the previous firmware on the vehicle.** Turn ignition off,
+disconnect the interface from the ECU before flashing, then verify identity
+and receive-ISR lifecycle over USB. Reconnect only the already proven MAX487
+wiring with the GPIO loopback jumpers removed. If a new user-authorized
+reference capture aborts, save its evidence and stop; do not auto-retry.
+
 The proven V5 on-vehicle reference receiver used UART2 and recorded 970
 reference-compatible ID-only frames. An **isolated USB GPIO loop test**
 on UART1 (`20261102T192700035926Z-uart-edge-bench.txt`, SHA256

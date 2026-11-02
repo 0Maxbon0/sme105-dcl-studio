@@ -32,6 +32,7 @@ constexpr int kTx = 17;
 constexpr uint32_t kUsbBaud = 115200;
 constexpr uint32_t kAckWindowMs = 400;
 constexpr uint32_t kAckQuietMs = 20;
+constexpr uint32_t kPreHandshakeListenMs = 200;
 constexpr uint32_t kCaptureMs = 10000;
 constexpr uint64_t kTxDeadlineUs = 100000;
 constexpr size_t kEventLimit = 8192;
@@ -180,6 +181,41 @@ bool begin2400() {
   return deadlineTimer != nullptr;
 }
 
+// Listen on RX before initiating a new reference handshake. A prior 9600
+// CART stream or a noisy/contended electrical bus may still be active after
+// a prior test even if USB caused an ESP32 reset. Never throw away preexisting
+// bytes and then drive into an apparently idle (but active) ECU bus.
+bool observeQuiet2400() {
+  uint32_t seen = 0;
+  uint8_t first[8] = {};
+  const uint32_t startMs = millis();
+  while (millis() - startMs < kPreHandshakeListenMs) {
+    while (dcl.available()) {
+      const int value = dcl.read();
+      if (value >= 0) {
+        if (seen < sizeof(first)) first[seen] = static_cast<uint8_t>(value);
+        ++seen;
+      }
+      if (seen >= 32) break;  // bounded sample; one noisy byte is sufficient
+    }
+    if (seen || uartErrors || digitalRead(kRx) != HIGH) break;
+    delay(1);
+  }
+  if (!seen && !uartErrors && digitalRead(kRx) == HIGH) return true;
+  driverOff();
+  Serial.print(F("PREHANDSHAKE_BUSY rx_bytes=")); Serial.print(seen);
+  Serial.print(F(" uart_errors=")); Serial.print(uartErrors);
+  Serial.print(F(" rx_idle_high=")); Serial.print(digitalRead(kRx) == HIGH ? 1 : 0);
+  Serial.print(F(" first="));
+  const uint32_t count = seen < sizeof(first) ? seen : sizeof(first);
+  for (uint32_t i = 0; i < count; ++i) {
+    if (i) Serial.print(' ');
+    printHex(first[i]);
+  }
+  Serial.println(F(" DE=LOW no_reference_tx=1"));
+  return false;
+}
+
 void end2400() {
   driverOff();
   if (serialUartActive) dcl.end();
@@ -218,7 +254,22 @@ bool candidateAck() {
   while (millis() - started < kAckWindowMs) {
     while (dcl.available()) {
       const int value = dcl.read();
-      if (value < 0 || n >= sizeof(response)) {
+      if (value < 0) {
+        Serial.println(F("ACK_REJECT read_error"));
+        return false;
+      }
+      if (n >= sizeof(response)) {
+        driverOff();
+        Serial.print(F("ACK_FORENSIC count_at_least="));
+        Serial.print(n + 1);
+        Serial.print(F(" first16="));
+        for (size_t i = 0; i < n; ++i) {
+          if (i) Serial.print(' ');
+          printHex(response[i]);
+        }
+        Serial.print(F(" extra=")); printHex(static_cast<uint8_t>(value));
+        Serial.print(F(" elapsed_ms=")); Serial.print(millis() - started);
+        Serial.print(F(" uart_errors=")); Serial.println(uartErrors);
         Serial.println(F("ACK_REJECT overflow"));
         return false;
       }
@@ -449,7 +500,11 @@ void captureOnce(bool withDryRunPlan) {
     Serial.println(F("ABORT timer_initialization_failed"));
     return;
   }
-  while (dcl.available()) (void)dcl.read();
+  if (!observeQuiet2400()) {
+    end2400();
+    Serial.println(F("CART_ABORT prehandshake_busy TX_LOCKED"));
+    return;
+  }
   if (!txReference11(kEchoId, "ECHO_ID") || !candidateAck() ||
       !txReference11(kGoCart, "GO_CART")) {
     end2400();

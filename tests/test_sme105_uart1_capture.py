@@ -6,7 +6,60 @@ from pathlib import Path
 from scripts import sme105_uart1_session as host
 
 
+class FakePort:
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.sent: list[bytes] = []
+
+    def write(self, payload: bytes) -> int:
+        self.sent.append(payload)
+        return len(payload)
+
+    def flush(self) -> None:
+        pass
+
+    def read(self, n: int) -> bytes:
+        result, self.data = self.data[:n], self.data[n:]
+        return result
+
+
 class Uart1CaptureTests(unittest.TestCase):
+    def test_actual_ack_overflow_evidence_reports_precise_reason_no_retry(self):
+        file = (Path(__file__).resolve().parents[1] / "captures" / "TIMED_CART" /
+                "20261102T194847373892Z-cart-isr.txt")
+        if not file.exists():
+            self.skipTest("field ACK overflow evidence absent in checkout")
+        raw = file.read_bytes()
+        self.assertEqual(len(raw), 107)
+        port = FakePort(raw)
+        with self.assertRaisesRegex(host.CaptureIncomplete, "ACK overflow") as caught:
+            host.capture(port, action="PLAN_B_ONCE", deadline_seconds=1)
+        self.assertEqual(caught.exception.raw, raw)
+        self.assertEqual(port.sent, [b"PLAN_B_ONCE\n"])
+        self.assertNotIn(b"GO_CART", raw)
+
+    def test_prehandshake_busy_reason_retains_forensic_evidence(self):
+        raw = (b"PREHANDSHAKE_BUSY rx_bytes=2 uart_errors=0 rx_idle_high=1 "
+               b"first=00 8A DE=LOW no_reference_tx=1\r\n"
+               b"CART_ABORT prehandshake_busy TX_LOCKED\r\n")
+        port = FakePort(raw)
+        with self.assertRaisesRegex(host.CaptureIncomplete, "before Echo-ID") as caught:
+            host.capture(port, action="PLAN_B_ONCE", deadline_seconds=1)
+        self.assertEqual(caught.exception.raw, raw)
+        self.assertEqual(port.sent, [b"PLAN_B_ONCE\n"])
+
+    def test_uart1_reference_preflight_and_b_lock_are_source_enforced(self):
+        code = (Path(__file__).resolve().parents[1] / "firmware" /
+                "sme105_dtc_uart1_capture" / "sme105_dtc_uart1_capture.ino").read_text()
+        self.assertIn("bool observeQuiet2400()", code)
+        self.assertIn("PREHANDSHAKE_BUSY rx_bytes=", code)
+        self.assertIn("ACK_FORENSIC count_at_least=", code)
+        self.assertIn("ACK_REJECT overflow", code)
+        self.assertIn("if (!observeQuiet2400())", code)
+        self.assertIn("CART_ABORT prehandshake_busy TX_LOCKED", code)
+        self.assertIn("SME105_ENABLE_CART_B_TX != 0", code)
+        self.assertNotIn("GPIO.out_w1ts", code)
+
     def test_exact_firmware_usb_identity_is_distinct_from_v5(self):
         good = b"STATUS SME105_UART1_CAPTURE_V1 DE=LOW B_TX=COMPILE_LOCKED used=0 deadline_timer=1\r\n"
         self.assertIsNotNone(host.IDENTITY.fullmatch(good))
