@@ -59,6 +59,9 @@ ACTIVE_STATE = re.compile(
 NATIVE_TIMEBASE = (
     b"CART_TIMEBASE source=UART2_RX_ISR unit=us event=FIFO_interrupt_after_stop_bit"
 )
+UART1_TIMEBASE = (
+    b"CART_TIMEBASE source=UART1_RX_ISR unit=us event=FIFO_interrupt_after_stop_bit"
+)
 NATIVE_END = b"CART_END DTC_UNVERIFIED B_TX_LOCKED"
 NATIVE_BASELINE = re.compile(
     rb"^CART_BASELINE id_only_cycles=([0-9]+) "
@@ -72,6 +75,10 @@ NATIVE_PLAN = re.compile(
 )
 NATIVE_LAG = re.compile(
     rb"^CART_LAG_BASELINE valid=([01]) frames=([0-9]+) cycles=([0-9]+) "
+    rb"prefix=([0-9]+) phase=(0|4|255) edge_verified=0 b_tx=0$"
+)
+NATIVE_DIRECT = re.compile(
+    rb"^CART_DIRECT_BASELINE valid=([01]) frames=([0-9]+) cycles=([0-9]+) "
     rb"prefix=([0-9]+) phase=(0|4|255) edge_verified=0 b_tx=0$"
 )
 NATIVE_SLOT = re.compile(
@@ -108,6 +115,8 @@ def parse_evidence(raw: bytes) -> tuple[list[TimedOctet], CartCommandWitness | N
     native_plan = 0
     native_slots = 0
     native_lag = 0
+    native_direct = 0
+    uart1_timebase = 0
     active_run = 0
     active_summary = []
     active_timebase = 0
@@ -209,8 +218,15 @@ def parse_evidence(raw: bytes) -> tuple[list[TimedOctet], CartCommandWitness | N
             if NATIVE_LAG.fullmatch(line) is None:
                 raise CartReferenceError("malformed lagged FIFO baseline evidence")
             native_lag += 1
+        elif line.startswith(b"CART_DIRECT_BASELINE "):
+            if NATIVE_DIRECT.fullmatch(line) is None:
+                raise CartReferenceError("malformed direct UART1 baseline evidence")
+            native_direct += 1
         elif line == NATIVE_TIMEBASE:
             native_timebase += 1
+        elif line == UART1_TIMEBASE:
+            native_timebase += 1
+            uart1_timebase += 1
         elif line == ACTIVE_TIMEBASE:
             active_timebase += 1
         elif line == NATIVE_BEGIN:
@@ -231,7 +247,7 @@ def parse_evidence(raw: bytes) -> tuple[list[TimedOctet], CartCommandWitness | N
         raise CartReferenceError("missing or duplicate CART_END")
     if endings:
         if (native_summary or native_ended or native_timebase or native_begin or
-                native_baseline or native_plan or native_slots or native_lag or active_run or
+                native_baseline or native_plan or native_slots or native_lag or native_direct or active_run or
                 active_summary or active_timebase or active_state is not None or
                 active_witnesses or active_references):
             raise CartReferenceError("mixed incompatible capture formats")
@@ -243,10 +259,12 @@ def parse_evidence(raw: bytes) -> tuple[list[TimedOctet], CartCommandWitness | N
     elif native_ended:
         if (len(native_summary) != 1 or native_ended != 1 or
                 native_begin != 1 or native_timebase != 1 or native_baseline != 1 or
-                witness is not None or native_plan > 1 or native_slots > 4 or native_lag > 1 or
+                witness is not None or native_plan > 1 or native_slots > 4 or native_lag > 1 or native_direct > 1 or
                 active_run or active_summary or active_timebase or
                 active_state is not None or active_witnesses or active_references):
             raise CartReferenceError("incomplete native UART ISR capture protocol")
+        if bool(native_direct) != bool(uart1_timebase) or (native_lag and uart1_timebase):
+            raise CartReferenceError("direct UART1 baseline requires its own UART1 timebase")
         expected_count, errors, coalesced, overflow, cutoff, capped = native_summary[0]
         if expected_count != len(records):
             raise CartReferenceError("native UART capture byte count mismatch")
@@ -257,7 +275,7 @@ def parse_evidence(raw: bytes) -> tuple[list[TimedOctet], CartCommandWitness | N
                 active_timebase != 1 or active_state is None or
                 len(active_witnesses) != 4 or witness is not None or native_summary or
                 native_timebase or native_begin or native_baseline or native_plan or
-                native_slots or native_lag or tuple(active_references) != ACTIVE_REF_SEQUENCE):
+                native_slots or native_lag or native_direct or tuple(active_references) != ACTIVE_REF_SEQUENCE):
             raise CartReferenceError("incomplete or mixed active candidate UART capture")
         expected_count, errors, coalesced, dropped, capped, cutoff = active_summary[0]
         ending_count, ending_errors, ending_dropped, ending_cutoff = active_ending[0]
@@ -323,6 +341,33 @@ def analyze(raw: bytes) -> dict:
     }
     try:
         raw_events, witness = parse_evidence(raw)
+        direct_lines = [line for line in raw.replace(b"\r\n", b"\n").splitlines()
+                        if line.startswith(b"CART_DIRECT_BASELINE ")]
+        if direct_lines and witness is None:
+            if len(direct_lines) != 1:
+                raise CartReferenceError("duplicate UART1 direct capture witness")
+            direct = NATIVE_DIRECT.fullmatch(direct_lines[0])
+            if direct is None or direct[1] != b"1":
+                raise CartReferenceError("invalid UART1 direct capture witness")
+            aligned, skipped = align_first_id_zero(raw_events)
+            timed = parse_timed_cart(aligned)
+            frames = len(timed.cart.frames)
+            if (frames != int(direct[2]) or frames // 16 != int(direct[3]) or
+                skipped != int(direct[4]) or
+                timed.header_gap_bits != int(direct[5])):
+                raise CartReferenceError("UART1 direct baseline and independent parser disagree")
+            report.update({
+                "classification": "reference-compatible-direct-UART1-ID-only-no-DTC-command",
+                "frames": frames,
+                "complete_16_id_cycles": frames // 16,
+                "device_timestamped_bytes": len(raw_events),
+                "initial_unaligned_bytes_preserved_in_original": skipped,
+                "header_gap_bits_model": timed.header_gap_bits,
+                "physical_byte_timing_verified": False,
+                "b_request_transmitted": False,
+                "timing_method": "UART1_receive_ISR_software_timestamps_not_differential_waveform",
+            })
+            return report
         # On observed V5, UART2 RXFIFO_FULL(threshold=1) returns the previous
         # byte at the *next* byte completion. The strict physical-timing
         # parser must never treat those delayed timestamps as actual edges.

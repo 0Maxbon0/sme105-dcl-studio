@@ -78,6 +78,26 @@ def active_candidate_transcript(*, variant="26A4", stopped=0):
 
 
 class EvidenceParserTests(unittest.TestCase):
+    def test_uart1_direct_is_separate_receive_only_capture_mode(self):
+        native = native_transcript()
+        raw = native.replace(
+            b"CART_TIMEBASE source=UART2_RX_ISR",
+            b"CART_DIRECT_BASELINE valid=1 frames=48 cycles=3 prefix=0 phase=4 edge_verified=0 b_tx=0\n"
+            b"CART_TIMEBASE source=UART1_RX_ISR",
+        )
+        result = analyze(raw)
+        self.assertEqual(result["classification"],
+                         "reference-compatible-direct-UART1-ID-only-no-DTC-command")
+        self.assertEqual(result["frames"], 48)
+        self.assertFalse(result["physical_byte_timing_verified"])
+        self.assertFalse(result["b_request_transmitted"])
+        self.assertFalse(result["is_dtc_read_verified"])
+        self.assertEqual(analyze(raw.replace(b"frames=48", b"frames=49", 1))["classification"],
+                         "incomplete-or-unvalidated-timing-or-response")
+        self.assertEqual(analyze(raw.replace(b"source=UART1_RX_ISR",
+                                             b"source=UART2_RX_ISR", 1))["classification"],
+                         "incomplete-or-unvalidated-timing-or-response")
+
     def test_real_v5_fifo_lag_transcript_is_legitimate_id_only_not_dtc(self):
         file_path = (Path(__file__).resolve().parents[1] / "captures" / "TIMED_CART" /
                      "20261102T184936186271Z-cart-isr.txt")
