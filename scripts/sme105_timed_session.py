@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""USB controller for SME105_DTC_ONE_SHOT_V1 timed CART capture.
+
+The firmware does not transmit stored-code B. This host runs the single
+documented reference handshake ONLY with an explicit operator opt-in.
+No automatic retry, arbitrary UART bytes, or ECU modification commands.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import re
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+PORT = (
+    "/dev/serial/by-id/"
+    "usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0"
+)
+IDENTITY = re.compile(
+    rb"^STATUS SME105_DTC_ONE_SHOT_V1 DE=LOW B_TX=COMPILE_LOCKED "
+    rb"used=([01]) deadline_timer=([01])\r\n$"
+)
+END = b"CART_END DTC_UNVERIFIED B_TX_LOCKED\n"
+MAX_EVIDENCE_BYTES = 1_000_000
+
+
+class CaptureIncomplete(RuntimeError):
+    def __init__(self, message: str, raw: bytes) -> None:
+        super().__init__(message)
+        self.raw = raw
+
+
+def drain_boot(conn: object, *, minimum: float = 1.4, maximum: float = 6) -> int:
+    began = time.monotonic()
+    last = began
+    discarded = 0
+    while time.monotonic() - began < maximum:
+        n = int(conn.in_waiting)
+        data = conn.read(min(4096, n) if n else 1)
+        if data:
+            discarded += len(data)
+            last = time.monotonic()
+        if time.monotonic() - began >= minimum and time.monotonic() - last > 0.5:
+            return discarded
+    raise RuntimeError("USB startup remained noisy")
+
+
+def status(conn: object) -> bool:
+    time.sleep(0.08)
+    if conn.in_waiting:
+        raise RuntimeError("unexpected USB bytes before status")
+    conn.write(b"STATUS\n")
+    conn.flush()
+    response = conn.read_until(b"\n", size=180)
+    match = IDENTITY.fullmatch(response)
+    if match is None:
+        raise RuntimeError(f"wrong firmware identity or serial corruption: {response[:100]!r}")
+    time.sleep(0.08)
+    if conn.in_waiting:
+        raise RuntimeError("unsolicited bytes after status")
+    if match.group(2) != b"1":
+        raise RuntimeError("TX cutoff timer missing")
+    return match.group(1) == b"0"
+
+
+def capture(conn: object, *, deadline_seconds: float = 60,
+            action: str = "CAPTURE_CART_ONCE") -> bytes:
+    if action not in ("CAPTURE_CART_ONCE", "PLAN_B_ONCE"):
+        raise ValueError("only fixed reference handshake or timing-only dry-run is allowed")
+    conn.write(action.encode("ascii") + b"\n")
+    conn.flush()
+    began = time.monotonic()
+    stream = bytearray()
+    while time.monotonic() - began < deadline_seconds:
+        data = conn.read(4096)
+        if not data:
+            continue
+        stream.extend(data)
+        if len(stream) > MAX_EVIDENCE_BYTES:
+            raise CaptureIncomplete(
+                "capture transcript exceeds host bound; no automatic retry",
+                bytes(stream),
+            )
+        normalized = bytes(stream[-256:]).replace(b"\r\n", b"\n")
+        if END in normalized:
+            if not normalized.endswith(END):
+                raise CaptureIncomplete("extra data after CART_END", bytes(stream))
+            return bytes(stream)
+    raise CaptureIncomplete("timed CART capture timeout; no automatic retry", bytes(stream))
+
+
+def write_evidence(raw: bytes, root: Path) -> Path:
+    target = root / "captures" / "TIMED_CART"
+    target.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    path = target / f"{stamp}-cart-isr.txt"
+    with path.open("xb") as handle:
+        handle.write(raw)
+    return path
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--port", default=PORT)
+    parser.add_argument("--action", choices=("status", "capture-cart-once", "plan-b-once"),
+                        default="status")
+    args = parser.parse_args()
+    try:
+        import serial
+    except ImportError:
+        print("pyserial missing; run using project .venv", file=sys.stderr)
+        return 2
+    dispatched = False
+    raw = b""
+    reason = None
+    try:
+        with serial.Serial(args.port, baudrate=115200, timeout=0.15,
+                           write_timeout=0.8, dsrdtr=False, rtscts=False) as conn:
+            conn.dtr = False
+            conn.rts = False
+            discarded = drain_boot(conn)
+            print(f"Discarded {discarded} USB startup bytes.")
+            armable = status(conn)
+            if status(conn) != armable:
+                raise RuntimeError("firmware state changed unexpectedly")
+            if args.action == "status":
+                print(f"STATUS PASS; B diagnostic TX is locked, reference attempt unused={armable}")
+                return 0
+            if not armable:
+                raise RuntimeError("reference handshake already consumed this boot")
+            command = "PLAN_B_ONCE" if args.action == "plan-b-once" else "CAPTURE_CART_ONCE"
+            print("Only historical Echo-ID/Go-CART will transmit, once. "
+                  "B DTC TX is COMPILE-LOCKED; PLAN_B_ONCE exercises timer-only dry run.")
+            if input(f"Type {command} to authorize reference handshake: ").strip() != command:
+                print("Cancelled; no bus transmission.")
+                return 0
+            if not status(conn):
+                raise RuntimeError("final one-shot status denied")
+            dispatched = True
+            raw = capture(conn, action=command)
+    except CaptureIncomplete as exc:
+        raw = exc.raw
+        reason = str(exc)
+    except (OSError, serial.SerialException, RuntimeError, KeyboardInterrupt) as exc:
+        reason = str(exc) or type(exc).__name__
+    if not dispatched:
+        print(f"ABORT before bus dispatch: {reason}", file=sys.stderr)
+        return 2
+    # A byte stream that was lost mid-acquisition is not discarded: save the
+    # partial raw evidence as-is, but NEVER claim a complete read.
+    saved = write_evidence(raw, Path(__file__).resolve().parents[1])
+    print(f"Evidence: {saved}")
+    print(f"SHA256: {hashlib.sha256(raw).hexdigest()}")
+    if reason:
+        print(f"INCOMPLETE: {reason}; no automatic retry")
+        return 3
+    print("RAW CART capture complete. Analyze with scripts/analyze_timed_dtc.py.")
+    print("Stored-code DTCs NOT requested by this firmware.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
