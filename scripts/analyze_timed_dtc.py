@@ -51,7 +51,9 @@ ACTIVE_CAPTURE = re.compile(
     rb"coalesced=([0-9]+) dropped=([0-9]+) capped=([01]) cutoff=([01])$"
 )
 ACTIVE_RUN = b"CART_RUN mode=ACTIVE_CANDIDATE stopped=0"
+PASSIVE_RUN = b"CART_RUN mode=PASSIVE_AFTER_HANDSHAKE stopped=0"
 ACTIVE_TIMEBASE = b"CART_TIMEBASE source=UART2_RX_FIFO_ISR time=us latency_uncalibrated=1"
+ACTIVE_TIMEBASE_UART1 = b"CART_TIMEBASE source=UART1_RX_FIFO_ISR time=us latency_uncalibrated=1"
 ACTIVE_STATE = re.compile(
     rb"^CART_B_STATE stage=3 reason=0 baseline=16 scheduled=4 echoed=4 "
     rb"variant=(26A4|260E)$"
@@ -93,6 +95,10 @@ REFERENCE_ACK = re.compile(rb"^REF_ACK bytes=12 raw=(?:[0-9A-F]{2} ){11}[0-9A-F]
 REFERENCE_CANDIDATE = b"ACK_CANDIDATE origin=UNVERIFIED"
 ACTIVE_REF_TX = re.compile(rb"^REF_TX frame=(ECHO_ID|GO_CART) n=11 cutoff=0$")
 ACTIVE_REF_ACK = b"ACK_CANDIDATE echo_11_plus_01 origin=UNVERIFIED"
+ACTIVE_REF_RAW_ACK = (
+    b"REF_ACK count=12 raw="
+    b"00 00 00 00 00 01 82 00 00 00 83 01 uart_errors=0"
+)
 ACTIVE_REF_SEQUENCE = (
     b"REF_TX frame=ECHO_ID n=11 cutoff=0",
     ACTIVE_REF_ACK,
@@ -118,12 +124,14 @@ def parse_evidence(raw: bytes) -> tuple[list[TimedOctet], CartCommandWitness | N
     native_direct = 0
     uart1_timebase = 0
     active_run = 0
+    passive_run = 0
     active_summary = []
     active_timebase = 0
     active_state: bytes | None = None
     active_ending = []
     active_witnesses: list[CartCommandWitness] = []
     active_references: list[bytes] = []
+    active_raw_ack_count = 0
     seen_line = False
     structured_started = False
     finished = False
@@ -195,6 +203,8 @@ def parse_evidence(raw: bytes) -> tuple[list[TimedOctet], CartCommandWitness | N
                 raise CartReferenceError("malformed hardware UART capture summary")
         elif line == ACTIVE_RUN:
             active_run += 1
+        elif line == PASSIVE_RUN:
+            passive_run += 1
         elif line.startswith(b"CART_RUN "):
             raise CartReferenceError("stopped or unsupported active capture mode")
         elif line.startswith(b"CART_B_STATE "):
@@ -227,10 +237,16 @@ def parse_evidence(raw: bytes) -> tuple[list[TimedOctet], CartCommandWitness | N
         elif line == UART1_TIMEBASE:
             native_timebase += 1
             uart1_timebase += 1
-        elif line == ACTIVE_TIMEBASE:
+        elif line in (ACTIVE_TIMEBASE, ACTIVE_TIMEBASE_UART1):
             active_timebase += 1
         elif line == NATIVE_BEGIN:
             native_begin += 1
+        elif line == ACTIVE_REF_RAW_ACK:
+            if structured_started:
+                raise CartReferenceError("raw ACK evidence after CART recording began")
+            active_raw_ack_count += 1
+        elif line.startswith(b"REF_ACK count="):
+            raise CartReferenceError("unverified raw ACK sequence")
         elif ACTIVE_REF_TX.fullmatch(line) or line == ACTIVE_REF_ACK:
             if structured_started:
                 raise CartReferenceError("active handshake evidence after CART recording began")
@@ -247,7 +263,7 @@ def parse_evidence(raw: bytes) -> tuple[list[TimedOctet], CartCommandWitness | N
         raise CartReferenceError("missing or duplicate CART_END")
     if endings:
         if (native_summary or native_ended or native_timebase or native_begin or
-                native_baseline or native_plan or native_slots or native_lag or native_direct or active_run or
+                native_baseline or native_plan or native_slots or native_lag or native_direct or active_run or passive_run or
                 active_summary or active_timebase or active_state is not None or
                 active_witnesses or active_references):
             raise CartReferenceError("mixed incompatible capture formats")
@@ -260,7 +276,7 @@ def parse_evidence(raw: bytes) -> tuple[list[TimedOctet], CartCommandWitness | N
         if (len(native_summary) != 1 or native_ended != 1 or
                 native_begin != 1 or native_timebase != 1 or native_baseline != 1 or
                 witness is not None or native_plan > 1 or native_slots > 4 or native_lag > 1 or native_direct > 1 or
-                active_run or active_summary or active_timebase or
+                active_run or passive_run or active_summary or active_timebase or
                 active_state is not None or active_witnesses or active_references):
             raise CartReferenceError("incomplete native UART ISR capture protocol")
         if bool(native_direct) != bool(uart1_timebase) or (native_lag and uart1_timebase):
@@ -270,6 +286,23 @@ def parse_evidence(raw: bytes) -> tuple[list[TimedOctet], CartCommandWitness | N
             raise CartReferenceError("native UART capture byte count mismatch")
         if any((errors, coalesced, overflow, capped, cutoff)):
             raise CartReferenceError("UART error / ISR coalescing / capped or TX cutoff")
+    elif passive_run:
+        if (passive_run != 1 or len(active_ending) != 1 or
+                len(active_summary) != 1 or active_run or
+                active_timebase != 1 or ACTIVE_TIMEBASE_UART1 not in lines or
+                active_state is not None or active_witnesses or witness is not None or
+                native_summary or native_timebase or native_begin or
+                native_baseline or native_plan or native_slots or
+                native_lag or native_direct or tuple(active_references) != ACTIVE_REF_SEQUENCE or
+                active_raw_ack_count != 1):
+            raise CartReferenceError("incomplete or mixed passive-after-handshake UART1 capture")
+        expected_count, errors, coalesced, dropped, capped, cutoff = active_summary[0]
+        ending_count, ending_errors, ending_dropped, ending_cutoff = active_ending[0]
+        if (expected_count != len(records) or ending_count != expected_count or
+                ending_errors != errors or ending_dropped != dropped or
+                ending_cutoff != cutoff or
+                any((errors, coalesced, dropped, capped, cutoff))):
+            raise CartReferenceError("passive-after-handshake UART1 capture damaged")
     else:
         if (len(active_ending) != 1 or len(active_summary) != 1 or active_run != 1 or
                 active_timebase != 1 or active_state is None or
@@ -277,6 +310,10 @@ def parse_evidence(raw: bytes) -> tuple[list[TimedOctet], CartCommandWitness | N
                 native_timebase or native_begin or native_baseline or native_plan or
                 native_slots or native_lag or native_direct or tuple(active_references) != ACTIVE_REF_SEQUENCE):
             raise CartReferenceError("incomplete or mixed active candidate UART capture")
+        if active_raw_ack_count > 1 or (
+            ACTIVE_TIMEBASE_UART1 in lines and active_raw_ack_count != 1
+        ):
+            raise CartReferenceError("new UART1 B reader requires its exact raw 2400 ACK witness")
         expected_count, errors, coalesced, dropped, capped, cutoff = active_summary[0]
         ending_count, ending_errors, ending_dropped, ending_cutoff = active_ending[0]
         if (expected_count != len(records) or ending_count != expected_count or
