@@ -26,6 +26,16 @@ IDENTITY = re.compile(
 )
 END = b"CART_END DTC_UNVERIFIED B_TX_LOCKED\n"
 MAX_EVIDENCE_BYTES = 1_000_000
+PLAN = re.compile(
+    rb"CART_B_PLAN stage=(SEEK|BASELINE|COMMAND_CYCLE|COMPLETE|FAILED) "
+    rb"reason=(\d+) baseline_frames=(\d+) command_frames=(\d+) "
+    rb"phase_bits=(-?\d+) scheduled=(\d+) fired=(\d+) "
+    rb"mode=DRY_RUN tx_bytes=0 ecu_verified=0"
+)
+SLOT = re.compile(
+    rb"CART_B_SLOT frame=([0-3]) slot=1 opcode=([0-9A-F]{4}) "
+    rb"target_us=(\d+) fired_us=(\d+) dry_run=1 tx_bytes=0"
+)
 
 
 class CaptureIncomplete(RuntimeError):
@@ -103,6 +113,29 @@ def write_evidence(raw: bytes, root: Path) -> Path:
     return path
 
 
+def inspect_dry_run(raw: bytes) -> tuple[bool, str]:
+    """Only a local four-slot timer observation; never an ECU DTC result."""
+    lines = raw.replace(b"\r\n", b"\n").splitlines()
+    plans = [m for line in lines if (m := PLAN.fullmatch(line)) is not None]
+    slots = [m for line in lines if (m := SLOT.fullmatch(line)) is not None]
+    if len(plans) != 1:
+        return False, "PLAN incomplete: no unique timer-model result"
+    stage, reason, baseline, command, phase, scheduled, fired = plans[0].groups()
+    fields = (stage, int(reason), int(baseline), int(command), int(phase),
+              int(scheduled), int(fired))
+    if fields[0] != b"COMPLETE" or fields[1:4] != (0, 16, 16) or fields[4] not in (0, 4) or fields[5:] != (4, 4):
+        return False, f"PLAN incomplete: stage={stage.decode()} reason={int(reason)} scheduled={int(scheduled)} fired={int(fired)}"
+    words = (b"01B0", b"FF5F", b"26A4", b"00A0")
+    if len(slots) != 4:
+        return False, "PLAN incomplete: missing four timed opportunities"
+    for index, match in enumerate(slots):
+        frame, opcode, target, fired_at = match.groups()
+        if (int(frame) != index or opcode != words[index] or
+                abs(int(fired_at) - int(target)) > 175):
+            return False, "PLAN incomplete: incorrect slot word or timing"
+    return True, "PLAN timing observed for 4/4 slots; B was NOT transmitted, no DTC read"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default=PORT)
@@ -158,6 +191,11 @@ def main() -> int:
     if reason:
         print(f"INCOMPLETE: {reason}; no automatic retry")
         return 3
+    if args.action == "plan-b-once":
+        ok, detail = inspect_dry_run(raw)
+        print(detail)
+        if not ok:
+            return 4
     print("RAW CART capture complete. Analyze with scripts/analyze_timed_dtc.py.")
     print("Stored-code DTCs NOT requested by this firmware.")
     return 0

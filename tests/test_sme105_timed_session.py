@@ -36,6 +36,30 @@ class FakePort:
 
 
 class TimedHostTests(unittest.TestCase):
+    def test_dry_run_requires_four_complete_local_timer_slots(self):
+        plan = (b"CART_B_PLAN stage=COMPLETE reason=0 baseline_frames=16 "
+                b"command_frames=16 phase_bits=4 scheduled=4 fired=4 "
+                b"mode=DRY_RUN tx_bytes=0 ecu_verified=0\n")
+        slots = b"".join(
+            f"CART_B_SLOT frame={index} slot=1 opcode={opcode} "
+            f"target_us={5000 + 10000 * index} fired_us={5009 + 10000 * index} "
+            "dry_run=1 tx_bytes=0\n".encode()
+            for index, opcode in enumerate(("01B0", "FF5F", "26A4", "00A0"))
+        )
+        good = plan + slots
+        self.assertTrue(host.inspect_dry_run(good)[0])
+        for raw in (
+            b"", plan, good + plan,
+            good.replace(b"stage=COMPLETE", b"stage=FAILED"),
+            good.replace(b"reason=0", b"reason=1"),
+            good.replace(b"opcode=26A4", b"opcode=260E"),
+            good.replace(b"frame=3", b"frame=1"),
+            good.replace(b"fired_us=5009", b"fired_us=6009"),
+            good.replace(b"fired=4", b"fired=3"),
+        ):
+            with self.subTest(raw=raw[:60]):
+                self.assertFalse(host.inspect_dry_run(raw)[0])
+
     def test_status_requires_exact_native_firmware_identity_and_timer(self):
         correct = (b"STATUS SME105_DTC_ONE_SHOT_V1 DE=LOW B_TX=COMPILE_LOCKED "
                    b"used=0 deadline_timer=1\r\n")
