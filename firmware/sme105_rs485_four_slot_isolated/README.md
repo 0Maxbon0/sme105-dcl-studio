@@ -67,15 +67,40 @@ held idle HIGH) to prove the independent GPIO21 sense follows GPIO18
 LOW/HIGH/LOW, and checks both UART receivers idle HIGH. This briefly asserts
 the MAX487 driver and is permissible **only** on a genuinely isolated desk
 pair. Preflight failure emits **zero UART bytes**. One-shot UART test then
-sends four bounded words, requires UART2/MAX and UART1/XY exact independent
-echo, measures differential-receiver GPIO16 transitions via RMT0 and
-physical DE GPIO21 duration via RMT1. Four distinct RMT2..RMT5 channels each
+sends four bounded words and verifies two independent receive paths:
+UART1 MAX487 RO GPIO16 exact two-byte echo with real UART arrival timestamps,
+and RMT6 XY-K485 RXD GPIO19 strictly decoded 9600/8N1 digital pulse runs.
+RMT6 has no absolute XY byte arrival timestamps; none are invented.
+RMT0 separately captures MAX RO GPIO16 level transitions, and RMT1 measures
+physical DE GPIO21 duration. Four distinct RMT2..RMT5 channels each
 produce a single <=2180µs autonomous DE HIGH pulse; separate UART2 TX_DONE
 may release DE early. TIMERG0 backup 2250µs cutoff is CPU-interrupt-dependent
 and not an independent electrical protector. No retries or vehicle logic.
 
-**Readiness:** Firmware builds and Python source tests are not a substitute
-for a live MAX487+XY four-slot test. Local A/B receive proves only this
-particular desk path; it cannot certify automotive voltage/current, faults,
+## Real isolated A/B desk results (2026-11-02)
+
+The initial revisions correctly failed closed when UART2 RX decoded
+D1 instead of 55 despite clean GPIO16 RMT pulses. MAX487 now uses UART1 RX
+(the hardware configuration validated in the prior GPIO four-word bench).
+XY-K485 uses RMT6 sampling of GPIO19 rather than another simultaneous UART
+RX. The RMT decoder handles the final HIGH data bits merging into stop HIGH,
+only for the bounded literal-sample tail and only if GPIO19 stays HIGH
+through the RMT idle threshold. The host also rejects noisy partial STATUS
+and PINS replies instead of trusting embedded tokens.
+
+- Immutable source capture:
+  captures/ISOLATED_RS485/20261102T215643084944Z-four-slot.txt
+- SHA256:
+  2fc12bd1f846579e75de7813669a9497698849de40013af17276bf1122127217
+- Result: PASS_DUAL_RS485_DESK_ONLY; four words completed, all 8 MAX
+  hardware UART bytes exact; all 8 XY GPIO19 RMT-decoded bytes exact.
+- 0 UART errors, 0 coalesced reads, 0 watchdog cutoffs.
+- TIMERG0 slot offsets +3,+4,+4,+4 microseconds, 10ms slot spacing;
+  externally sensed DE HIGH 2084 microseconds for each word.
+- Both MAX RMT0 and XY RMT6 detected 17,9,5,13 expected level segments
+  by word. No B request and no ECU transmission.
+
+**Readiness boundary:** A live isolated A/B test now passes. It validates
+only this particular desk path; it cannot certify automotive voltage/current, faults,
 bus collision arbitration, ECU pinout, or the disputed DTC B command
 (`26A4` vs `260E`). Never connect this bench firmware to the vehicle.

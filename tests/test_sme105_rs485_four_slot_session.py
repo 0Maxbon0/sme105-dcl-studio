@@ -24,9 +24,10 @@ def good_capture() -> bytes:
         lines.append(
             f"WORD index={i} sample={word} target_us={start} fired_us={f} "
             f"done_us={f+2087} echo_count=2 echo0_us={f+995} echo1_us={f+2035} "
-            f"xy_count=2 xy0_us={f+1001} xy1_us={f+2042} tx_done_count=1 "
+            f"xy_count=2 xy_bytes={word} xy_source=RMT_GPIO19_no_absolute_timestamp "
+            f"xy_rmt_edges={bench.EDGE_COUNTS[i]} xy_decode_err=0 tx_done_count=1 "
             f"cutoff=0 error=0 unexpected_rx=00 expected_rx=00 rx_position=0 "
-            f"unexpected_at_us=0 de_rmt_high_us=2085 de_rmt_items=1 "
+            f"unexpected_at_us=0 fault_uart=NONE de_rmt_high_us=2085 de_rmt_items=1 "
             f"tx_rmt_items=9 tx_rmt_edges={bench.EDGE_COUNTS[i]}"
         )
     lines.append(bench.LIMITS)
@@ -34,6 +35,20 @@ def good_capture() -> bytes:
 
 
 class DualRs485BenchTests(unittest.TestCase):
+    def test_only_a_single_quiet_complete_status_may_authorize(self):
+        good = bench.IDENTITY + b"0\r\n"
+        self.assertEqual(bench.status_one_shot(good), b"0")
+        self.assertEqual(bench.status_one_shot(bench.IDENTITY + b"1\r\n"), b"1")
+        for bad in (
+            good + good,
+            b"boot\r\n" + good,
+            good[:-2],
+            good.replace(b"STATUS", b"ST_TUS"),
+            b"cle_tx=LOCKED DE=LOW used=0\r\n" + good,
+        ):
+            with self.subTest(raw=bad):
+                self.assertIsNone(bench.status_one_shot(bad))
+
     def test_four_word_dual_echo(self):
         self.assertTrue(bench.verify_capture(good_capture())[0])
 
@@ -42,7 +57,9 @@ class DualRs485BenchTests(unittest.TestCase):
         for old, new in (
             (b"xy_count=2", b"xy_count=1"),
             (b"echo_count=2", b"echo_count=1"),
-            (b"xy1_us=12046", b"xy1_us=15000"),
+            (b"xy_bytes=55AA", b"xy_bytes=D1AA"),
+            (b"xy_rmt_edges=17", b"xy_rmt_edges=9"),
+            (b"xy_decode_err=0", b"xy_decode_err=6"),
             (b"de_rmt_high_us=2085", b"de_rmt_high_us=2290"),
             (b"completed=4", b"completed=3"),
             (b"irq_errors=0", b"irq_errors=1"),
@@ -50,6 +67,8 @@ class DualRs485BenchTests(unittest.TestCase):
             (b"sample=55AA", b"sample=26A4"),
             (b"cutoff=0", b"cutoff=1"),
             (b"error=0", b"error=6"),
+            (b"fault_uart=NONE", b"fault_uart=XY"),
+            (b"fault_uart=NONE", b"fault_uart=MAX"),
             (b"tx_done_count=1", b"tx_done_count=0"),
             (b"tx_rmt_edges=17", b"tx_rmt_edges=9"),
             (b"B_TX=0", b"B_TX=1"),
@@ -73,6 +92,12 @@ class DualRs485BenchTests(unittest.TestCase):
             'UART2.fifo.rw_byte = samples[index][0]',
             'RMT_SIG_OUT2_IDX + index',
             'BENCH_RS485_ONCE',
+            'RX_ROUTE uart2_rx_disabled=1 u1_max_pin=',
+            'gpio_matrix_in(kMaxEcho, U1RXD_IN_IDX, false);',
+            'UART2.conf0.rxfifo_rst = 1;',
+            'w.faultUart = 2;',
+            'w.faultUart = 1;',
+            'decodeXyRmt(w, i)',
             'oneShotUsed = true;',
         ):
             self.assertIn(required, source)

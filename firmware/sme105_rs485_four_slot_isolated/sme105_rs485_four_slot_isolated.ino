@@ -53,12 +53,17 @@ struct WordWitness {
   volatile uint8_t expectedRx = 0;
   volatile uint8_t rxPosition = 0;
   volatile uint32_t unexpectedAtUs = 0;
+  volatile uint8_t faultUart = 0; // 0=NONE, 1=MAX UART1, 2=XY RMT6
   uint32_t deRmtHighUs = 0;
   uint32_t deRmtItems = 0;
   uint32_t txRmtItems = 0;
   uint32_t txRmtEdges = 0;
   rmt_item32_t txTrace[24] = {};
   uint8_t txTraceCount = 0;
+  rmt_item32_t xyTrace[24] = {};
+  uint8_t xyTraceCount = 0;
+  uint32_t xyRmtEdges = 0;
+  uint8_t xyDecodeError = 0;
 };
 
 WordWitness witness[kWords];
@@ -73,6 +78,7 @@ intr_handle_t uartHandle = nullptr;
 intr_handle_t txUartHandle = nullptr;
 RingbufHandle_t txRing = nullptr;
 RingbufHandle_t deRing = nullptr;
+RingbufHandle_t xyRing = nullptr;
 bool rmtReady = false;
 uint8_t rmtTxChannelsReady = 0;
 bool uartReady = false;
@@ -167,47 +173,10 @@ void IRAM_ATTR uartISR(void*) {
       continue;
     }
     WordWitness& w = witness[index];
-    const uint8_t position = w.oldReceivedCount;
-    if (position >= 2 || byte != samples[index][position]) {
-      if (!w.unexpectedAtUs) {
-        w.unexpectedRx = byte;
-        w.expectedRx = position < 2 ? samples[index][position] : 0;
-        w.rxPosition = position;
-        w.unexpectedAtUs = static_cast<uint32_t>(esp_timer_get_time());
-      }
-      abortNow(6);
-      continue;
-    }
-    w.oldReceived[position] = byte;
-    w.oldEchoAtUs[position] = static_cast<uint32_t>(esp_timer_get_time());
-    w.oldReceivedCount = position + 1;
-  }
-  UART1.int_clr.val = pending;
-}
-// Separate UART2 TX_DONE interrupt: UART1's RX ISR exclusively owns receive
-// timestamps and FIFO (the topology that passed the earlier GPIO edge bench).
-void IRAM_ATTR uartTxISR(void*) {
-  const uint32_t pending = UART2.int_st.val;
-  if (pending & ((1UL << 2) | (1UL << 3) | (1UL << 4) | (1UL << 8))) {
-    ++irqErrors;
-    abortNow(3);
-  }
-  const uint32_t count = UART2.status.rxfifo_cnt;
-  if (count > 1) {
-    ++irqRxCoalesced;
-    abortNow(4);
-  }
-  for (uint32_t i = 0; i < count; ++i) {
-    const uint8_t byte = static_cast<uint8_t>(UART2.fifo.rw_byte);
-    const int index = activeWord;
-    if (index < 0 || index >= kWords || stopped) {
-      abortNow(5);
-      continue;
-    }
-    WordWitness& w = witness[index];
     const uint8_t position = w.receivedCount;
     if (position >= 2 || byte != samples[index][position]) {
-      if (!w.unexpectedAtUs) {
+      if (!w.error) {
+        w.faultUart = 1;
         w.unexpectedRx = byte;
         w.expectedRx = position < 2 ? samples[index][position] : 0;
         w.rxPosition = position;
@@ -220,6 +189,12 @@ void IRAM_ATTR uartTxISR(void*) {
     w.echoAtUs[position] = static_cast<uint32_t>(esp_timer_get_time());
     w.receivedCount = position + 1;
   }
+  UART1.int_clr.val = pending;
+}
+// UART2 transmits only. UART1 independently receives MAX RO on GPIO16,
+// the exact ESP32 UART pairing proven in the earlier four-word GPIO bench.
+void IRAM_ATTR uartTxISR(void*) {
+  const uint32_t pending = UART2.int_st.val;
   if (pending & (1UL << 14)) {
     deLow();
     TIMERG0.hw_timer[0].config.alarm_en = 0;
@@ -255,12 +230,12 @@ bool startUart() {
   };
   if (uart_param_config(UART_NUM_1, &cfg) != ESP_OK ||
       uart_param_config(UART_NUM_2, &cfg) != ESP_OK ||
-      uart_set_pin(UART_NUM_1, UART_PIN_NO_CHANGE, kOldEcho,
+      uart_set_pin(UART_NUM_1, UART_PIN_NO_CHANGE, kMaxEcho,
                    UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE) != ESP_OK ||
-      uart_set_pin(UART_NUM_2, kTx, kMaxEcho,
+      uart_set_pin(UART_NUM_2, kTx, UART_PIN_NO_CHANGE,
                    UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE) != ESP_OK)
     return false;
-  // UART2 owns MAX487 RO at GPIO16 and DI at GPIO17; UART1 receives XY RO19.
+  // UART2 owns DI output 17; UART1 owns MAX RO input 16; XY RO19 is RMT6.
   gpio_set_direction(GPIO_NUM_17, GPIO_MODE_OUTPUT);
   UART1.int_ena.val = 0;
   UART1.int_clr.val = 0xFFFFFFFF;
@@ -270,10 +245,11 @@ bool startUart() {
   UART1.conf0.txfifo_rst = 0;
   UART2.int_ena.val = 0;
   UART2.int_clr.val = 0xFFFFFFFF;
+  UART2.conf0.rxfifo_rst = 1;
+  UART2.conf0.rxfifo_rst = 0;
   UART2.conf0.txfifo_rst = 1;
   UART2.conf0.txfifo_rst = 0;
   UART1.conf1.rxfifo_full_thrhd = 1;
-  UART2.conf1.rxfifo_full_thrhd = 1;
   if (esp_intr_alloc(ETS_UART1_INTR_SOURCE, ESP_INTR_FLAG_IRAM, uartISR,
                      nullptr, &uartHandle) != ESP_OK) return false;
   if (esp_intr_alloc(ETS_UART2_INTR_SOURCE, ESP_INTR_FLAG_IRAM, uartTxISR,
@@ -287,10 +263,6 @@ bool startUart() {
   UART1.int_ena.rxfifo_ovf = 1;
   UART1.int_ena.frm_err = 1;
   UART1.int_ena.parity_err = 1;
-  UART2.int_ena.rxfifo_full = 1;
-  UART2.int_ena.rxfifo_ovf = 1;
-  UART2.int_ena.frm_err = 1;
-  UART2.int_ena.parity_err = 1;
   return true;
 }
 void closeUart() {
@@ -319,16 +291,25 @@ bool rmtChannel(rmt_channel_t channel, gpio_num_t pin,
 bool startRmt() {
   txRing = nullptr;
   deRing = nullptr;
-  // MAX487 RO at GPIO16 is observed by RMT0 + UART2 RX.
-  // DE at GPIO21 is observed by RMT1 via an independent 1k resistor.
+  xyRing = nullptr;
+  // RMT0 records the MAX RO raw pad, UART1 independently decodes MAX bytes.
+  // RMT6 records XY RXD pad for a strict 9600 8N1 software decoder.
+  // RMT1 measures GPIO21 DE through the physically separate jumper.
   if (!rmtChannel(RMT_CHANNEL_0, GPIO_NUM_16, &txRing)) return false;
   if (!rmtChannel(RMT_CHANNEL_1, GPIO_NUM_21, &deRing)) return false;
-  // Restore UART2 output and both UART input routes after RMT setup.
-  if (uart_set_pin(UART_NUM_2, kTx, kMaxEcho,
+  if (!rmtChannel(RMT_CHANNEL_6, GPIO_NUM_19, &xyRing)) return false;
+  // Restore transmit and MAX receive after RMT configured the two RX pads.
+  if (uart_set_pin(UART_NUM_2, kTx, UART_PIN_NO_CHANGE,
                    UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE) != ESP_OK ||
-      uart_set_pin(UART_NUM_1, UART_PIN_NO_CHANGE, kOldEcho,
+      uart_set_pin(UART_NUM_1, UART_PIN_NO_CHANGE, kMaxEcho,
                    UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE) != ESP_OK)
     return false;
+  // GPIO input-matrix route lets RMT0 and UART1 independently sample GPIO16.
+  gpio_pad_select_gpio(kMaxEcho);
+  gpio_matrix_in(kMaxEcho, U1RXD_IN_IDX, false);
+  if (GPIO.func_in_sel_cfg[U1RXD_IN_IDX].func_sel != kMaxEcho ||
+      GPIO.func_in_sel_cfg[U1RXD_IN_IDX].sig_in_sel != 1 ||
+      GPIO.func_in_sel_cfg[U1RXD_IN_IDX].sig_in_inv != 0) return false;
   gpio_set_direction(GPIO_NUM_17, GPIO_MODE_OUTPUT);
   gpio_matrix_out(GPIO_NUM_17, U2TXD_OUT_IDX, false, false);
   // GPIO21 is input-only monitor; GPIO19 is old XY receiver-only.
@@ -353,7 +334,7 @@ bool startRmt() {
     ++rmtTxChannelsReady;
     if (rmt_fill_tx_items(channel, &pulse, 1, 0) != ESP_OK) return false;
   }
-  // GPIO16/GPIO19/GPIO21 remain inputs; no legacy jumper path.
+  // GPIO16/GPIO19/GPIO21 remain input-only. GPIO19 has no TX peripheral.
   deLow();
   rmtReady = true;
   return true;
@@ -371,8 +352,10 @@ void closeRmt() {
   if (!rmtReady) return;
   (void)rmt_rx_stop(RMT_CHANNEL_0);
   (void)rmt_rx_stop(RMT_CHANNEL_1);
+  (void)rmt_rx_stop(RMT_CHANNEL_6);
   (void)rmt_driver_uninstall(RMT_CHANNEL_0);
   (void)rmt_driver_uninstall(RMT_CHANNEL_1);
+  (void)rmt_driver_uninstall(RMT_CHANNEL_6);
   rmtReady = false;
 }
 void captureRmt(rmt_channel_t ch, RingbufHandle_t ring, int index, bool de) {
@@ -390,6 +373,11 @@ void captureRmt(rmt_channel_t ch, RingbufHandle_t ring, int index, bool de) {
         witness[index].deRmtItems++;
         if (item.level0) witness[index].deRmtHighUs += item.duration0;
         if (item.level1) witness[index].deRmtHighUs += item.duration1;
+      } else if (ch == RMT_CHANNEL_6) {
+        if (witness[index].xyTraceCount < 24)
+          witness[index].xyTrace[witness[index].xyTraceCount++] = item;
+        if (item.duration0) ++witness[index].xyRmtEdges;
+        if (item.duration1) ++witness[index].xyRmtEdges;
       } else {
         witness[index].txRmtItems++;
         if (witness[index].txTraceCount < 24) {
@@ -403,6 +391,88 @@ void captureRmt(rmt_channel_t ch, RingbufHandle_t ring, int index, bool de) {
     bytes = 0;
   }
   (void)ch;
+}
+// Read GPIO19's actual RMT level runs at a UART 9600/8N1 bit center.
+// Unlike pretending to have UART byte interrupts, this decoder deliberately
+// provides NO absolute byte timestamp. RMT only measures relative pulse runs.
+bool xyLevelAt(const WordWitness& w, int index, uint32_t sampleUs, uint8_t& level) {
+  uint32_t elapsed = 0;
+  for (uint8_t i = 0; i < w.xyTraceCount; ++i) {
+    const rmt_item32_t& it = w.xyTrace[i];
+    if (it.duration0 && sampleUs < elapsed + it.duration0) {
+      level = it.level0;
+      return true;
+    }
+    elapsed += it.duration0;
+    if (it.duration1 && sampleUs < elapsed + it.duration1) {
+      level = it.level1;
+      return true;
+    }
+    elapsed += it.duration1;
+  }
+  // With these samples the second byte has MSB=1, so the final data HIGH
+  // runs straight into the stop HIGH: there is NO further edge. The ESP32
+  // RMT RX ring terminates the last HIGH with duration1=0 on idle. Accept
+  // only the expected final contiguous HIGH run: last 1-bit(s) of the
+  // literal second byte plus its stop bit. For F0 there are four trailing
+  // HIGH data bits, so this can be up to five bit times, NOT two.
+  uint32_t finalHighBoundUs = 105; // mandatory stop bit
+  for (int bit = 7; bit >= 0 &&
+       ((samples[index][1] >> bit) & 1U) != 0; --bit) {
+    finalHighBoundUs += 105;
+  }
+  if (w.xyTraceCount && sampleUs >= elapsed &&
+      sampleUs < elapsed + finalHighBoundUs &&
+      w.xyTrace[w.xyTraceCount - 1].duration1 == 0 &&
+      w.xyTrace[w.xyTraceCount - 1].level1 == 1 &&
+      digitalRead(kOldEcho) == HIGH) {
+    level = 1;
+    return true;
+  }
+  return false;
+}
+bool decodeXyRmt(WordWitness& w, int index) {
+  if (w.xyTraceCount == 0 || w.xyRmtEdges != kExpectedTxRmtSegments[index]) {
+    w.xyDecodeError = 1;
+    return false;
+  }
+  uint8_t data[2] = {};
+  // Last stop HIGH may be stored as a zero-duration trailing level by the
+  // RMT driver when RX capture terminates on idle; still require a final
+  // LOW-to-HIGH level transition, but don't invent its measured duration.
+  const rmt_item32_t& last = w.xyTrace[w.xyTraceCount - 1];
+  if (!(last.level1 == 1 && last.duration1 == 0)) {
+    w.xyDecodeError = 2;
+    return false;
+  }
+  for (int k = 0; k < 19; ++k) { // all start/data bits and first stop bit
+    const uint32_t centerUs =
+        (static_cast<uint32_t>(2 * k + 1) * 500000U + 4800U) / 9600U;
+    uint8_t actual = 0;
+    if (!xyLevelAt(w, index, centerUs, actual)) {
+      w.xyDecodeError = 3;
+      return false;
+    }
+    const int bit = k % 10;
+    if (bit == 0 && actual != 0) {
+      w.xyDecodeError = 4;
+      return false;
+    }
+    if (bit == 9 && actual != 1) {
+      w.xyDecodeError = 5;
+      return false;
+    }
+    if (bit >= 1 && bit <= 8 && actual)
+      data[k / 10] |= static_cast<uint8_t>(1U << (bit - 1));
+  }
+  w.oldReceived[0] = data[0];
+  w.oldReceived[1] = data[1];
+  if (data[0] != samples[index][0] || data[1] != samples[index][1]) {
+    w.xyDecodeError = 6;
+    return false;
+  }
+  w.oldReceivedCount = 2;
+  return true;
 }
 void hexByte(uint8_t x) {
   if (x < 16) Serial.print('0');
@@ -426,8 +496,10 @@ void printReport(bool ok, int completed) {
     Serial.print(F(" echo0_us=")); Serial.print(w.echoAtUs[0]);
     Serial.print(F(" echo1_us=")); Serial.print(w.echoAtUs[1]);
     Serial.print(F(" xy_count=")); Serial.print(w.oldReceivedCount);
-    Serial.print(F(" xy0_us=")); Serial.print(w.oldEchoAtUs[0]);
-    Serial.print(F(" xy1_us=")); Serial.print(w.oldEchoAtUs[1]);
+    Serial.print(F(" xy_bytes=")); hexByte(w.oldReceived[0]); hexByte(w.oldReceived[1]);
+    Serial.print(F(" xy_source=RMT_GPIO19_no_absolute_timestamp"));
+    Serial.print(F(" xy_rmt_edges=")); Serial.print(w.xyRmtEdges);
+    Serial.print(F(" xy_decode_err=")); Serial.print(w.xyDecodeError);
     Serial.print(F(" tx_done_count=")); Serial.print(w.txDoneCount);
     Serial.print(F(" cutoff=")); Serial.print(w.cutoff);
     Serial.print(F(" error=")); Serial.print(w.error);
@@ -435,6 +507,8 @@ void printReport(bool ok, int completed) {
     Serial.print(F(" expected_rx=")); hexByte(w.expectedRx);
     Serial.print(F(" rx_position=")); Serial.print(w.rxPosition);
     Serial.print(F(" unexpected_at_us=")); Serial.print(w.unexpectedAtUs);
+    Serial.print(F(" fault_uart=")); Serial.print(
+        w.faultUart == 1 ? F("MAX") : w.faultUart == 2 ? F("XY") : F("NONE"));
     Serial.print(F(" de_rmt_high_us=")); Serial.print(w.deRmtHighUs);
     Serial.print(F(" de_rmt_items=")); Serial.print(w.deRmtItems);
     Serial.print(F(" tx_rmt_items=")); Serial.print(w.txRmtItems);
@@ -449,9 +523,18 @@ void printReport(bool ok, int completed) {
         Serial.print(F(" level1=")); Serial.print(item.level1);
         Serial.print(F(" dur1_us=")); Serial.println(item.duration1);
       }
+      for (uint8_t j = 0; j < w.xyTraceCount; ++j) {
+        const auto& item = w.xyTrace[j];
+        Serial.print(F("XY_EDGE frame=")); Serial.print(i);
+        Serial.print(F(" item=")); Serial.print(j);
+        Serial.print(F(" level0=")); Serial.print(item.level0);
+        Serial.print(F(" dur0_us=")); Serial.print(item.duration0);
+        Serial.print(F(" level1=")); Serial.print(item.level1);
+        Serial.print(F(" dur1_us=")); Serial.println(item.duration1);
+      }
     }
   }
-  Serial.println(F("LIMITS dual_RX_differential_desk_only not_ECU_proof no_bus_contention_test no_automotive_transient_protection"));
+  Serial.println(F("LIMITS MAX_UART1_and_XY_RMT6_differential_desk_only no_XY_absolute_timestamp not_ECU_proof no_bus_contention_test no_automotive_transient_protection"));
 }
 bool verifyPhysicalJumpers() {
   // No UART TX data during this probe; keep DI idle HIGH, pulse DE for only
@@ -511,7 +594,8 @@ bool run() {
     w.targetUs = epoch + i * kSlotSpacingUs;
     // Start hardware edge sampling before each timed 2-byte emission.
     if (rmt_rx_start(RMT_CHANNEL_0, true) != ESP_OK ||
-        rmt_rx_start(RMT_CHANNEL_1, true) != ESP_OK) {
+        rmt_rx_start(RMT_CHANNEL_1, true) != ESP_OK ||
+        rmt_rx_start(RMT_CHANNEL_6, true) != ESP_OK) {
       w.error = 9; stopped = true; break;
     }
     while (static_cast<int32_t>(w.targetUs - static_cast<uint32_t>(esp_timer_get_time())) > static_cast<int32_t>(kSlotLeadUs)) {
@@ -534,8 +618,7 @@ bool run() {
       delayMicroseconds(20);
     }
     if (!stopped && !w.txDoneCount) abortNow(12);
-    if (!stopped && (w.receivedCount != 2 || w.oldReceivedCount != 2 ||
-        w.txDoneCount != 1 ||
+    if (!stopped && (w.receivedCount != 2 || w.txDoneCount != 1 ||
         (w.txDoneUs - w.firedUs) < 1900 ||
         (w.txDoneUs - w.firedUs) >= kCutoffUs)) abortNow(13);
     deLow();
@@ -544,9 +627,15 @@ bool run() {
     delay(4);
     (void)rmt_rx_stop(RMT_CHANNEL_0);
     (void)rmt_rx_stop(RMT_CHANNEL_1);
+    (void)rmt_rx_stop(RMT_CHANNEL_6);
     captureRmt(RMT_CHANNEL_0, txRing, i, false);
     captureRmt(RMT_CHANNEL_1, deRing, i, true);
-    // RMT high duration and pad edges are NOT independent external bus proof.
+    captureRmt(RMT_CHANNEL_6, xyRing, i, false);
+    if (!stopped && !decodeXyRmt(w, i)) {
+      w.faultUart = 2;
+      w.error = 15; // XY raw waveform not a complete exact 8N1 sample
+      stopped = true;
+    }
     if (!stopped && (w.deRmtHighUs < 1950 ||
         w.deRmtHighUs >= kCutoffUs || w.deRmtItems == 0 ||
         w.txRmtEdges != kExpectedTxRmtSegments[i])) {
@@ -567,6 +656,28 @@ void respond() {
     deLow();
     Serial.print(F("STATUS SME105_DUAL_RS485_V1 vehicle_tx=LOCKED DE=LOW used="));
     Serial.println(oneShotUsed ? 1 : 0);
+  } else if (!strcmp(line, "RX_ROUTE")) {
+    // Hardware-route diagnostic. UART2 RX is deliberately UNUSED; UART1
+    // owns MAX RO16, RMT6 owns XY GPIO19 and UART2 is TX only.
+    // Never arm a timer, launch RMT TX, queue a byte or assert DE.
+    if (oneShotUsed) {
+      Serial.println(F("DENIED RX_ROUTE after consumed one-shot"));
+    } else {
+      const bool configured = startUart() && startRmt();
+      if (configured) {
+        Serial.print(F("RX_ROUTE uart2_rx_disabled=1 u1_max_pin=")); Serial.print(GPIO.func_in_sel_cfg[U1RXD_IN_IDX].func_sel);
+        Serial.print(F(" u1_input_sel=")); Serial.print(GPIO.func_in_sel_cfg[U1RXD_IN_IDX].sig_in_sel);
+        Serial.print(F(" u1_inv=")); Serial.print(GPIO.func_in_sel_cfg[U1RXD_IN_IDX].sig_in_inv);
+        Serial.print(F(" xy_rmt6_input_pin=19"));
+        Serial.print(F(" uart1_status_rx=")); Serial.print(UART1.status.rxd);
+        Serial.println(F(" DE=LOW UART_TX=0 ECU_TX=0"));
+      } else {
+        Serial.println(F("RX_ROUTE FAIL_INIT no_UART_TX=1 DE=LOW"));
+      }
+      closeUart();
+      closeRmt();
+      deLow();
+    }
   } else if (!strcmp(line, "PINS")) {
     deLow();
     Serial.print(F("PINS max16=")); Serial.print(digitalRead(kMaxEcho));
