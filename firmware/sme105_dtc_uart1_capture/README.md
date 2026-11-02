@@ -1,5 +1,29 @@
 # Experimental UART1 receiver for SME-105 CART (read only after reference handshake)
 
+## Verified timer-only field witness: 2026-11-02
+
+The field transcript `captures/TIMED_CART/20261102T195544822297Z-cart-isr.txt`
+(SHA256 `6d1f4ec0fec0d34acc4fe75832bc172bc59f4f96f9188adbbe4fbd16bb3e8cd5`)
+passed an independent offline source-level verifier:
+
+```sh
+./.venv/bin/python scripts/verify_sme105_dry_run.py \
+  captures/TIMED_CART/20261102T195544822297Z-cart-isr.txt
+```
+
+The field transcript contains 32 complete ID-only frames across two ID0..15
+cycles. TIMERG0/T1 fires in software at **+3, +4, +3, +4 microseconds** from
+the four candidate nominal ID0..3 slot-1 starts, respectively, with 417 us
+from the recorded fourth header byte to each target. The offline verifier
+checks four scheduled targets against actual recorded UART1 ID timestamps,
+not merely the firmware's `COMPLETE` status.
+
+**This does not authenticate the ECU, prove differential waveform or DE
+turnaround under contention, or read any stored DTC.** All B words in the
+timer report remain inert placeholders, and B TX remains compile-locked. Do
+not connect isolated GPIO loopback jumpers to MAX487 / vehicle. No additional
+vehicle reference test is needed to reestablish these timings.
+
 ## Reference ACK overflow recovery guard (2026-11-02)
 
 Vehicle test `captures/TIMED_CART/20261102T194847373892Z-cart-isr.txt`,
