@@ -265,6 +265,12 @@ bool beginRaw9600() {
   UART2.int_clr.val = 0xFFFFFFFF;
   UART2.conf0.rxfifo_rst = 1;
   UART2.conf0.rxfifo_rst = 0;
+  // Keep this ESP32 silicon's observed stable threshold=1. Threshold=0 was
+  // physically rejected on USB-only V3 (interrupt WDT storm after selftest).
+  // Threshold=1 delays each FIFO value by one subsequent receive event:
+  // its ISR timestamps must NOT be interpreted as byte-completion edges.
+  // Off-device forensic decoding compensates this lag for ID-only analysis;
+  // do NOT use it to authorize a timed active B command.
   UART2.conf1.rxfifo_full_thrhd = 1;
   // dcl.end() has deleted Arduino's UART driver. IDF uart_isr_register()
   // dereferences that deleted driver's p_uart_obj (the actual observed
