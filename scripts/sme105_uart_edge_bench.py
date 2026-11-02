@@ -34,15 +34,27 @@ def main() -> int:
         time.sleep(0.85)
         dropped = port.read(port.in_waiting)
         print(f"Discarded {len(dropped)} USB startup bytes")
-        port.write(b"STATUS\n")
-        port.flush()
+        # CP2102 DTR/RTS may reset ESP32 on USB open; a STATUS sent while
+        # the sketch is still booting may be ignored or mixed with startup
+        # bytes, producing a misleading DENIED unknown_command. Repeat only
+        # the strictly read-only STATUS probe (never BENCH_GPIO_ONCE).
         status = b""
-        deadline = time.monotonic() + 3
-        while time.monotonic() < deadline:
-            status += port.read(1024)
-            if any(IDENTITY.fullmatch(line.strip()) for line in status.splitlines()):
+        identified = False
+        for _ in range(4):
+            port.write(b"STATUS\n")
+            port.flush()
+            deadline = time.monotonic() + 1.25
+            while time.monotonic() < deadline:
+                status = (status + port.read(1024))[-8192:]
+                if any(IDENTITY.fullmatch(line.strip()) for line in status.splitlines()):
+                    identified = True
+                    break
+                if b"STATUS SME105_UART_EDGE_BENCH_V1 DE=LOW ECU_TX=DISABLED used=1" in status:
+                    print("ABORT: one-shot bench attempt already consumed this boot")
+                    return 3
+            if identified:
                 break
-        else:
+        if not identified:
             print(f"ABORT wrong firmware, used state, or bad serial: {status[-500:]!r}")
             return 3
         print("BENCH STATUS PASS: USB-only firmware, DE=LOW, no vehicle TX")
