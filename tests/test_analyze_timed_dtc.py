@@ -78,6 +78,64 @@ def active_candidate_transcript(*, variant="26A4", stopped=0):
 
 
 class EvidenceParserTests(unittest.TestCase):
+    def test_real_uart1_capture_preserves_one_partial_next_sync(self):
+        path = (Path(__file__).resolve().parents[1] / "captures" / "TIMED_CART" /
+                "20261102T194029616678Z-cart-isr.txt")
+        if not path.exists():
+            self.skipTest("real UART1 vehicle evidence absent from checkout")
+        raw = path.read_bytes()
+        result = analyze(raw)
+        self.assertEqual(result["sha256"],
+                         "c0bc2f6922525e13263ad4957581c85a799182dfdbfcaeb76ddb80a376779aeb")
+        self.assertEqual(result["classification"],
+                         "reference-compatible-direct-UART1-ID-only-no-DTC-command")
+        self.assertEqual(result["frames"], 996)
+        self.assertEqual(result["complete_16_id_cycles"], 62)
+        self.assertEqual(result["device_timestamped_bytes"], 3985)
+        self.assertEqual(result["trailing_next_header_bytes_preserved_in_original"], 1)
+        margin = result["nominal_slot1_isr_margin_us"]
+        self.assertEqual(margin["minimum"], 415)
+        self.assertEqual(margin["maximum"], 418)
+        self.assertEqual(margin["sample_count"], 252)
+        self.assertFalse(margin["hardware_timer_firing_verified"])
+        self.assertFalse(margin["physical_bus_phase_verified"])
+        self.assertEqual(result["reference_dtc_candidates"], [])
+        for key in ("physical_byte_timing_verified", "b_request_transmitted",
+                    "is_ecu_source_authenticated", "is_dtc_read_verified"):
+            self.assertFalse(result[key], key)
+        for bad in (
+            raw.replace(b"CART_EVT t_us=21528255 byte=00",
+                        b"CART_EVT t_us=21528255 byte=FF", 1),
+            raw.replace(b"CART_EVT t_us=21528255 byte=00",
+                        b"CART_EVT t_us=21530255 byte=00", 1),
+            raw.replace(b"CART_DIRECT_BASELINE valid=1 frames=996",
+                        b"CART_DIRECT_BASELINE valid=1 frames=995", 1),
+        ):
+            self.assertEqual(analyze(bad)["classification"],
+                             "incomplete-or-unvalidated-timing-or-response")
+
+    def test_uart1_only_trims_timed_exact_next_header_prefix(self):
+        good = native_transcript().replace(
+            b"CART_TIMEBASE source=UART2_RX_ISR",
+            b"CART_DIRECT_BASELINE valid=1 frames=48 cycles=3 prefix=0 phase=4 edge_verified=0 b_tx=0\n"
+            b"CART_TIMEBASE source=UART1_RX_ISR",
+        )
+        incoming = events(cycles=3)
+        next_start = round(incoming[-3].complete_us + 10000 - BYTE_US)
+        tail = f"CART_EVT t_us={next_start} byte=00\n".encode()
+        version = good.replace(b"CART_CAPTURE n=192", b"CART_CAPTURE n=193")
+        version = version.replace(b"CART_END DTC_UNVERIFIED", tail + b"CART_END DTC_UNVERIFIED")
+        self.assertEqual(analyze(version)["trailing_next_header_bytes_preserved_in_original"], 1)
+        self.assertEqual(analyze(version)["frames"], 48)
+        for invalid in (
+            version.replace(tail, tail.replace(b"byte=00", b"byte=99")),
+            version.replace(tail, tail.replace(str(next_start).encode(),
+                                               str(next_start + 250).encode())),
+            version.replace(tail, tail + tail),
+        ):
+            self.assertEqual(analyze(invalid)["classification"],
+                             "incomplete-or-unvalidated-timing-or-response")
+
     def test_uart1_direct_is_separate_receive_only_capture_mode(self):
         native = native_transcript()
         raw = native.replace(

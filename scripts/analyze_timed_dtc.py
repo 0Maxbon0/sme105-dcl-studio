@@ -350,19 +350,59 @@ def analyze(raw: bytes) -> dict:
             if direct is None or direct[1] != b"1":
                 raise CartReferenceError("invalid UART1 direct capture witness")
             aligned, skipped = align_first_id_zero(raw_events)
-            timed = parse_timed_cart(aligned)
+            claimed_frames = int(direct[2])
+            # A 10-second receive window can close after the first byte(s) of
+            # an otherwise-valid NEXT ID header. Preserve those raw bytes in
+            # the evidence, but only drop an exact 00 00 00 prefix whose
+            # timestamp matches the expected next 10ms cycle. Never trim
+            # unknown bytes, slot data, or a whole invalid 4-byte header.
+            if claimed_frames < 16 or claimed_frames * 4 > len(aligned):
+                raise CartReferenceError("invalid UART1 complete-frame witness count")
+            complete = aligned[:claimed_frames * 4]
+            partial = aligned[claimed_frames * 4:]
+            if len(partial) > 3 or any(event.byte != 0 for event in partial):
+                raise CartReferenceError("unexpected UART1 trailing CART data")
+            if partial:
+                last_sync2_us = complete[-3].complete_us
+                expected_first_us = last_sync2_us + 10_000 - BYTE_US
+                expected_gaps_us = (BYTE_US, BYTE_US + 4 * BIT_US)
+                if abs(partial[0].complete_us - expected_first_us) > 175:
+                    raise CartReferenceError("UART1 partial next-sync cadence invalid")
+                for index in range(1, len(partial)):
+                    gap = partial[index].complete_us - partial[index - 1].complete_us
+                    if abs(gap - expected_gaps_us[index - 1]) > 175:
+                        raise CartReferenceError("UART1 partial next-sync byte timing invalid")
+            timed = parse_timed_cart(complete)
             frames = len(timed.cart.frames)
             if (frames != int(direct[2]) or frames // 16 != int(direct[3]) or
                 skipped != int(direct[4]) or
                 timed.header_gap_bits != int(direct[5])):
                 raise CartReferenceError("UART1 direct baseline and independent parser disagree")
+            # A schedule-only estimate, not proof of hardware timer accuracy
+            # or safe RS-485 turnaround. Header4 must finish before a nominal
+            # slot1 start 2917us after sync2. Restrict to candidate IDs 0..3.
+            margins = [
+                complete[i + 1].complete_us + 2917 - complete[i + 3].complete_us
+                for i in range(0, len(complete), 4)
+                if (i // 4) % 16 < 4
+            ]
+            if not margins or min(margins) <= 0:
+                raise CartReferenceError("UART1 capture reaches candidate slot after deadline")
             report.update({
                 "classification": "reference-compatible-direct-UART1-ID-only-no-DTC-command",
                 "frames": frames,
                 "complete_16_id_cycles": frames // 16,
                 "device_timestamped_bytes": len(raw_events),
                 "initial_unaligned_bytes_preserved_in_original": skipped,
+                "trailing_next_header_bytes_preserved_in_original": len(partial),
                 "header_gap_bits_model": timed.header_gap_bits,
+                "nominal_slot1_isr_margin_us": {
+                    "minimum": min(margins),
+                    "maximum": max(margins),
+                    "sample_count": len(margins),
+                    "hardware_timer_firing_verified": False,
+                    "physical_bus_phase_verified": False,
+                },
                 "physical_byte_timing_verified": False,
                 "b_request_transmitted": False,
                 "timing_method": "UART1_receive_ISR_software_timestamps_not_differential_waveform",

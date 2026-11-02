@@ -34,7 +34,38 @@ For an operator-controlled one-time reference capture (not a stored-code read):
 
 This command asks for the exact `CAPTURE_CART_ONCE` operator confirmation.
 If the handshake fails or the vehicle UART1 sample is not valid, **do not retry
-automatically**. Keep the original evidence and restore stable V5 when needed:
+automatically**. Keep the original evidence and restore stable V5 when needed.
+
+After a successful UART1 ID-only sample, `scripts/analyze_timed_dtc.py`
+accepts 1–3 byte partial **next-frame sync** endings only when matching
+00-prefix bytes and the next 10 ms frame cadence; it preserves the original
+capture and refuses any other trailing bytes. On the 2026-11-02 UART1 car
+capture (SHA256 `c0bc2f6922525e13263ad4957581c85a799182dfdbfcaeb76ddb80a376779aeb`),
+the sample was 996 full ID frames + one next-sync `00`. The nominal slot-1
+lead after the fourth ID byte was 415–418 µs across 252 headers of IDs0..3.
+**This margin is software ISR observation, not proven safe DE/TX timing.**
+
+### Optional one-shot timer-only field test (no B transmitted)
+
+The same **already flashed** UART1 firmware supports `PLAN_B_ONCE`. This
+explicitly repeats the two reference handshake frames, records one full
+ID0..15 baseline, then asks TIMERG0/T1 to fire four ID0–3 *inert* timing
+alarms during the following cycle. No data are added to the CART transmit
+FIFO, and the B opcode compile lock stays in force. Only if the operator
+chooses to validate the timer on the connected vehicle, and only with the
+original tested wiring (no GPIO loopback jumpers), run:
+
+```sh
+./.venv/bin/python scripts/sme105_uart1_session.py --port /dev/ttyUSB0 --action plan-b-once
+```
+
+Type the exact `PLAN_B_ONCE` confirmation. Save the Evidence path; `COMPLETE`
+with `scheduled=4 fired=4` would prove only on-device hardware timer dry-run.
+It would **not** authenticate an ECU, read any stored fault codes, or qualify
+active UART TX/DE turnaround. A `FAILED`/`SEEK`/`INCOMPLETE` means stop and
+analyze the raw evidence, **no automatic retries**.
+
+For restoration to V5 after experiments:
 
 ```sh
 ./.venv/bin/python -m platformio run -d firmware/sme105_dtc_one_shot \

@@ -156,7 +156,7 @@ def inspect_dry_run(raw: bytes) -> tuple[bool, str]:
         if len(lagged) == 1 and lagged[0][1] == b"1":
             detail += (f"; recorded CART ID-only frames={int(lagged[0][2])}, "
                        f"complete 16-ID cycles={int(lagged[0][3])} "
-                       "(one-byte FIFO-lag inference, NOT validated active slot timing)")
+                       "(direct UART1 ISR timestamps, NOT validated physical bus TX timing)")
         return False, detail
     words = (b"01B0", b"FF5F", b"26A4", b"00A0")
     if len(slots) != 4:
@@ -176,14 +176,14 @@ def inspect_direct_id_baseline(raw: bytes) -> str:
     if len(matches) != 1 or matches[0][1] != b"1":
         return "CART ID-only baseline not validated by receiver"
     return (f"UART1 CART ID-only baseline observed: {int(matches[0][2])} frames, "
-            f"{int(matches[0][3])} full cycles. FIFO-lag inferred; "
+            f"{int(matches[0][3])} full cycles. Direct UART1 ISR timestamps; "
             "physical slot timing and DTC reading NOT verified")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default=PORT)
-    parser.add_argument("--action", choices=("status", "rx-isr-selftest", "capture-cart-once"),
+    parser.add_argument("--action", choices=("status", "rx-isr-selftest", "capture-cart-once", "plan-b-once"),
                         default="status")
     args = parser.parse_args()
     try:
@@ -213,9 +213,9 @@ def main() -> int:
                 return 0
             if not armable:
                 raise RuntimeError("reference handshake already consumed this boot")
-            command = "CAPTURE_CART_ONCE"
+            command = "PLAN_B_ONCE" if args.action == "plan-b-once" else "CAPTURE_CART_ONCE"
             print("Only historical Echo-ID/Go-CART will transmit, once. "
-                  "B DTC TX is COMPILE-LOCKED; PLAN_B_ONCE exercises timer-only dry run.")
+                  "B DTC TX is COMPILE-LOCKED; PLAN_B_ONCE exercises timer-only dry run without B TX.")
             if input(f"Type {command} to authorize reference handshake: ").strip() != command:
                 print("Cancelled; no bus transmission.")
                 return 0
@@ -240,6 +240,11 @@ def main() -> int:
         print(f"INCOMPLETE: {reason}; no automatic retry")
         return 3
     print(inspect_direct_id_baseline(raw))
+    if args.action == "plan-b-once":
+        ok, detail = inspect_dry_run(raw)
+        print(detail)
+        if not ok:
+            return 4
     print("RAW UART1 CART capture complete. Analyze with scripts/analyze_timed_dtc.py.")
     print("Stored-code DTCs NOT requested by this firmware.")
     return 0

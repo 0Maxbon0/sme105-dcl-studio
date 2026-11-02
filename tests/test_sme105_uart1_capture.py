@@ -24,6 +24,30 @@ class Uart1CaptureTests(unittest.TestCase):
         self.assertIn("#if SME105_ENABLE_CART_B_TX != 0", code)
         self.assertIn('#error "No safe B transmitter:', code)
         self.assertNotIn("UART2.int_ena", code)
+        self.assertIn("planSlotIsr()", code)
+        self.assertIn("PLAN_B_ONCE", code)
+        plan_only = code.split("void IRAM_ATTR planSlotIsr()", 1)[1].split("// IDF4.4", 1)[0]
+        self.assertIn("bPlan.onTimer(nowUs)", plan_only)
+        self.assertNotIn("gpio_set_level(kDe, 1)", plan_only)
+        self.assertNotIn("UART1.fifo.rw_byte =", plan_only)
+
+    def test_uart1_dry_run_host_can_report_timer_only_result(self):
+        direct = (
+            b"CART_B_PLAN stage=COMPLETE reason=0 baseline_frames=16 "
+            b"command_frames=16 phase_bits=4 scheduled=4 fired=4 "
+            b"mode=DRY_RUN tx_bytes=0 ecu_verified=0\n"
+            b"CART_DIRECT_BASELINE valid=1 frames=32 cycles=2 prefix=0 phase=4 "
+            b"edge_verified=0 b_tx=0\n"
+        )
+        slot_us = [(0, "01B0", 100000), (1, "FF5F", 110000),
+                   (2, "26A4", 120000), (3, "00A0", 130000)]
+        for frame, opcode, at_us in slot_us:
+            direct += (f"CART_B_SLOT frame={frame} slot=1 opcode={opcode} "
+                       f"target_us={at_us} fired_us={at_us} dry_run=1 tx_bytes=0\n").encode()
+        ok, msg = host.inspect_dry_run(direct)
+        self.assertTrue(ok, msg)
+        self.assertIn("B was NOT transmitted", msg)
+        self.assertIn("Direct UART1 ISR timestamps", host.inspect_direct_id_baseline(direct))
 
 
 if __name__ == "__main__":
