@@ -17,10 +17,13 @@ import serial
 
 IDENTITY = b"STATUS SME105_TX_ISOLATED_V1 vehicle_tx=LOCKED DE=LOW used="
 SAMPLES = ("55AA", "33CC", "0FF0", "6996")
+EXPECTED_TX_RMT_SEGMENTS = (17, 9, 5, 13)
 WORD = re.compile(
     r"^WORD index=(\d+) sample=([0-9A-F]{4}) target_us=(\d+) fired_us=(\d+) "
     r"done_us=(\d+) echo_count=(\d+) echo0_us=(\d+) echo1_us=(\d+) "
-    r"tx_done_count=(\d+) cutoff=(\d+) error=(\d+) de_rmt_high_us=(\d+) "
+    r"tx_done_count=(\d+) cutoff=(\d+) error=(\d+) "
+    r"unexpected_rx=([0-9A-F]{2}) expected_rx=([0-9A-F]{2}) "
+    r"rx_position=(\d+) unexpected_at_us=(\d+) de_rmt_high_us=(\d+) "
     r"de_rmt_items=(\d+) tx_rmt_items=(\d+) tx_rmt_edges=(\d+)$"
 )
 SUMMARY = re.compile(
@@ -68,12 +71,6 @@ def validate_capture(raw: bytes) -> tuple[bool, str]:
                 not any(line.startswith(("WORD ", "BENCH_BEGIN", "BENCH_END")) for line in lines)):
             return False, "missing/incorrect physical jumpers; firmware aborted BEFORE sending any UART bytes"
         return False, "invalid or inconsistent jumper abort evidence"
-    if (len(lines) != 8 or not lines[0].startswith("JUMPER_CHECK ") or
-            lines[1] != "BENCH_BEGIN mode=EXTERNAL_JUMPER no_vehicle=1" or
-            not lines[2].startswith("BENCH_END ") or
-            any(not line.startswith(f"WORD index={i} ") for i, line in enumerate(lines[3:7])) or
-            lines[7] != "LIMITS RMT_samples_gpio_pad_only no_RS485_voltage no_collision_proof cutoff_CPU_ISR_only"):
-        return False, "unexpected evidence record order or additional lines"
     if lines.count("BENCH_BEGIN mode=EXTERNAL_JUMPER no_vehicle=1") != 1:
         return False, "missing or duplicate external bench begin"
     if lines.count("JUMPER_CHECK tx_high=1 tx_low=1 de_low=1 de_high=1 de_release=1 uart_bytes=0") != 1:
@@ -85,7 +82,13 @@ def validate_capture(raw: bytes) -> tuple[bool, str]:
         return False, "missing or malformed BENCH_END"
     result, completed, errors, coalesced = summaries[0].groups()
     if (result, completed, errors, coalesced) != ("PASS_GPIO_JUMPERS_ONLY", "4", "0", "0"):
-        return False, "device failed closed"
+        return False, f"device failed closed at {completed}/4 words (irq_errors={errors}, coalesced={coalesced})"
+    if (len(lines) != 8 or not lines[0].startswith("JUMPER_CHECK ") or
+            lines[1] != "BENCH_BEGIN mode=EXTERNAL_JUMPER no_vehicle=1" or
+            not lines[2].startswith("BENCH_END ") or
+            any(not line.startswith(f"WORD index={i} ") for i, line in enumerate(lines[3:7])) or
+            lines[7] != "LIMITS RMT_samples_gpio_pad_only no_RS485_voltage no_collision_proof cutoff_CPU_ISR_only"):
+        return False, "unexpected evidence record order or additional lines"
     words = [WORD.fullmatch(line) for line in lines if line.startswith("WORD ")]
     if len(words) != 4 or any(w is None for w in words):
         return False, "not exactly four valid word witnesses"
@@ -94,7 +97,11 @@ def validate_capture(raw: bytes) -> tuple[bool, str]:
         assert match is not None
         values = match.groups()
         index, sample = int(values[0]), values[1]
-        target, fired, done, n_echo, echo0, echo1, n_done, cutoff, fault, de_high, de_items, tx_items, edges = map(int, values[2:])
+        (
+            target, fired, done, n_echo, echo0, echo1, n_done, cutoff, fault,
+            position, unexpected_at, de_high, de_items, tx_items, edges,
+        ) = map(int, values[2:11] + values[13:])
+        unexpected_rx, expected_rx = values[11:13]
         if index != idx or sample != SAMPLES[idx]:
             return False, "unexpected word order or bytes"
         if previous_target is not None and target - previous_target != 10000:
@@ -106,9 +113,12 @@ def validate_capture(raw: bytes) -> tuple[bool, str]:
             return False, "TX_DONE outside bounded word window"
         if (n_echo, n_done, cutoff, fault) != (2, 1, 0, 0):
             return False, "incomplete echo, extra TX_DONE, cutoff or fault"
+        if (unexpected_rx, expected_rx, position, unexpected_at) != ("00", "00", 0, 0):
+            return False, "unexpected receive-byte forensic witness"
         if not (700 <= echo0 - fired <= 1250 and 1750 <= echo1 - fired <= 2250):
             return False, "unexpected echo byte timing"
-        if not (1900 <= de_high < 2250 and de_items > 0 and tx_items > 0 and edges >= 8):
+        if not (1900 <= de_high < 2250 and de_items > 0 and tx_items > 0 and
+                edges == EXPECTED_TX_RMT_SEGMENTS[idx]):
             return False, "no bounded independent-pad DE/TX edge witness"
     return True, "PASS_GPIO_JUMPERS_ONLY; no analog RS-485 or ECU proof"
 
@@ -121,6 +131,20 @@ def read_lines(port: serial.Serial, limit_s: float, end: bytes) -> bytes:
         if end in data:
             break
     return bytes(data)
+
+
+def may_start_jumper_preflight(used: bytes, tx_echo16: bytes, de_sense19: bytes) -> tuple[bool, str]:
+    """Only gate on one-shot and LOW DE; an INPUT TX has no reliable idle level.
+
+    Firmware's active HIGH/LOW JUMPER_CHECK is authoritative before UART.
+    """
+    if used != b"0":
+        return False, "DENIED firmware one-shot already consumed; no retry"
+    if de_sense19 != b"0":
+        return False, "DENIED GPIO19/DE sense HIGH while DE commanded LOW; no GPIO test"
+    if tx_echo16 not in (b"0", b"1"):
+        return False, "DENIED malformed GPIO16 reading"
+    return True, "GPIO16 idle is not proof of wiring; firmware tests both HIGH/LOW before any UART data"
 
 
 def main() -> int:
@@ -173,9 +197,11 @@ def main() -> int:
                 return 2
             if args.action == "pins":
                 return 0
-            if used != b"0" or matched.groups() != (b"1", b"0"):
-                print("DENIED already used, missing GPIO17->GPIO16 jumper or bad DE idle; zero test bytes")
+            approved, explanation = may_start_jumper_preflight(used, *matched.groups())
+            if not approved:
+                print(explanation)
                 return 2
+            print(explanation)
             # No command prompt nor auto-retry: exact one explicit bench request.
             port.write(b"BENCH_JUMPERS_ONCE\n")
             port.flush()

@@ -1,5 +1,6 @@
 import importlib.util
 import unittest
+from itertools import pairwise
 from pathlib import Path
 
 PATH = Path(__file__).resolve().parents[1] / "scripts" / "sme105_tx_isolated_session.py"
@@ -19,13 +20,52 @@ def good_capture():
             f"WORD index={i} sample={word} target_us={target} fired_us={fired} "
             f"done_us={fired+2086} echo_count=2 echo0_us={fired+1042} "
             f"echo1_us={fired+2083} tx_done_count=1 cutoff=0 error=0 "
-            f"de_rmt_high_us=2086 de_rmt_items=1 tx_rmt_items=12 tx_rmt_edges=22"
+            f"unexpected_rx=00 expected_rx=00 rx_position=0 unexpected_at_us=0 "
+            f"de_rmt_high_us=2086 de_rmt_items=1 tx_rmt_items=12 tx_rmt_edges={bench.EXPECTED_TX_RMT_SEGMENTS[i]}"
         )
     parts.append("LIMITS RMT_samples_gpio_pad_only no_RS485_voltage no_collision_proof cutoff_CPU_ISR_only")
     return ("\r\n".join(parts) + "\r\n").encode()
 
 
 class BenchCaptureTests(unittest.TestCase):
+    def test_rmt_edge_expectations_are_derived_from_uart_8n1_bits(self):
+        # RMT includes the start + data runs, not the unbounded final
+        # stop/idle HIGH. Recompute independently instead of trusting the
+        # hardcoded, data-dependent edge thresholds used by the host.
+        observed = []
+        for sample in bench.SAMPLES:
+            octets = bytes.fromhex(sample)
+            levels = [1]
+            for byte in octets:
+                levels.extend([0] + [(byte >> n) & 1 for n in range(8)] + [1])
+            transitions = sum(a != b for a, b in pairwise(levels))
+            observed.append(transitions - 1)
+        self.assertEqual(tuple(observed), bench.EXPECTED_TX_RMT_SEGMENTS)
+
+    def test_isolated_firmware_keeps_vehicle_build_locked(self):
+        source = (
+            PATH.parents[1] / "firmware" / "sme105_dtc_tx_isolated"
+            / "sme105_dtc_tx_isolated.ino"
+        ).read_text()
+        self.assertIn('#error "This bench must never be compiled with vehicle transmission enabled"', source)
+        self.assertIn("UART2.fifo.rw_byte = samples[index][0]", source)
+        self.assertIn("const int gateChannel = 2 + index;", source)
+        self.assertIn("UART1.int_ena.rxfifo_full = 1;", source)
+
+    def test_idle_gpio16_zero_does_not_falsely_deny_jumper_preflight(self):
+        # At idle GPIO17 is INPUT; a connected GPIO16 can read LOW.
+        for input_level in (b"0", b"1"):
+            with self.subTest(input_level=input_level):
+                allowed, reason = bench.may_start_jumper_preflight(
+                    b"0", input_level, b"0"
+                )
+                self.assertTrue(allowed, reason)
+
+    def test_jumper_preflight_denies_used_high_de_and_bad_input(self):
+        for status in ((b"1", b"0", b"0"), (b"0", b"1", b"1"), (b"0", b"invalid", b"0")):
+            with self.subTest(status=status):
+                self.assertFalse(bench.may_start_jumper_preflight(*status)[0])
+
     def test_preflight_abort_preserves_no_uart_claim(self):
         observed = (b"JUMPER_CHECK tx_high=1 tx_low=0 de_low=1 de_high=0 de_release=1 uart_bytes=0\r\n"
                     b"BENCH_ABORT JUMPERS_NOT_VERIFIED no_uart_bytes=1 DE=LOW\r\n")
@@ -69,10 +109,11 @@ class BenchCaptureTests(unittest.TestCase):
             (b"tx_done_count=1", b"tx_done_count=2"),
             (b"cutoff=0", b"cutoff=1"),
             (b"error=0", b"error=9"),
+            (b"unexpected_rx=00", b"unexpected_rx=55"),
             (b"de_rmt_high_us=2086", b"de_rmt_high_us=2500"),
             (b"de_rmt_items=1", b"de_rmt_items=0"),
             (b"tx_rmt_items=12", b"tx_rmt_items=0"),
-            (b"tx_rmt_edges=22", b"tx_rmt_edges=0"),
+            (b"tx_rmt_edges=17", b"tx_rmt_edges=0"),
             (b"B_TX=0", b"B_TX=1"),
             (b"mode=EXTERNAL_JUMPER", b"mode=INTERNAL_GPIO_MATRIX"),
         )

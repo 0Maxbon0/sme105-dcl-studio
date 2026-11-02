@@ -31,6 +31,9 @@ constexpr uint32_t kWordTimeoutUs = 3600;
 constexpr int kWords = 4;
 DRAM_ATTR uint8_t samples[kWords][2] = {{0x55, 0xAA}, {0x33, 0xCC},
                                           {0x0F, 0xF0}, {0x69, 0x96}};
+// Number of non-idle RMT level segments across two 9600 8N1 words.
+// Deterministically derived from start, LSB-first data, and stop bits.
+constexpr uint8_t kExpectedTxRmtSegments[kWords] = {17, 9, 5, 13};
 
 struct WordWitness {
   uint32_t targetUs = 0;
@@ -42,10 +45,16 @@ struct WordWitness {
   volatile uint8_t txDoneCount = 0;
   volatile uint8_t error = 0;
   volatile uint8_t cutoff = 0;
+  volatile uint8_t unexpectedRx = 0;
+  volatile uint8_t expectedRx = 0;
+  volatile uint8_t rxPosition = 0;
+  volatile uint32_t unexpectedAtUs = 0;
   uint32_t deRmtHighUs = 0;
   uint32_t deRmtItems = 0;
   uint32_t txRmtItems = 0;
   uint32_t txRmtEdges = 0;
+  rmt_item32_t txTrace[24] = {};
+  uint8_t txTraceCount = 0;
 };
 
 WordWitness witness[kWords];
@@ -59,10 +68,11 @@ volatile uint32_t rmtSlotFiredUs = 0;
 hw_timer_t* cutoff = nullptr;
 hw_timer_t* slot = nullptr;
 intr_handle_t uartHandle = nullptr;
+intr_handle_t txUartHandle = nullptr;
 RingbufHandle_t txRing = nullptr;
 RingbufHandle_t deRing = nullptr;
 bool rmtReady = false;
-bool rmtTxReady = false;
+uint8_t rmtTxChannelsReady = 0;
 bool uartReady = false;
 bool internalMode = true;
 char line[48] = {};
@@ -81,9 +91,9 @@ void IRAM_ATTR stopAlarms() {
 void IRAM_ATTR abortNow(uint8_t code) {
   deLow();
   stopAlarms();
-  UART1.int_ena.tx_done = 0;
-  if (activeWord >= 0 && activeWord < kWords)
-    witness[activeWord].error = code;
+  UART2.int_ena.tx_done = 0;
+  if (activeWord >= 0 && activeWord < kWords && witness[activeWord].error == 0)
+    witness[activeWord].error = code; // Preserve FIRST fault; later IRQ cannot mask it.
   stopped = true;
 }
 bool IRAM_ATTR armGroupTimer(uint8_t timerNumber, uint32_t deltaUs) {
@@ -124,7 +134,8 @@ void IRAM_ATTR slotISR() {
   }
   const int index = activeWord;
   if (stopped || index < 0 || index >= kWords ||
-      UART1.status.txfifo_cnt != 0 || !cutoff || !rmtTxReady ||
+      UART2.status.txfifo_cnt != 0 || !cutoff ||
+      rmtTxChannelsReady != kWords ||
       !armGroupTimer(0, kCutoffUs)) {
     abortNow(2);
     return;
@@ -132,17 +143,19 @@ void IRAM_ATTR slotISR() {
   WordWitness& w = witness[index];
   w.firedUs = static_cast<uint32_t>(esp_timer_get_time());
   // Arm the CPU cutoff BEFORE enabling the output driver.
-  UART1.int_clr.tx_done = 1;
-  UART1.int_ena.tx_done = 1;
-  // RMT is a hardware one-shot ~2180us HIGH then idle LOW. The timer ISR
-  // only starts it; even if UART IRQ or CPU stalls, the peripheral drops DE.
-  GPIO.func_out_sel_cfg[18].func_sel = RMT_SIG_OUT2_IDX;
-  RMT.conf_ch[2].conf1.mem_rd_rst = 1;
-  RMT.conf_ch[2].conf1.mem_rd_rst = 0;
-  RMT.conf_ch[2].conf1.tx_start = 1;
+  UART2.int_clr.tx_done = 1;
+  UART2.int_ena.tx_done = 1;
+  // Four physically distinct, preloaded RMT TX channels 2..5: each can
+  // fire only once, so no retrigger/rearm race across four 10ms slots.
+  // RMT ends each 2180us HIGH pulse autonomously even if CPU stalls.
+  const int gateChannel = 2 + index;
+  GPIO.func_out_sel_cfg[18].func_sel = RMT_SIG_OUT2_IDX + index;
+  RMT.conf_ch[gateChannel].conf1.mem_rd_rst = 1;
+  RMT.conf_ch[gateChannel].conf1.mem_rd_rst = 0;
+  RMT.conf_ch[gateChannel].conf1.tx_start = 1;
   // 2 bytes only, no writes on an interrupt or reset without USB command.
-  UART1.fifo.rw_byte = samples[index][0];
-  UART1.fifo.rw_byte = samples[index][1];
+  UART2.fifo.rw_byte = samples[index][0];
+  UART2.fifo.rw_byte = samples[index][1];
 }
 void IRAM_ATTR uartISR(void*) {
   const uint32_t pending = UART1.int_st.val;
@@ -165,6 +178,12 @@ void IRAM_ATTR uartISR(void*) {
     WordWitness& w = witness[index];
     const uint8_t position = w.receivedCount;
     if (position >= 2 || byte != samples[index][position]) {
+      if (!w.unexpectedAtUs) {
+        w.unexpectedRx = byte;
+        w.expectedRx = position < 2 ? samples[index][position] : 0;
+        w.rxPosition = position;
+        w.unexpectedAtUs = static_cast<uint32_t>(esp_timer_get_time());
+      }
       abortNow(6);
       continue;
     }
@@ -172,25 +191,32 @@ void IRAM_ATTR uartISR(void*) {
     w.echoAtUs[position] = static_cast<uint32_t>(esp_timer_get_time());
     w.receivedCount = position + 1;
   }
+  UART1.int_clr.val = pending;
+}
+// Separate UART2 TX_DONE interrupt: UART1's RX ISR exclusively owns receive
+// timestamps and FIFO (the topology that passed the earlier GPIO edge bench).
+void IRAM_ATTR uartTxISR(void*) {
+  const uint32_t pending = UART2.int_st.val;
   if (pending & (1UL << 14)) {
     deLow();
     TIMERG0.hw_timer[0].config.alarm_en = 0;
-    UART1.int_ena.tx_done = 0;
+    UART2.int_ena.tx_done = 0;
     const int index = activeWord;
     if (index >= 0 && index < kWords && !stopped) {
       witness[index].txDoneUs = static_cast<uint32_t>(esp_timer_get_time());
       ++witness[index].txDoneCount;
     } else abortNow(8);
   }
-  UART1.int_clr.val = pending;
+  UART2.int_clr.val = pending;
 }
 void stopAll() {
   stopped = true;
   deLow();
   stopAlarms();
   UART1.int_ena.val = 0;
-  UART1.conf0.txfifo_rst = 1;
-  UART1.conf0.txfifo_rst = 0;
+  UART2.int_ena.val = 0;
+  UART2.conf0.txfifo_rst = 1;
+  UART2.conf0.txfifo_rst = 0;
   activeWord = -1;
 }
 bool startUart(bool internal) {
@@ -205,22 +231,34 @@ bool startUart(bool internal) {
       .source_clk = UART_SCLK_APB,
   };
   if (uart_param_config(UART_NUM_1, &cfg) != ESP_OK ||
-      uart_set_pin(UART_NUM_1, kTx, kExternalEcho,
+      uart_param_config(UART_NUM_2, &cfg) != ESP_OK ||
+      uart_set_pin(UART_NUM_1, UART_PIN_NO_CHANGE, kExternalEcho,
+                   UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE) != ESP_OK ||
+      uart_set_pin(UART_NUM_2, kTx, UART_PIN_NO_CHANGE,
                    UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE) != ESP_OK)
     return false;
   // The UART and RMT receivers sample the GPIO input matrix; never attach
   // any other physical output to GPIO17 or GPIO18 in internal bench mode.
-  gpio_set_direction(GPIO_NUM_17, GPIO_MODE_INPUT_OUTPUT);
-  if (internal) gpio_matrix_in(GPIO_NUM_17, U1RXD_IN_IDX, false);
+  gpio_set_direction(GPIO_NUM_17, GPIO_MODE_OUTPUT);
   UART1.int_ena.val = 0;
   UART1.int_clr.val = 0xFFFFFFFF;
   UART1.conf0.rxfifo_rst = 1;
   UART1.conf0.rxfifo_rst = 0;
   UART1.conf0.txfifo_rst = 1;
   UART1.conf0.txfifo_rst = 0;
+  UART2.int_ena.val = 0;
+  UART2.int_clr.val = 0xFFFFFFFF;
+  UART2.conf0.txfifo_rst = 1;
+  UART2.conf0.txfifo_rst = 0;
   UART1.conf1.rxfifo_full_thrhd = 1;
   if (esp_intr_alloc(ETS_UART1_INTR_SOURCE, ESP_INTR_FLAG_IRAM, uartISR,
                      nullptr, &uartHandle) != ESP_OK) return false;
+  if (esp_intr_alloc(ETS_UART2_INTR_SOURCE, ESP_INTR_FLAG_IRAM, uartTxISR,
+                     nullptr, &txUartHandle) != ESP_OK) {
+    (void)esp_intr_free(uartHandle);
+    uartHandle = nullptr;
+    return false;
+  }
   uartReady = true;
   UART1.int_ena.rxfifo_full = 1;
   UART1.int_ena.rxfifo_ovf = 1;
@@ -230,8 +268,10 @@ bool startUart(bool internal) {
 }
 void closeUart() {
   stopAll();
-  if (uartReady && uartHandle) (void)esp_intr_free(uartHandle);
+  if (uartHandle) (void)esp_intr_free(uartHandle);
+  if (txUartHandle) (void)esp_intr_free(txUartHandle);
   uartHandle = nullptr;
+  txUartHandle = nullptr;
   uartReady = false;
   pinMode(kTx, INPUT);
 }
@@ -260,17 +300,17 @@ bool startRmt(bool internal) {
   // RMT RX init resets pad routing. Restore UART output signal routing, not
   // merely GPIO direction: the first hardware attempt measured DE correctly
   // but saw no GPIO17 edge or echo when UART mux was left overridden.
-  if (uart_set_pin(UART_NUM_1, kTx, kExternalEcho,
+  if (uart_set_pin(UART_NUM_2, kTx, UART_PIN_NO_CHANGE,
+                   UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE) != ESP_OK ||
+      uart_set_pin(UART_NUM_1, UART_PIN_NO_CHANGE, kExternalEcho,
                    UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE) != ESP_OK)
     return false;
   gpio_set_direction(GPIO_NUM_17, GPIO_MODE_OUTPUT);
-  gpio_matrix_out(GPIO_NUM_17, U1TXD_OUT_IDX, false, false);
-  if (internal) gpio_matrix_in(GPIO_NUM_17, U1RXD_IN_IDX, false);
+  gpio_matrix_out(GPIO_NUM_17, U2TXD_OUT_IDX, false, false);
   if (internal) gpio_set_direction(GPIO_NUM_18, GPIO_MODE_INPUT_OUTPUT);
   // Prepare an autonomous DE safety window. No pulse is started here.
   rmt_config_t gate = {};
   gate.rmt_mode = RMT_MODE_TX;
-  gate.channel = RMT_CHANNEL_2;
   gate.gpio_num = GPIO_NUM_18;
   gate.clk_div = 80;
   gate.mem_block_num = 1;
@@ -281,21 +321,28 @@ bool startRmt(bool internal) {
   rmt_item32_t pulse = {};
   pulse.duration0 = 2180; pulse.level0 = 1;
   pulse.duration1 = 80; pulse.level1 = 0;
-  if (rmt_config(&gate) != ESP_OK ||
-      rmt_driver_install(RMT_CHANNEL_2, 0, 0) != ESP_OK) return false;
-  rmtTxReady = true;
-  if (rmt_fill_tx_items(RMT_CHANNEL_2, &pulse, 1, 0) != ESP_OK) return false;
+  for (int i = 0; i < kWords; ++i) {
+    const auto channel = static_cast<rmt_channel_t>(RMT_CHANNEL_2 + i);
+    gate.channel = channel;
+    if (rmt_config(&gate) != ESP_OK ||
+        rmt_driver_install(channel, 0, 0) != ESP_OK) return false;
+    ++rmtTxChannelsReady;
+    if (rmt_fill_tx_items(channel, &pulse, 1, 0) != ESP_OK) return false;
+  }
   // Both receive channels stay on input-only GPIO16 and GPIO19.
   deLow();
   rmtReady = true;
   return true;
 }
 void closeRmt() {
-  if (rmtTxReady) {
+  if (rmtTxChannelsReady) {
     deLow();
-    (void)rmt_tx_stop(RMT_CHANNEL_2);
-    (void)rmt_driver_uninstall(RMT_CHANNEL_2);
-    rmtTxReady = false;
+    for (int i = 0; i < rmtTxChannelsReady; ++i) {
+      const auto channel = static_cast<rmt_channel_t>(RMT_CHANNEL_2 + i);
+      (void)rmt_tx_stop(channel);
+      (void)rmt_driver_uninstall(channel);
+    }
+    rmtTxChannelsReady = 0;
   }
   if (!rmtReady) return;
   (void)rmt_rx_stop(RMT_CHANNEL_0);
@@ -307,7 +354,11 @@ void closeRmt() {
 void captureRmt(rmt_channel_t ch, RingbufHandle_t ring, int index, bool de) {
   size_t bytes = 0;
   void* packet = nullptr;
-  while ((packet = xRingbufferReceive(ring, &bytes, pdMS_TO_TICKS(12)))) {
+  // Never block here: per-word RMT had a 12ms empty-ring wait for EACH of
+  // two channels, silently exhausting the next CART-like 10ms test slot.
+  // RX was stopped after >3ms idle, so all completed items must be queued
+  // already; missing data fails closed below instead of waiting or guessing.
+  while ((packet = xRingbufferReceive(ring, &bytes, 0))) {
     const size_t count = bytes / sizeof(rmt_item32_t);
     for (size_t i = 0; i < count; ++i) {
       const auto& item = static_cast<const rmt_item32_t*>(packet)[i];
@@ -317,6 +368,9 @@ void captureRmt(rmt_channel_t ch, RingbufHandle_t ring, int index, bool de) {
         if (item.level1) witness[index].deRmtHighUs += item.duration1;
       } else {
         witness[index].txRmtItems++;
+        if (witness[index].txTraceCount < 24) {
+          witness[index].txTrace[witness[index].txTraceCount++] = item;
+        }
         if (item.duration0) ++witness[index].txRmtEdges;
         if (item.duration1) ++witness[index].txRmtEdges;
       }
@@ -350,10 +404,25 @@ void printReport(bool ok, int completed) {
     Serial.print(F(" tx_done_count=")); Serial.print(w.txDoneCount);
     Serial.print(F(" cutoff=")); Serial.print(w.cutoff);
     Serial.print(F(" error=")); Serial.print(w.error);
+    Serial.print(F(" unexpected_rx=")); hexByte(w.unexpectedRx);
+    Serial.print(F(" expected_rx=")); hexByte(w.expectedRx);
+    Serial.print(F(" rx_position=")); Serial.print(w.rxPosition);
+    Serial.print(F(" unexpected_at_us=")); Serial.print(w.unexpectedAtUs);
     Serial.print(F(" de_rmt_high_us=")); Serial.print(w.deRmtHighUs);
     Serial.print(F(" de_rmt_items=")); Serial.print(w.deRmtItems);
     Serial.print(F(" tx_rmt_items=")); Serial.print(w.txRmtItems);
     Serial.print(F(" tx_rmt_edges=")); Serial.println(w.txRmtEdges);
+    if (!ok && w.firedUs) {
+      for (uint8_t j = 0; j < w.txTraceCount; ++j) {
+        const auto& item = w.txTrace[j];
+        Serial.print(F("TX_EDGE frame=")); Serial.print(i);
+        Serial.print(F(" item=")); Serial.print(j);
+        Serial.print(F(" level0=")); Serial.print(item.level0);
+        Serial.print(F(" dur0_us=")); Serial.print(item.duration0);
+        Serial.print(F(" level1=")); Serial.print(item.level1);
+        Serial.print(F(" dur1_us=")); Serial.println(item.duration1);
+      }
+    }
   }
   Serial.println(F("LIMITS RMT_samples_gpio_pad_only no_RS485_voltage no_collision_proof cutoff_CPU_ISR_only"));
 }
@@ -459,7 +528,7 @@ bool run(bool internal) {
     // RMT high duration and pad edges are NOT independent external bus proof.
     if (!stopped && (w.deRmtHighUs < 1950 ||
         w.deRmtHighUs >= kCutoffUs || w.deRmtItems == 0 ||
-        w.txRmtEdges < 8)) {
+        w.txRmtEdges != kExpectedTxRmtSegments[i])) {
       w.error = 14; stopped = true;
     }
     activeWord = -1;
