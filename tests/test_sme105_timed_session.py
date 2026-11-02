@@ -48,6 +48,9 @@ class TimedHostTests(unittest.TestCase):
                 self.assertIn(f"esp_intr_free({handler})", code)
                 self.assertNotIn("if (uart_isr_register(", code)
                 self.assertIn("#error", code)  # B TX remains compile-locked
+                if name == "sme105_dtc_one_shot":
+                    self.assertIn("UART2.conf1.rxfifo_full_thrhd = 1;", code)
+                    self.assertNotIn("UART2.conf1.rxfifo_full_thrhd = 0;", code)
 
     def test_dry_run_requires_four_complete_local_timer_slots(self):
         plan = (b"CART_B_PLAN stage=COMPLETE reason=0 baseline_frames=16 "
@@ -78,7 +81,7 @@ class TimedHostTests(unittest.TestCase):
                    b"used=0 deadline_timer=1\r\n")
         self.assertTrue(host.status(FakePort(response=correct)))
         for wrong in (
-            correct.replace(b"V2", b"V1"),
+            correct.replace(b"V2", b"V3"),
             correct.replace(b"deadline_timer=1", b"deadline_timer=0"),
             correct.replace(b"COMPILE_LOCKED", b"ENABLED"),
         ):
