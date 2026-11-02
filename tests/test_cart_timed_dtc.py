@@ -18,7 +18,7 @@ from ford_dcl.cart_timed import (
 
 
 def events(*, cycles=1, response=False, offset=0, include_command=False,
-           header_gap_bits=4):
+           header_gap_bits=4, extra_response_slot=None):
     out: list[TimedOctet] = []
     sync_second_us = offset + 2000
     for number in range(cycles * 16):
@@ -36,6 +36,8 @@ def events(*, cycles=1, response=False, offset=0, include_command=False,
         if response and frame_id == 8 and 32 <= number < 48:
             words[2] = (0x16, 1)  # reference candidate text 116
             words[4] = (0x38, 5)  # reference candidate text 538; sparse slots
+            if extra_response_slot is not None:
+                words[extra_response_slot] = (0x39, 6)  # 5 or 14, beyond A4's 4
         def add(t, byte):
             out.append(TimedOctet(round(t), byte))
         add(sync_second_us - BYTE_US, 0)
@@ -130,6 +132,30 @@ class StoredCodeCandidateTests(unittest.TestCase):
         self.assertEqual(result.status_frame7_error_flags_high, 0x40)
         self.assertFalse(result.is_dtc_read_verified)
         self.assertFalse(result.is_ecu_source_authenticated)
+
+    def test_response_slot_limit_is_bound_to_selected_B_variant(self):
+        for last_slot in (5, 14):
+            with self.subTest(last_slot=last_slot):
+                from_both = events(
+                    cycles=4, response=True, include_command=True,
+                    offset=10_000, extra_response_slot=last_slot,
+                )
+                a4 = parse_timed_cart(from_both)
+                with self.assertRaisesRegex(CartReferenceError, "more slots than selected B"):
+                    extract_dtc_candidates(a4, self.actual_witness(a4))
+                # 0E is a distinct parity-protected command word, not a
+                # relabeling of an A4 witness. Recreate the ID2 local echo.
+                zero_e = [TimedOctet(e.complete_us, 0x0E if e.byte == 0xA4 else e.byte)
+                          for e in from_both]
+                e_timed = parse_timed_cart(zero_e)
+                response = extract_dtc_candidates(
+                    e_timed, self.actual_witness(e_timed, opcode=b"\x26\x0e")
+                )
+                self.assertEqual(response.command_variant, "26 0E")
+                self.assertEqual([c.code_text for c in response.candidates],
+                                 ["116", "538", "639"])
+                self.assertFalse(response.is_dtc_read_verified)
+                self.assertFalse(response.is_ecu_source_authenticated)
 
     def test_id_only_and_unwitnessed_command_must_never_become_dtc(self):
         for timed in (parse_timed_cart(events(cycles=4, offset=10_000)),

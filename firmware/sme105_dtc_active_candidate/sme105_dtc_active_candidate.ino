@@ -441,9 +441,26 @@ void attempt(cart_candidate::Variant variant, bool sendB) {
 }
 
 void help() {
-  Serial.println(F("COMMANDS STATUS | HELP | OBSERVE_CART_ONCE | BENCH_B_A4_ONCE | BENCH_B_0E_ONCE | STOP"));
+  Serial.println(F("COMMANDS STATUS | HELP | PREVIEW_B_A4 | PREVIEW_B_0E | OBSERVE_CART_ONCE | BENCH_B_A4_ONCE | BENCH_B_0E_ONCE | STOP"));
   Serial.println(F("B active requests are compile-locked until independent analyzer-based safety proof"));
   Serial.println(F("Never clears DTCs, starts KOEO tests, repeats TX, or accepts arbitrary opcodes"));
+}
+
+void previewB(cart_candidate::Variant variant) {
+  // Fully passive software preview: no EchoID, GoCART, slot timer, FIFO
+  // writes or DE assertion. This is not ECU-specific authorization.
+  driverOff();
+  Serial.print(F("B_PREVIEW variant="));
+  Serial.print(variant == cart_candidate::Variant::FlxA4 ? F("26A4") : F("260E"));
+  Serial.print(F(" cmd_frames=4 next_block_response_slot_limit="));
+  Serial.print(variant == cart_candidate::Variant::FlxA4 ? 4 : 14);
+  Serial.println(F(" actual_bus_tx=0 ecu_verified=0 vehicle_authorized=0"));
+  for (uint8_t frame = 0; frame < 4; ++frame) {
+    const cart_candidate::Word word = cart_candidate::word(variant, frame);
+    Serial.print(F("B_PREVIEW_WORD frame=")); Serial.print(frame);
+    Serial.print(F(" slot=1 word=")); printHex(word.first); printHex(word.second);
+    Serial.println(F(" uart_bytes=0"));
+  }
 }
 
 void command() {
@@ -453,6 +470,11 @@ void command() {
     Serial.print(oneShotConsumed ? 1 : 0);
     Serial.print(F(" timers=")); Serial.println(watchdog && slotTimer ? 2 : 0);
   } else if (!std::strcmp(commandLine, "HELP")) help();
+  else if (!std::strcmp(commandLine, "PREVIEW_B_A4") ||
+           !std::strcmp(commandLine, "PREVIEW_B_0E")) {
+    previewB(!std::strcmp(commandLine, "PREVIEW_B_A4") ?
+        cart_candidate::Variant::FlxA4 : cart_candidate::Variant::Don0E);
+  }
   else if (!std::strcmp(commandLine, "OBSERVE_CART_ONCE")) {
     if (oneShotConsumed) Serial.println(F("DENIED one_attempt_consumed"));
     else attempt(cart_candidate::Variant::FlxA4, false);

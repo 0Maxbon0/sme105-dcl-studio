@@ -13,6 +13,11 @@ The substantive but hardware-unverified active implementation is present in
 
 * An operator would select exactly one `BENCH_B_A4_ONCE` or
   `BENCH_B_0E_ONCE`. Both return `DENIED COMPILE_LOCK` in this build.
+* The distinct commands `PREVIEW_B_A4` and `PREVIEW_B_0E` are safe
+  software-only previews. They print the fixed four command words and
+  variant-specific post-command response slot limit (4 or 14), never
+  transmit UART data, never assert DE and never consume a one-shot attempt.
+  These previews do **not** prove support on SME-105.
 * A candidate active attempt requires 2400 baud/8N2 `Echo ID` followed by
   an exact 11-byte self-echo plus `01` candidate ACK, then `Go CART`.
 * UART2 9600 baud/8N1 RX FIFO ISR timestamping searches for ID0 and then

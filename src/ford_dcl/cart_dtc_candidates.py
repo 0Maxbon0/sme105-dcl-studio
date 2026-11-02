@@ -64,6 +64,11 @@ def extract_dtc_candidates(capture: TimedCapture, witness: CartCommandWitness) -
         raise TypeError("timed capture and command witness required")
     if witness.opcode not in (b"\x26\x0e", b"\x26\xa4"):
         raise CartReferenceError("only the two documented read-code reference variants are allowed")
+    # The second byte is vertical parity plus the 4-bit slot-count field.
+    # These TWO candidates ask for different post-command block widths.
+    # In particular a 14-slot response cannot be silently accepted as an
+    # A4/4-slot response merely because the DTC-looking payload is valid.
+    requested_slots = 4 if witness.opcode == b"\x26\xa4" else 14
     if (witness.frame_id, witness.slot_index) != (2, 1):
         raise CartReferenceError("B opcode not witnessed in CART ID 2 slot 1")
     if (witness.start_us < 0 or witness.completed_us <= witness.start_us or
@@ -120,6 +125,12 @@ def extract_dtc_candidates(capture: TimedCapture, witness: CartCommandWitness) -
     for start in response_cycles:
         ids = capture.cart.frames[start:start + 16]
         positions = capture.slot_indices[start:start + 16]
+        for frame, indices in zip(ids, positions):
+            if len(indices) > requested_slots or any(slot > requested_slots for slot in indices):
+                raise CartReferenceError(
+                    "post-command CART frame has more slots than selected B variant "
+                    f"(selected={requested_slots}, frame_id={frame.frame_id})"
+                )
         for frame_id in (5, 7):
             if not positions[frame_id] or positions[frame_id][0] != 1:
                 raise CartReferenceError("missing DCL status slot in post-command block")
