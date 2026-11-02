@@ -36,6 +36,19 @@ class FakePort:
 
 
 class TimedHostTests(unittest.TestCase):
+    def test_safe_and_candidate_uart_isrs_use_driver_independent_registration(self):
+        root = Path(__file__).resolve().parents[1] / "firmware"
+        for name, source, handler in (
+            ("sme105_dtc_one_shot", "sme105_dtc_one_shot.ino", "rawUartHandle"),
+            ("sme105_dtc_active_candidate", "sme105_dtc_active_candidate.ino", "rawHandle"),
+        ):
+            with self.subTest(firmware=name):
+                code = (root / name / source).read_text()
+                self.assertIn("esp_intr_alloc(ETS_UART2_INTR_SOURCE", code)
+                self.assertIn(f"esp_intr_free({handler})", code)
+                self.assertNotIn("if (uart_isr_register(", code)
+                self.assertIn("#error", code)  # B TX remains compile-locked
+
     def test_dry_run_requires_four_complete_local_timer_slots(self):
         plan = (b"CART_B_PLAN stage=COMPLETE reason=0 baseline_frames=16 "
                 b"command_frames=16 phase_bits=4 scheduled=4 fired=4 "
@@ -61,17 +74,37 @@ class TimedHostTests(unittest.TestCase):
                 self.assertFalse(host.inspect_dry_run(raw)[0])
 
     def test_status_requires_exact_native_firmware_identity_and_timer(self):
-        correct = (b"STATUS SME105_DTC_ONE_SHOT_V1 DE=LOW B_TX=COMPILE_LOCKED "
+        correct = (b"STATUS SME105_DTC_ONE_SHOT_V2 DE=LOW B_TX=COMPILE_LOCKED "
                    b"used=0 deadline_timer=1\r\n")
         self.assertTrue(host.status(FakePort(response=correct)))
         for wrong in (
-            correct.replace(b"V1", b"V2"),
+            correct.replace(b"V2", b"V1"),
             correct.replace(b"deadline_timer=1", b"deadline_timer=0"),
             correct.replace(b"COMPILE_LOCKED", b"ENABLED"),
         ):
             with self.subTest(wrong=wrong), self.assertRaises(RuntimeError):
                 host.status(FakePort(response=wrong))
         self.assertFalse(host.status(FakePort(response=correct.replace(b"used=0", b"used=1"))))
+
+    def test_post_arduino_uart_native_receiver_test_is_receive_only(self):
+        device = FakePort(response=(b"RAW_ISR_SELFTEST PASS irq=READY "
+                                    b"rx_events=0 uart_errors=0 B_TX_LOCKED\r\n"))
+        self.assertEqual(host.selftest_receiver(device), (0, 0))
+        self.assertEqual(device.sent, [b"SELFTEST_RX_ISR\n"])
+        for wrong in (b"DENIED unknown_command\r\n",
+                      b"Guru Meditation Error\r\n",
+                      b"RAW_ISR_SELFTEST FAIL irq=UNAVAILABLE B_TX_LOCKED\r\n"):
+            with self.subTest(wrong=wrong), self.assertRaises(RuntimeError):
+                host.selftest_receiver(FakePort(response=wrong))
+
+    def test_panics_raise_immediately_and_preserve_crash_evidence(self):
+        raw = (b"REF_TX frame=GO_CART bytes=11 cutoff=0\r\n"
+               b"Guru Meditation Error: Core 1 panic'ed (StoreProhibited)\r\n")
+        device = FakePort(data=raw)
+        with self.assertRaisesRegex(host.CaptureIncomplete, "ESP32 PANIC") as context:
+            host.capture(device, deadline_seconds=1, action="PLAN_B_ONCE")
+        self.assertEqual(context.exception.raw, raw)
+        self.assertEqual(device.sent, [b"PLAN_B_ONCE\n"])
 
     def test_finished_capture_does_not_issue_more_requests(self):
         device = FakePort(data=b"CART_EVT t_us=1 byte=00\r\n"

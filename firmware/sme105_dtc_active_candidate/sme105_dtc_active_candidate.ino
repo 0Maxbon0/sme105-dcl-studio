@@ -4,6 +4,7 @@
 #include <driver/uart.h>
 #include <esp_intr_alloc.h>
 #include <esp_timer.h>
+#include <soc/soc.h>
 #include <soc/gpio_struct.h>
 #include <soc/timer_group_struct.h>
 #include <soc/uart_struct.h>
@@ -59,7 +60,7 @@ size_t lineUsed = 0;
 HardwareSerial referenceBus(2);
 hw_timer_t* watchdog = nullptr;  // Arduino timer 0: TIMERG0 timer0
 hw_timer_t* slotTimer = nullptr; // Arduino timer 2: TIMERG0 timer1
-uart_isr_handle_t rawHandle = nullptr;
+intr_handle_t rawHandle = nullptr;
 cart_candidate::FourWordRequest request(cart_candidate::Variant::FlxA4);
 
 bool hostStopRequested();
@@ -323,8 +324,11 @@ bool open9600() {
   UART2.conf0.txfifo_rst = 1;
   UART2.conf0.txfifo_rst = 0;
   UART2.conf1.rxfifo_full_thrhd = 1;
-  if (uart_isr_register(UART_NUM_2, &uartISR, nullptr,
-                        ESP_INTR_FLAG_IRAM, &rawHandle) != ESP_OK) return false;
+  // Arduino's 2400-baud Serial2.end() removes the IDF UART driver object;
+  // uart_isr_register() dereferences it and crashes. Install the native
+  // UART2 interrupt directly; our ISR owns FIFO, status and TX_DONE.
+  if (esp_intr_alloc(ETS_UART2_INTR_SOURCE, ESP_INTR_FLAG_IRAM,
+                     &uartISR, nullptr, &rawHandle) != ESP_OK) return false;
   rawEnabled = true;
   UART2.int_ena.rxfifo_full = 1;
   UART2.int_ena.rxfifo_ovf = 1;
@@ -339,7 +343,7 @@ void close9600() {
   disableSlotAlarm();
   disableCutoffAlarm();
   UART2.int_ena.val = 0;
-  if (rawEnabled) (void)uart_isr_free(UART_NUM_2);
+  if (rawEnabled && rawHandle) (void)esp_intr_free(rawHandle);
   rawEnabled = false;
   rawHandle = nullptr;
   pinMode(kTx, INPUT);

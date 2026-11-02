@@ -12,13 +12,23 @@ Build without flashing:
 ./.venv/bin/python -m platformio run -d firmware/sme105_dtc_one_shot
 ```
 
-This revision was also uploaded to the connected ESP32 on 2026-11-02 and
-read back via exact USB `STATUS` identity. The upload verified flash hashes.
-It remains a timed-capture development firmware, not a DTC reader.
+**V2 (fixed UART2 ISR lifecycle) has been built, but is NOT flashed to the
+ESP32 yet.** The earlier V1 was uploaded and read back on 2026-11-02; a
+2026-11-02 vehicle capture proved it crashed with `StoreProhibited` inside
+`uart_isr_register()` just after `Go CART`. The V2 fix allocates the bare
+UART2 interrupt directly after Arduino's serial driver is removed, without
+dereferencing its deleted object. See
+`docs/sme105-cart-isr-crash-2026-11-02.md`. V2 is still a timed-capture
+development firmware, not a DTC reader.
 
 USB serial at 115200, CR/LF commands:
 
-* `STATUS` and `HELP` are passive.
+* `STATUS` and `HELP` are passive. The exact identity must be
+  `SME105_DTC_ONE_SHOT_V2`; V1 is rejected by the updated host.
+* `SELFTEST_RX_ISR` is receive-only: it opens the same native UART2 ISR path
+  with no Echo-ID/Go-CART/B TX, runs for 40 ms, and closes it. Validate via
+  `scripts/sme105_timed_session.py --action rx-isr-selftest` with car signal
+  A/B disconnected after the V2 firmware has been flashed over USB.
 * `READ_B_ONCE` responds `DENIED B_TX_COMPILE_LOCKED`, **never sends B**.
 * `PLAN_B_ONCE` performs the same one-shot reference handshake as
   `CAPTURE_CART_ONCE`, then the hardware timers dry-run the four full

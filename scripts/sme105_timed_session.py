@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""USB controller for SME105_DTC_ONE_SHOT_V1 timed CART capture.
+"""USB controller for SME105_DTC_ONE_SHOT_V2 timed CART capture.
 
 The firmware does not transmit stored-code B. This host runs the single
 documented reference handshake ONLY with an explicit operator opt-in.
@@ -21,7 +21,7 @@ PORT = (
     "usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0"
 )
 IDENTITY = re.compile(
-    rb"^STATUS SME105_DTC_ONE_SHOT_V1 DE=LOW B_TX=COMPILE_LOCKED "
+    rb"^STATUS SME105_DTC_ONE_SHOT_V2 DE=LOW B_TX=COMPILE_LOCKED "
     rb"used=([01]) deadline_timer=([01])\r\n$"
 )
 END = b"CART_END DTC_UNVERIFIED B_TX_LOCKED\n"
@@ -37,6 +37,10 @@ SLOT = re.compile(
     rb"target_us=(\d+) fired_us=(\d+) dry_run=1 tx_bytes=0"
 )
 ABORT_LINE = re.compile(rb"^(?:CART_ABORT|ABORT) [ -~]{1,180}$")
+RX_SELFTEST = re.compile(
+    rb"^RAW_ISR_SELFTEST PASS irq=READY rx_events=([0-9]+) "
+    rb"uart_errors=([0-9]+) B_TX_LOCKED\r\n$"
+)
 
 
 class CaptureIncomplete(RuntimeError):
@@ -91,6 +95,11 @@ def capture(conn: object, *, deadline_seconds: float = 60,
         if not data:
             continue
         stream.extend(data)
+        if b"Guru Meditation Error" in stream or b"Backtrace:" in stream:
+            raise CaptureIncomplete(
+                "ESP32 PANIC/REBOOT after reference request (see saved backtrace)",
+                bytes(stream),
+            )
         if len(stream) > MAX_EVIDENCE_BYTES:
             raise CaptureIncomplete(
                 "capture transcript exceeds host bound; no automatic retry",
@@ -104,6 +113,17 @@ def capture(conn: object, *, deadline_seconds: float = 60,
                 raise CaptureIncomplete("extra data after CART_END", bytes(stream))
             return bytes(stream)
     raise CaptureIncomplete("timed CART capture timeout; no automatic retry", bytes(stream))
+
+
+def selftest_receiver(conn: object) -> tuple[int, int]:
+    """Exercise native RX IRQ registration; never send a vehicle bus frame."""
+    conn.write(b"SELFTEST_RX_ISR\n")
+    conn.flush()
+    result = conn.read_until(b"\n", size=200)
+    match = RX_SELFTEST.fullmatch(result)
+    if not match:
+        raise RuntimeError(f"RX ISR selftest failed, old firmware or USB corruption: {result[:150]!r}")
+    return int(match[1]), int(match[2])
 
 
 def write_evidence(raw: bytes, root: Path) -> Path:
@@ -142,7 +162,7 @@ def inspect_dry_run(raw: bytes) -> tuple[bool, str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default=PORT)
-    parser.add_argument("--action", choices=("status", "capture-cart-once", "plan-b-once"),
+    parser.add_argument("--action", choices=("status", "rx-isr-selftest", "capture-cart-once", "plan-b-once"),
                         default="status")
     args = parser.parse_args()
     try:
@@ -165,6 +185,10 @@ def main() -> int:
                 raise RuntimeError("firmware state changed unexpectedly")
             if args.action == "status":
                 print(f"STATUS PASS; B diagnostic TX is locked, reference attempt unused={armable}")
+                return 0
+            if args.action == "rx-isr-selftest":
+                received, errors = selftest_receiver(conn)
+                print(f"RX ISR SELFTEST PASS; received={received} uart_errors={errors}; zero bus TX")
                 return 0
             if not armable:
                 raise RuntimeError("reference handshake already consumed this boot")

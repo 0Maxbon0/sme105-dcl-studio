@@ -4,6 +4,7 @@
 #include <driver/uart.h>
 #include <esp_intr_alloc.h>
 #include <esp_timer.h>
+#include <soc/soc.h>
 #include <soc/gpio_struct.h>
 #include <soc/timer_group_struct.h>
 #include <soc/uart_struct.h>
@@ -63,7 +64,7 @@ cart_b_plan::FourWordDryRun bPlan;
 char commandLine[32] = {};
 size_t lineLength = 0;
 HardwareSerial dcl(2);
-uart_isr_handle_t rawUartHandle = nullptr;
+intr_handle_t rawUartHandle = nullptr;
 hw_timer_t* deadlineTimer = nullptr;
 hw_timer_t* planTimer = nullptr; // Arduino timer index 2 = TIMERG0 timer 1
 
@@ -265,9 +266,13 @@ bool beginRaw9600() {
   UART2.conf0.rxfifo_rst = 1;
   UART2.conf0.rxfifo_rst = 0;
   UART2.conf1.rxfifo_full_thrhd = 1;
-  // No UART-driver receive task: a single RX FIFO interrupt logs each byte.
-  if (uart_isr_register(UART_NUM_2, &cartRxIsr, nullptr,
-                        ESP_INTR_FLAG_IRAM, &rawUartHandle) != ESP_OK) return false;
+  // dcl.end() has deleted Arduino's UART driver. IDF uart_isr_register()
+  // dereferences that deleted driver's p_uart_obj (the actual observed
+  // StoreProhibited PC=uart_isr_register after GO_CART). Register the bare
+  // UART2 hardware interrupt instead, independently of IDF UART driver state.
+  // This receiver intentionally owns RX FIFO and its interrupt status.
+  if (esp_intr_alloc(ETS_UART2_INTR_SOURCE, ESP_INTR_FLAG_IRAM,
+                     &cartRxIsr, nullptr, &rawUartHandle) != ESP_OK) return false;
   rawUartActive = true;
   UART2.int_ena.rxfifo_full = 1;
   UART2.int_ena.rxfifo_ovf = 1;
@@ -280,7 +285,7 @@ void endRaw9600() {
   driverOff();
   if (planTimer) timerAlarmDisable(planTimer);
   UART2.int_ena.val = 0;
-  if (rawUartActive) (void)uart_isr_free(UART_NUM_2);
+  if (rawUartActive && rawUartHandle) (void)esp_intr_free(rawUartHandle);
   rawUartHandle = nullptr;
   rawUartActive = false;
 }
@@ -411,8 +416,27 @@ void captureOnce(bool withDryRunPlan) {
   dumpCapture();
 }
 
+void selftestRawReceiver() {
+  // USB-side, zero DCL TX: exercise the exact post-handshake UART driver
+  // release -> native ISR registration path, including cleanup.
+  driverOff();
+  if (!beginRaw9600()) {
+    endRaw9600();
+    Serial.println(F("RAW_ISR_SELFTEST FAIL irq=UNAVAILABLE B_TX_LOCKED"));
+    return;
+  }
+  delay(40);
+  endRaw9600();
+  Serial.print(F("RAW_ISR_SELFTEST PASS irq=READY rx_events="));
+  Serial.print(eventCount);
+  Serial.print(F(" uart_errors="));
+  Serial.print(uartErrors);
+  Serial.println(F(" B_TX_LOCKED"));
+}
+
 void help() {
-  Serial.println(F("COMMANDS STATUS | HELP | CAPTURE_CART_ONCE | PLAN_B_ONCE | READ_B_ONCE | STOP"));
+  Serial.println(F("COMMANDS STATUS | HELP | SELFTEST_RX_ISR | CAPTURE_CART_ONCE | PLAN_B_ONCE | READ_B_ONCE | STOP"));
+  Serial.println(F("SELFTEST_RX_ISR initializes post-Arduino UART2 RX interrupt without bus TX"));
   Serial.println(F("CAPTURE_CART_ONCE explicitly runs EchoID/strict ACK/GoCART then 10s ISR RX logging"));
   Serial.println(F("READ_B_ONCE is compile-time locked: reference B=26A4 vs 260E, block/slot and DE unknown"));
   Serial.println(F("PLAN_B_ONCE uses one baseline ID0..15, then hardware ISR dry-runs 4 slot1 words ID0..3, zero B TX"));
@@ -423,9 +447,11 @@ void command() {
   if (!std::strcmp(commandLine, "HELP")) help();
   else if (!std::strcmp(commandLine, "STATUS")) {
     driverOff();
-    Serial.print(F("STATUS SME105_DTC_ONE_SHOT_V1 DE=LOW B_TX=COMPILE_LOCKED used="));
+    Serial.print(F("STATUS SME105_DTC_ONE_SHOT_V2 DE=LOW B_TX=COMPILE_LOCKED used="));
     Serial.print(attemptUsed ? 1 : 0);
     Serial.print(F(" deadline_timer=")); Serial.println(deadlineTimer ? 1 : 0);
+  } else if (!std::strcmp(commandLine, "SELFTEST_RX_ISR")) {
+    selftestRawReceiver();
   } else if (!std::strcmp(commandLine, "CAPTURE_CART_ONCE")) {
     if (attemptUsed) Serial.println(F("DENIED already_consumed_this_boot"));
     else captureOnce(false);
@@ -463,7 +489,7 @@ void setup() {
     timerAlarmDisable(planTimer);
   }
   delay(250);
-  Serial.println(F("SME105_DTC_ONE_SHOT_V1 NO_AUTO_TX B_OPCODE_DISABLED"));
+  Serial.println(F("SME105_DTC_ONE_SHOT_V2 NO_AUTO_TX B_OPCODE_DISABLED"));
   help();
 }
 
