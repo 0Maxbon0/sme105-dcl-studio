@@ -36,6 +36,7 @@ SLOT = re.compile(
     rb"CART_B_SLOT frame=([0-3]) slot=1 opcode=([0-9A-F]{4}) "
     rb"target_us=(\d+) fired_us=(\d+) dry_run=1 tx_bytes=0"
 )
+ABORT_LINE = re.compile(rb"^(?:CART_ABORT|ABORT) [ -~]{1,180}$")
 
 
 class CaptureIncomplete(RuntimeError):
@@ -96,6 +97,8 @@ def capture(conn: object, *, deadline_seconds: float = 60,
                 bytes(stream),
             )
         normalized = bytes(stream[-256:]).replace(b"\r\n", b"\n")
+        if any(ABORT_LINE.fullmatch(line) for line in normalized.split(b"\n")[:-1]):
+            raise CaptureIncomplete("firmware aborted its one-shot session", bytes(stream))
         if END in normalized:
             if not normalized.endswith(END):
                 raise CaptureIncomplete("extra data after CART_END", bytes(stream))

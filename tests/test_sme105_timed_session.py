@@ -90,12 +90,15 @@ class TimedHostTests(unittest.TestCase):
         for raw in (
             b"CART_EVT t_us=1 byte=00\r\n",
             b"CART_END DTC_UNVERIFIED B_TX_LOCKED\r\nUNEXPECTED\n",
+            b"CART_ABORT handshake_or_ack_failed TX_LOCKED\r\n",
         ):
             with self.subTest(raw=raw):
                 device = FakePort(data=raw)
                 with self.assertRaises(host.CaptureIncomplete) as context:
                     host.capture(device, deadline_seconds=0.001)
                 self.assertEqual(context.exception.raw, raw)
+                if b"CART_ABORT" in raw:
+                    self.assertIn("firmware aborted", str(context.exception))
 
     def test_evidence_is_create_only(self):
         with tempfile.TemporaryDirectory() as target:
