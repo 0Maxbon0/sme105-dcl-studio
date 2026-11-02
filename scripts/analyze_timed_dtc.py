@@ -22,6 +22,11 @@ from ford_dcl.cart_dtc_candidates import CartCommandWitness, extract_dtc_candida
 from ford_dcl.cart_reference import CartReferenceError, parity_byte
 from ford_dcl.cart_timed import BIT_US, BYTE_US, TimedOctet, parse_timed_cart
 
+if __package__:
+    from .analyze_timed_fifo_lag import inspect as inspect_fifo_lag
+else:
+    from analyze_timed_fifo_lag import inspect as inspect_fifo_lag
+
 EVENT = re.compile(rb"^CART_EVT t_us=([0-9]+) byte=([0-9A-Fa-f]{2})$")
 TX = re.compile(
     rb"^CART_TX start_us=([0-9]+) end_us=([0-9]+) frame=([0-9]+) "
@@ -318,6 +323,39 @@ def analyze(raw: bytes) -> dict:
     }
     try:
         raw_events, witness = parse_evidence(raw)
+        # On observed V5, UART2 RXFIFO_FULL(threshold=1) returns the previous
+        # byte at the *next* byte completion. The strict physical-timing
+        # parser must never treat those delayed timestamps as actual edges.
+        # A separate read-only forensic path can still validate ID-only
+        # frames when the full native B-locked capture, device UART health,
+        # and on-device FIFO-lag witness all pass independent checks.
+        lag_lines = [line for line in raw.replace(b"\r\n", b"\n").splitlines()
+                     if line.startswith(b"CART_LAG_BASELINE ")]
+        if lag_lines and witness is None:
+            if len(lag_lines) != 1:
+                raise CartReferenceError("duplicate FIFO-lag capture witness")
+            lagged = NATIVE_LAG.fullmatch(lag_lines[0])
+            if lagged is None or lagged[1] != b"1":
+                raise CartReferenceError("invalid FIFO-lag capture witness")
+            forensic = inspect_fifo_lag(raw)
+            if (forensic.get("validated_full_frames", 0) < 16 or
+                forensic.get("validated_full_frames") != int(lagged[2]) or
+                forensic.get("full_16_id_cycles") != int(lagged[3]) or
+                forensic.get("initial_unvalidated_bytes") != int(lagged[4]) or
+                forensic.get("inferred_header_phase_bits") != int(lagged[5])):
+                raise CartReferenceError("on-device and independent FIFO-lag observations disagree")
+            report.update({
+                "classification": "reference-compatible-id-only-CART-observation-no-DTC-command",
+                "frames": forensic["validated_full_frames"],
+                "complete_16_id_cycles": forensic["full_16_id_cycles"],
+                "device_timestamped_bytes": len(raw_events),
+                "initial_unaligned_bytes_preserved_in_original": forensic["initial_unvalidated_bytes"],
+                "inferred_header_gap_bits": forensic["inferred_header_phase_bits"],
+                "physical_byte_timing_verified": False,
+                "b_request_transmitted": False,
+                "timing_method": forensic["method"],
+            })
+            return report
         aligned, skipped = align_first_id_zero(raw_events)
         timed = parse_timed_cart(aligned)
         report["frames"] = len(timed.cart.frames)

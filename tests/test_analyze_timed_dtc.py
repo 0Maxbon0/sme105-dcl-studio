@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from ford_dcl.cart_reference import CartReferenceError
 from ford_dcl.cart_timed import BYTE_US, SLOT_US, SYNC_REARM_US, parse_timed_cart
@@ -77,6 +78,34 @@ def active_candidate_transcript(*, variant="26A4", stopped=0):
 
 
 class EvidenceParserTests(unittest.TestCase):
+    def test_real_v5_fifo_lag_transcript_is_legitimate_id_only_not_dtc(self):
+        file_path = (Path(__file__).resolve().parents[1] / "captures" / "TIMED_CART" /
+                     "20261102T184936186271Z-cart-isr.txt")
+        if not file_path.exists():
+            self.skipTest("live vehicle witness not shipped with clean repository")
+        raw = file_path.read_bytes()
+        result = analyze(raw)
+        self.assertEqual(result["sha256"],
+                         "8aacce685758676ed17338c5b28b747937598a36fcba1926fe8ac2855f760f9e")
+        self.assertEqual(result["classification"],
+                         "reference-compatible-id-only-CART-observation-no-DTC-command")
+        self.assertEqual(result["frames"], 970)
+        self.assertEqual(result["complete_16_id_cycles"], 60)
+        self.assertEqual(result["device_timestamped_bytes"], 3985)
+        for claim in ("is_ecu_source_authenticated", "is_dtc_read_verified",
+                      "physical_byte_timing_verified", "b_request_transmitted"):
+            self.assertFalse(result[claim], claim)
+        self.assertEqual(result["reference_dtc_candidates"], [])
+        tampered = raw.replace(b"CART_LAG_BASELINE valid=1 frames=970",
+                               b"CART_LAG_BASELINE valid=1 frames=971", 1)
+        self.assertEqual(analyze(tampered)["classification"],
+                         "incomplete-or-unvalidated-timing-or-response")
+        # Native capture health and exact witness values, not only the
+        # booleans, are required before the forensic classification.
+        self.assertEqual(analyze(raw.replace(b" uart_errors=0 coalesced=0",
+                                             b" uart_errors=1 coalesced=0", 1))["classification"],
+                         "incomplete-or-unvalidated-timing-or-response")
+
     def test_active_candidate_four_word_native_trace_remains_unverified(self):
         for variant in ("26A4", "260E"):
             with self.subTest(variant=variant):
