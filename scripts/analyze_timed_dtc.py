@@ -65,6 +65,10 @@ NATIVE_PLAN = re.compile(
     rb"phase_bits=(-?[0-9]+) scheduled=([0-9]+) fired=([0-9]+) "
     rb"mode=DRY_RUN tx_bytes=0 ecu_verified=0$"
 )
+NATIVE_LAG = re.compile(
+    rb"^CART_LAG_BASELINE valid=([01]) frames=([0-9]+) cycles=([0-9]+) "
+    rb"prefix=([0-9]+) phase=(0|4|255) edge_verified=0 b_tx=0$"
+)
 NATIVE_SLOT = re.compile(
     rb"^CART_B_SLOT frame=([0-3]) slot=1 opcode=([0-9A-F]{4}) "
     rb"target_us=([0-9]+) fired_us=([0-9]+) dry_run=1 tx_bytes=0$"
@@ -98,6 +102,7 @@ def parse_evidence(raw: bytes) -> tuple[list[TimedOctet], CartCommandWitness | N
     native_baseline = 0
     native_plan = 0
     native_slots = 0
+    native_lag = 0
     active_run = 0
     active_summary = []
     active_timebase = 0
@@ -195,6 +200,10 @@ def parse_evidence(raw: bytes) -> tuple[list[TimedOctet], CartCommandWitness | N
             if NATIVE_SLOT.fullmatch(line) is None:
                 raise CartReferenceError("malformed native dry-run word")
             native_slots += 1
+        elif line.startswith(b"CART_LAG_BASELINE "):
+            if NATIVE_LAG.fullmatch(line) is None:
+                raise CartReferenceError("malformed lagged FIFO baseline evidence")
+            native_lag += 1
         elif line == NATIVE_TIMEBASE:
             native_timebase += 1
         elif line == ACTIVE_TIMEBASE:
@@ -217,7 +226,7 @@ def parse_evidence(raw: bytes) -> tuple[list[TimedOctet], CartCommandWitness | N
         raise CartReferenceError("missing or duplicate CART_END")
     if endings:
         if (native_summary or native_ended or native_timebase or native_begin or
-                native_baseline or native_plan or native_slots or active_run or
+                native_baseline or native_plan or native_slots or native_lag or active_run or
                 active_summary or active_timebase or active_state is not None or
                 active_witnesses or active_references):
             raise CartReferenceError("mixed incompatible capture formats")
@@ -229,7 +238,7 @@ def parse_evidence(raw: bytes) -> tuple[list[TimedOctet], CartCommandWitness | N
     elif native_ended:
         if (len(native_summary) != 1 or native_ended != 1 or
                 native_begin != 1 or native_timebase != 1 or native_baseline != 1 or
-                witness is not None or native_plan > 1 or native_slots > 4 or
+                witness is not None or native_plan > 1 or native_slots > 4 or native_lag > 1 or
                 active_run or active_summary or active_timebase or
                 active_state is not None or active_witnesses or active_references):
             raise CartReferenceError("incomplete native UART ISR capture protocol")
@@ -243,7 +252,7 @@ def parse_evidence(raw: bytes) -> tuple[list[TimedOctet], CartCommandWitness | N
                 active_timebase != 1 or active_state is None or
                 len(active_witnesses) != 4 or witness is not None or native_summary or
                 native_timebase or native_begin or native_baseline or native_plan or
-                native_slots or tuple(active_references) != ACTIVE_REF_SEQUENCE):
+                native_slots or native_lag or tuple(active_references) != ACTIVE_REF_SEQUENCE):
             raise CartReferenceError("incomplete or mixed active candidate UART capture")
         expected_count, errors, coalesced, dropped, capped, cutoff = active_summary[0]
         ending_count, ending_errors, ending_dropped, ending_cutoff = active_ending[0]

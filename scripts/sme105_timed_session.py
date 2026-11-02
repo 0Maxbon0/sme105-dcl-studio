@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""USB controller for SME105_DTC_ONE_SHOT_V2 timed CART capture.
+"""USB controller for SME105_DTC_ONE_SHOT_V5 timed CART capture.
 
 The firmware does not transmit stored-code B. This host runs the single
 documented reference handshake ONLY with an explicit operator opt-in.
@@ -21,7 +21,7 @@ PORT = (
     "usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0"
 )
 IDENTITY = re.compile(
-    rb"^STATUS SME105_DTC_ONE_SHOT_V2 DE=LOW B_TX=COMPILE_LOCKED "
+    rb"^STATUS SME105_DTC_ONE_SHOT_V5 DE=LOW B_TX=COMPILE_LOCKED "
     rb"used=([01]) deadline_timer=([01])\r\n$"
 )
 END = b"CART_END DTC_UNVERIFIED B_TX_LOCKED\n"
@@ -35,6 +35,10 @@ PLAN = re.compile(
 SLOT = re.compile(
     rb"CART_B_SLOT frame=([0-3]) slot=1 opcode=([0-9A-F]{4}) "
     rb"target_us=(\d+) fired_us=(\d+) dry_run=1 tx_bytes=0"
+)
+LAG_BASELINE = re.compile(
+    rb"^CART_LAG_BASELINE valid=([01]) frames=([0-9]+) cycles=([0-9]+) "
+    rb"prefix=([0-9]+) phase=(0|4|255) edge_verified=0 b_tx=0$"
 )
 ABORT_LINE = re.compile(rb"^(?:CART_ABORT|ABORT) [ -~]{1,180}$")
 RX_SELFTEST = re.compile(
@@ -147,7 +151,13 @@ def inspect_dry_run(raw: bytes) -> tuple[bool, str]:
     fields = (stage, int(reason), int(baseline), int(command), int(phase),
               int(scheduled), int(fired))
     if fields[0] != b"COMPLETE" or fields[1:4] != (0, 16, 16) or fields[4] not in (0, 4) or fields[5:] != (4, 4):
-        return False, f"PLAN incomplete: stage={stage.decode()} reason={int(reason)} scheduled={int(scheduled)} fired={int(fired)}"
+        lagged = [m for line in lines if (m := LAG_BASELINE.fullmatch(line))]
+        detail = f"PLAN incomplete: stage={stage.decode()} reason={int(reason)} scheduled={int(scheduled)} fired={int(fired)}"
+        if len(lagged) == 1 and lagged[0][1] == b"1":
+            detail += (f"; recorded CART ID-only frames={int(lagged[0][2])}, "
+                       f"complete 16-ID cycles={int(lagged[0][3])} "
+                       "(one-byte FIFO-lag inference, NOT validated active slot timing)")
+        return False, detail
     words = (b"01B0", b"FF5F", b"26A4", b"00A0")
     if len(slots) != 4:
         return False, "PLAN incomplete: missing four timed opportunities"
@@ -157,6 +167,17 @@ def inspect_dry_run(raw: bytes) -> tuple[bool, str]:
                 abs(int(fired_at) - int(target)) > 175):
             return False, "PLAN incomplete: incorrect slot word or timing"
     return True, "PLAN timing observed for 4/4 slots; B was NOT transmitted, no DTC read"
+
+
+def inspect_lagged_id_baseline(raw: bytes) -> str:
+    """An ID-only bus observation, never a verified physical timing witness."""
+    matches = [m for line in raw.replace(b"\r\n", b"\n").splitlines()
+               if (m := LAG_BASELINE.fullmatch(line))]
+    if len(matches) != 1 or matches[0][1] != b"1":
+        return "CART ID-only baseline not validated by receiver"
+    return (f"CART ID-only baseline observed: {int(matches[0][2])} frames, "
+            f"{int(matches[0][3])} full cycles. FIFO-lag inferred; "
+            "physical slot timing and DTC reading NOT verified")
 
 
 def main() -> int:
@@ -218,6 +239,7 @@ def main() -> int:
     if reason:
         print(f"INCOMPLETE: {reason}; no automatic retry")
         return 3
+    print(inspect_lagged_id_baseline(raw))
     if args.action == "plan-b-once":
         ok, detail = inspect_dry_run(raw)
         print(detail)

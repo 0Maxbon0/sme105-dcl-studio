@@ -129,8 +129,8 @@ void IRAM_ATTR planSlotIsr() {
 // the code never fabricates individual completion times from a FIFO batch.
 void IRAM_ATTR cartRxIsr(void*) {
   const uint32_t status = UART2.int_st.val;
-  if (status & ((1UL << 2) | (1UL << 3) | (1UL << 4) | (1UL << 8))) {
-    ++uartErrors;  // parity/framing/overflow/timeout: fail the capture
+  if (status & ((1UL << 2) | (1UL << 3) | (1UL << 4))) {
+    ++uartErrors;  // parity/framing/overflow: fail the capture
   }
   const uint32_t n = UART2.status.rxfifo_cnt;
   if (n > 1) ++coalescedInterrupts;
@@ -366,6 +366,61 @@ void reportIdOnlyBaseline(uint32_t n) {
   Serial.println(frames >= 32 && frames == n / 4 && !(frames % 16) ? 1 : 0);
 }
 
+// Receive-only forensic inspection. On the tested ESP32, FIFO threshold=1
+// timestamps a stored octet when its NEXT octet arrives. Associate octet i
+// with ISR timestamp i-1 to recover the ID-only stream without treating
+// these inferred timestamps as true UART stop-bit edge measurements.
+// This never arms the slot timer, enables DE, or authorizes B TX.
+void reportLaggedIdBaseline(uint32_t n) {
+  if (n < 65 || n >= kEventLimit || uartErrors || coalescedInterrupts ||
+      overLimitEvents || txCutoff) {
+    Serial.println(F("CART_LAG_BASELINE valid=0 frames=0 cycles=0 edge_verified=0"));
+    return;
+  }
+  uint32_t bestFrames = 0;
+  uint32_t bestStart = 0;
+  uint8_t bestPhase = 255;
+  const uint32_t firstLimit = n > 260 ? 256 : n - 64;
+  for (uint32_t start = 1; start <= firstLimit; ++start) {
+    uint32_t frames = 0;
+    uint8_t phase = 255;
+    uint32_t prevSync = 0;
+    while (start + frames * 4 + 3 < n) {
+      const uint32_t index = start + frames * 4;
+      const uint8_t id = static_cast<uint8_t>(frames & 15);
+      if (events[index].octet || events[index + 1].octet ||
+          events[index + 2].octet || events[index + 3].octet != vParity(0, id)) break;
+      const uint32_t a = events[index - 1].completeUs;
+      const uint32_t b = events[index].completeUs;
+      const uint32_t c = events[index + 1].completeUs;
+      const uint32_t d = events[index + 2].completeUs;
+      const uint32_t dtAB = b - a, dtBC = c - b, dtCD = d - c;
+      if (dtAB < 867 || dtAB > 1217 || dtCD < 867 || dtCD > 1217) break;
+      const uint8_t newPhase = dtBC >= 867 && dtBC <= 1217 ? 0 :
+                               (dtBC >= 1283 && dtBC <= 1633 ? 4 : 255);
+      if (newPhase == 255 || (phase != 255 && phase != newPhase)) break;
+      if (frames) {
+        const uint32_t cadence = b - prevSync;
+        if (cadence < 9825 || cadence > 10175) break;
+      }
+      phase = newPhase;
+      prevSync = b;
+      ++frames;
+    }
+    if (frames > bestFrames) {
+      bestFrames = frames;
+      bestStart = start;
+      bestPhase = phase;
+    }
+  }
+  Serial.print(F("CART_LAG_BASELINE valid=")); Serial.print(bestFrames >= 16 ? 1 : 0);
+  Serial.print(F(" frames=")); Serial.print(bestFrames);
+  Serial.print(F(" cycles=")); Serial.print(bestFrames / 16);
+  Serial.print(F(" prefix=")); Serial.print(bestStart);
+  Serial.print(F(" phase=")); Serial.print(bestPhase);
+  Serial.println(F(" edge_verified=0 b_tx=0"));
+}
+
 void dumpCapture() {
   const uint32_t captured = eventCount;
   Serial.print(F("CART_CAPTURE n=")); Serial.print(captured);
@@ -376,6 +431,7 @@ void dumpCapture() {
   Serial.print(F(" capped=")); Serial.println(captured >= kEventLimit ? 1 : 0);
   reportDryRunPlan();
   reportIdOnlyBaseline(captured);
+  reportLaggedIdBaseline(captured);
   Serial.println(F("CART_TIMEBASE source=UART2_RX_ISR unit=us event=FIFO_interrupt_after_stop_bit"));
   for (uint32_t i = 0; i < captured; ++i) {
     Serial.print(F("CART_EVT t_us="));
@@ -423,8 +479,8 @@ void captureOnce(bool withDryRunPlan) {
 }
 
 void selftestRawReceiver() {
-  // USB-side, zero DCL TX: exercise the exact post-handshake UART driver
-  // release -> native ISR registration path, including cleanup.
+  // USB-only receive-side IRQ lifecycle check; NO attempts to claim the
+  // external 9600 baud data waveform is calibrated here.
   driverOff();
   if (!beginRaw9600()) {
     endRaw9600();
@@ -435,8 +491,7 @@ void selftestRawReceiver() {
   endRaw9600();
   Serial.print(F("RAW_ISR_SELFTEST PASS irq=READY rx_events="));
   Serial.print(eventCount);
-  Serial.print(F(" uart_errors="));
-  Serial.print(uartErrors);
+  Serial.print(F(" uart_errors=")); Serial.print(uartErrors);
   Serial.println(F(" B_TX_LOCKED"));
 }
 
@@ -453,7 +508,7 @@ void command() {
   if (!std::strcmp(commandLine, "HELP")) help();
   else if (!std::strcmp(commandLine, "STATUS")) {
     driverOff();
-    Serial.print(F("STATUS SME105_DTC_ONE_SHOT_V2 DE=LOW B_TX=COMPILE_LOCKED used="));
+    Serial.print(F("STATUS SME105_DTC_ONE_SHOT_V5 DE=LOW B_TX=COMPILE_LOCKED used="));
     Serial.print(attemptUsed ? 1 : 0);
     Serial.print(F(" deadline_timer=")); Serial.println(deadlineTimer ? 1 : 0);
   } else if (!std::strcmp(commandLine, "SELFTEST_RX_ISR")) {
@@ -495,7 +550,7 @@ void setup() {
     timerAlarmDisable(planTimer);
   }
   delay(250);
-  Serial.println(F("SME105_DTC_ONE_SHOT_V2 NO_AUTO_TX B_OPCODE_DISABLED"));
+  Serial.println(F("SME105_DTC_ONE_SHOT_V5 NO_AUTO_TX B_OPCODE_DISABLED"));
   help();
 }
 

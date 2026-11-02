@@ -76,12 +76,26 @@ class TimedHostTests(unittest.TestCase):
             with self.subTest(raw=raw[:60]):
                 self.assertFalse(host.inspect_dry_run(raw)[0])
 
+    def test_dry_run_reports_real_id_capture_without_fake_timer_success(self):
+        content = (
+            b"CART_B_PLAN stage=SEEK reason=0 baseline_frames=0 command_frames=0 "
+            b"phase_bits=255 scheduled=0 fired=0 mode=DRY_RUN tx_bytes=0 ecu_verified=0\n"
+            b"CART_LAG_BASELINE valid=1 frames=970 cycles=60 prefix=105 phase=4 "
+            b"edge_verified=0 b_tx=0\n"
+        )
+        ok, message = host.inspect_dry_run(content)
+        self.assertFalse(ok)
+        self.assertIn("complete 16-ID cycles=60", message)
+        self.assertIn("NOT validated active slot timing", message)
+        self.assertIn("970 frames", host.inspect_lagged_id_baseline(content))
+        self.assertIn("NOT verified", host.inspect_lagged_id_baseline(content))
+
     def test_status_requires_exact_native_firmware_identity_and_timer(self):
-        correct = (b"STATUS SME105_DTC_ONE_SHOT_V2 DE=LOW B_TX=COMPILE_LOCKED "
+        correct = (b"STATUS SME105_DTC_ONE_SHOT_V5 DE=LOW B_TX=COMPILE_LOCKED "
                    b"used=0 deadline_timer=1\r\n")
         self.assertTrue(host.status(FakePort(response=correct)))
         for wrong in (
-            correct.replace(b"V2", b"V3"),
+            correct.replace(b"V5", b"V4"),
             correct.replace(b"deadline_timer=1", b"deadline_timer=0"),
             correct.replace(b"COMPILE_LOCKED", b"ENABLED"),
         ):
