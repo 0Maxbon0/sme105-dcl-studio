@@ -1,10 +1,11 @@
-# SME-105 Ford DCL: one-image interactive USB bridge (engineering candidate)
+# SME-105 Ford DCL: one-image interactive USB + Wi-Fi bridge (engineering candidate)
 
 **Status: compiled source, NOT validated on this ECU or approved for live diagnostic use.**
 This is a separate, permanent-format ESP32 firmware image. Once it has been
 installed and independently checked, host software can operate it over one
-115200-baud USB serial connection without generating/flashing a new sketch for
-every protocol observation. **Neither compiling nor a USB acknowledgement
+115200-baud USB serial connection **or authenticated Wi-Fi TCP**, without
+generating/flashing a new sketch for every protocol observation. **Neither
+compiling nor a USB acknowledgement
 proves a correct A/B bus signal or an ECU diagnostic response.**
 
 This image exists because actual car V5 data from GPIO17 decoded **6D CC,
@@ -27,6 +28,101 @@ This is a local pad witness, **not** independent A/B or ECU-ownership proof.
   MAX487 `/RE` remains grounded. **No extra wires** or protocol pins.
 - No automatic ECU transmission at boot, no arbitrary hexadecimal writes,
   no error clearing, self-test, actuator control or unsupported opcodes.
+
+## Persistent Wi-Fi STA: provision over USB once, use Wi-Fi after every reboot
+
+The ESP32 uses **2.4 GHz Wi-Fi STA only** (your existing home/router or phone
+hotspot); it never creates an unsecured access point. The SSID and WPA2
+passphrase are saved to ESP32 Preferences/NVS (`sme105wifi` namespace), and
+the bridge automatically attempts to reconnect after ordinary power cycles or
+coverage loss. The router/hotspot must be running and the laptop or phone
+must be on the same local Wi-Fi network. **No ECU command is sent at boot,
+reconnect, authentication or power-on.** There is no need to flash different
+images for USB versus Wi-Fi operations.
+
+Do the following **only over the physical USB serial port at 115200 baud**:
+
+```text
+WIFI_STATUS
+WIFI_TOKEN
+WIFI_CONFIG <BASE64_SSID> <BASE64_WPA2_PASSWORD>
+WIFI_STATUS
+```
+
+Use **standard padded Base64** on each field (encode the original SSID and
+password separately in your host application; never type the plaintext as
+the USB command). SSID: **1–32 bytes** (no control/NUL bytes). WPA2 password:
+**8–63 printable ASCII bytes**, including spaces, but no control/NUL bytes.
+Invalid input is rejected without changing the active session; credentials
+are never echoed in any response. Base64 is *encoding, not encryption*; the
+physical USB port is the provisioning security boundary.
+
+Expected one-line responses:
+
+```text
+WIFI_CONFIG OK saved=1 reconnecting=1
+WIFI_STATUS state=CONNECTING ip=0.0.0.0 port=8765 clients=0 host=sme105-bridge.local
+WIFI_STATUS state=CONNECTED ip=192.168.1.42 port=8765 clients=0 host=sme105-bridge.local
+WIFI_TOKEN <32-lowercase-hex-characters>
+```
+
+`WIFI_TOKEN` reveals the **128-bit random** authentication token **to USB
+only**, never through TCP or the mirrored RAW output stream. The token is
+generated with ESP32 hardware entropy and persists in NVS across power
+cycles. Keep it secret and do not put it in log files. `WIFI_FORGET` (USB
+only, idle) removes Wi-Fi credentials, disconnects STA, and rotates the
+authentication token; it **does not reset** the once-per-boot diagnostic or
+OBSERVE attempt counters. Use `WIFI_STATUS` to see the current IPv4 address;
+`sme105-bridge.local` is an mDNS convenience name and may not resolve on all
+phones/hotspots, so prefer the IP address when necessary.
+
+### Authenticated TCP console (PC or smartphone)
+
+Use a TCP terminal/client on the *same trusted WLAN*, connect to port
+**8765** at the IP from `WIFI_STATUS` (or `sme105-bridge.local` if mDNS works),
+and send the exact first line:
+
+```text
+AUTH <32-hex-token>
+```
+
+Within 5 seconds, before any command or RAW output, the firmware requires a
+matching token and replies **exactly `AUTH OK\n` (LF)**. Invalid/expired
+authentication and oversized lines disconnect without revealing device
+state. Only **one** TCP client may be connected at a time. The authorized
+client then uses the same command names `HELLO`, `STATUS`, `PINS`, `STOP`,
+`LISTEN_9600`, `OBSERVE`, `ARM_A4`/`READ_A4`, `ARM_0E`/`READ_0E`, and
+`RESET_IDLE`; they do not require another firmware flash. USB remains active,
+and each `RX t_us=<decimal> byte=<HH>` record, `TX_PAD`, `FAULT`, and `END`
+is mirrored to USB and authenticated TCP using a bounded fan-out queue.
+
+`WIFI_CONFIG`, `WIFI_TOKEN` and `WIFI_FORGET` **cannot** be invoked from
+Wi-Fi, even after authentication. A pending `ARM_A4` or `ARM_0E` can only be
+used for `READ_*` by **the same originating transport** (USB-to-USB or
+authenticated-TCP-to-that-TCP). Wi-Fi disconnection revokes pending Wi-Fi
+arms. `STOP` is always allowed from either authenticated channel and clears
+pending arms. The active diagnostic and OBSERVE limits still apply globally
+across both transport types. A disconnected TCP controller during a live
+session causes immediate safe STOP and prevents any new controller from
+taking over until that session finishes.
+
+**Transport safety:** The TCP socket uses nonblocking sends; it cannot wait
+for a slow peer in an ESP32 CART timing loop. The two output subscribers
+have independent read cursors and a finite 16 KiB fan-out queue. On an active
+session with network backpressure, overflow, client disconnect, or TCP send
+failure, the bridge stops the ECU transmission path. A disconnected TCP
+client may not receive `END`; that absence makes its evidence incomplete,
+not successful. Check the full RX count against `END ro_bytes` and require
+`ro_lost=0`, `uart_errors=0`; `STATUS` also exposes `transport_lost` and
+`out_overflow`. No UART/TCP output is performed by the protected CART ISRs.
+
+**Security boundary:** TCP is deliberately *not* TLS-encrypted; use only a
+trusted WPA2/WPA3 local Wi-Fi network. Do not expose/forward port 8765 to the
+Internet or share the token. WPA encryption protects the wireless hop, not
+other untrusted devices already on the LAN. NVS credentials are not
+hardware-encrypted unless ESP32 flash encryption/NVS encryption is
+separately enabled. The token prevents unauthenticated commands but does not
+prove physical ECU safety, authorization for unsafe B requests, or a DTC.
 
 ### Explicit host commands
 

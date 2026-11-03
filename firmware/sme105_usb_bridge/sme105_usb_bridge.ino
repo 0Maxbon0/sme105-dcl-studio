@@ -1,5 +1,13 @@
 #include <Arduino.h>
 #include <HardwareSerial.h>
+#include <WiFi.h>
+#include <Preferences.h>
+#include <ESPmDNS.h>
+#include <esp_system.h>
+#include <bootloader_random.h>
+#include <mbedtls/base64.h>
+#include <lwip/sockets.h>
+#include <cerrno>
 #include <driver/gpio.h>
 #include <driver/uart.h>
 #include <driver/rmt.h>
@@ -13,6 +21,7 @@
 #include <soc/timer_group_struct.h>
 #include <soc/rmt_struct.h>
 #include <cstring>
+#include <algorithm>
 
 // Ford EEC-IV experimental 97AB SME-105 USB field bridge.
 // There is NO arbitrary bus write API and NO automatic vehicle transmission.
@@ -28,7 +37,12 @@ constexpr uint32_t kSlotWatchdogUs = 2250;
 constexpr uint32_t kSlotMinLeadUs = 180, kSlotMaxLeadUs = 1250;
 constexpr uint32_t kGapToleranceUs = 175;
 constexpr size_t kRxRingSize = 2048; // single producer ISR / single USB consumer
+constexpr uint16_t kWiFiPort = 8765;
+constexpr size_t kWireQueueSize = 16384; // bounded, no allocation/IO in ISR
+constexpr uint32_t kAuthDeadlineMs = 5000;
+constexpr uint32_t kStaRetryMs = 10000;
 static_assert((kRxRingSize & (kRxRingSize - 1)) == 0, "ring power of two");
+static_assert((kWireQueueSize & (kWireQueueSize - 1)) == 0, "wire ring power of two");
 
 // All USB commands run in loop(); only register operations run in UART/timer ISRs.
 enum Stage : uint8_t { IDLE, QUIET, ECHO_TX, ACK_WAIT, GO_TX,
@@ -36,7 +50,8 @@ enum Stage : uint8_t { IDLE, QUIET, ECHO_TX, ACK_WAIT, GO_TX,
 enum Fault : uint8_t { NO_FAULT, BAD_IDLE, HSK_TX, HSK_TIMEOUT, HSK_ACK,
                        CART_INIT, CART_ERR, CART_HEADER, CART_PHASE,
                        CART_CADENCE, CART_TIMER, PAD_MISMATCH, PAD_FRAMING,
-                       DE_TIMEOUT, RX_OVERFLOW, HOST_STOP, CAPTURE_TIMEOUT };
+                       DE_TIMEOUT, RX_OVERFLOW, HOST_STOP, CAPTURE_TIMEOUT,
+                       TRANSPORT_BACKPRESSURE };
 struct RxEvent { uint32_t at; uint8_t value; };
 struct HeaderByte { uint32_t at; uint8_t value; };
 struct CmdWord { uint8_t first; uint8_t second; };
@@ -83,14 +98,264 @@ volatile uint32_t handshakeErrors = 0;
 volatile bool transmitConsumed = false;
 volatile bool observeConsumed = false; // active Echo-ID/Go-CART, not passive sniff
 uint8_t armedVariant = 255;
+bool armedFromUSB = true; // ARM/READ must originate on the same authenticated transport
 bool nativeReady = false, refReady = false, gateReady = false;
 uint8_t gateChannels = 0;
-char commandBuffer[48] = {};
+char commandBuffer[176] = {}; // USB-only base64 provisioning up to 44+84 chars
 uint8_t commandUsed = 0;
 bool discardLine = false;
 uint8_t sentPadReports = 0;
 uint32_t reportedErrors = 0, reportedLost = 0;
 uint8_t lastReportedBaseline = 0;
+
+// No Wi-Fi operation in CART/UART/timer ISR paths. Firmware emits bounded
+// ASCII into a single fan-out queue. USB and authenticated TCP have separate
+// cursors: neither is silently allowed to skip a byte.
+class BridgeOutput : public Print {
+ public:
+  size_t write(uint8_t byte) override {
+    if (used() >= kWireQueueSize) { ++overflow_; return 0; }
+    bytes_[write_++ & (kWireQueueSize - 1)] = byte;
+    return 1;
+  }
+  size_t write(const uint8_t* buffer, size_t count) override {
+    size_t wrote = 0;
+    while (wrote < count && write(buffer[wrote])) ++wrote;
+    if (wrote != count) overflow_ += static_cast<uint32_t>(count - wrote - 1);
+    return wrote;
+  }
+  using Print::write;
+  size_t freeBytes() const { return kWireQueueSize - used(); }
+  uint32_t queued() const { return write_; }
+  uint32_t usbCursor() const { return usbRead_; }
+  uint32_t tcpCursor() const { return tcpRead_; }
+  uint32_t overflow() const { return overflow_; }
+  void dropTcpAtCurrent() { tcpRead_ = write_; tcpEnabled_ = false; tcpSendFailed_ = false; }
+  void markTcpAuthenticated() { tcpRead_ = write_; tcpEnabled_ = true; tcpSendFailed_ = false; }
+  bool tcpSendFailed() const { return tcpSendFailed_; }
+  void drainUSB() {
+    if (usbRead_ == write_) return;
+    const int capacity = Serial.availableForWrite();
+    if (capacity <= 0) return;
+    const size_t len = std::min(static_cast<size_t>(capacity),
+        std::min(static_cast<size_t>(write_ - usbRead_),
+                 std::min(static_cast<size_t>(256), kWireQueueSize - (usbRead_ & (kWireQueueSize - 1)))));
+    usbRead_ += Serial.write(bytes_ + (usbRead_ & (kWireQueueSize - 1)), len);
+  }
+  void drainTCP(WiFiClient& client) {
+    if (tcpRead_ == write_) return;
+    // Arduino ESP32 WiFiClient::write may block for 10 select(1s) retries;
+    // availableForWrite() is the inherited default ZERO. Neither is safe
+    // during a 10ms ECU frame cadence. Use lwIP nonblocking send directly.
+    const int socket = client.fd();
+    if (socket < 0) { tcpSendFailed_ = true; return; }
+    const size_t len = std::min(static_cast<size_t>(write_ - tcpRead_),
+                        std::min(static_cast<size_t>(128),
+                                 kWireQueueSize - (tcpRead_ & (kWireQueueSize - 1))));
+    const int sent = ::send(socket, bytes_ + (tcpRead_ & (kWireQueueSize - 1)),
+                            len, MSG_DONTWAIT);
+    if (sent > 0) tcpRead_ += static_cast<uint32_t>(sent);
+    else if (sent == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
+      tcpSendFailed_ = true;
+  }
+ private:
+  uint32_t used() const {
+    // While TCP is unauthenticated/disconnected, tcpRead_=write_ and USB
+    // alone constrains the queue. When authenticated, both cursors constrain it.
+    return write_ - (tcpEnabled_ ? std::min(usbRead_, tcpRead_) : usbRead_);
+  }
+  uint8_t bytes_[kWireQueueSize] = {};
+  uint32_t write_ = 0, usbRead_ = 0, tcpRead_ = 0, overflow_ = 0;
+  bool tcpEnabled_ = false, tcpSendFailed_ = false;
+};
+BridgeOutput out;
+Preferences wifiPrefs;
+WiFiServer wifiServer(kWiFiPort);
+WiFiClient wifiClient;
+bool wifiConfigured = false, tcpAuthenticated = false;
+bool tcpHadActiveSession = false;
+bool wifiServerStarted = false;
+bool prefsReady = false, mdnsStarted = false, commandFromUSB = true;
+char wifiToken[33] = {};
+char wifiLine[96] = {};
+uint8_t wifiLineUsed = 0;
+bool wifiLineDiscard = false;
+uint32_t wifiAuthStartedMs = 0, wifiLastRetryMs = 0;
+uint32_t transportFaults = 0;
+void runCommand(const char* command);
+void stopEverything(Fault reason);
+
+bool busSessionActive() {
+  return stage != IDLE && stage != FINISHING && stage != FAULTED;
+}
+void clearSecrets(void* target, size_t size) {
+  volatile uint8_t* p = static_cast<volatile uint8_t*>(target);
+  while (size--) *p++ = 0;
+}
+bool validHexToken(const char* value) {
+  if (strlen(value) != 32) return false;
+  for (size_t i = 0; i < 32; ++i) {
+    const char c = value[i];
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+  }
+  return true;
+}
+bool generateToken() {
+  uint8_t bytes[16];
+  // Initial NVS token creation and WIFI_FORGET both run before/after RF.
+  // Mix SAR ADC entropy into ESP32 HWRNG instead of trusting an RF-off seed.
+  bootloader_random_enable();
+  esp_fill_random(bytes, sizeof bytes);
+  bootloader_random_disable();
+  static constexpr char alphabet[] = "0123456789abcdef";
+  for (size_t i = 0; i < sizeof bytes; ++i) {
+    wifiToken[2 * i] = alphabet[bytes[i] >> 4];
+    wifiToken[2 * i + 1] = alphabet[bytes[i] & 15];
+  }
+  wifiToken[32] = 0;
+  clearSecrets(bytes, sizeof bytes);
+  return prefsReady && wifiPrefs.putString("token", wifiToken) == 32;
+}
+bool validBase64(const char* s, size_t maxEncoded) {
+  const size_t n = strlen(s);
+  if (n == 0 || n > maxEncoded || (n % 4) != 0) return false;
+  bool padding = false;
+  for (size_t i = 0; i < n; ++i) {
+    const char c = s[i];
+    if (c == '=') { if (i < n - 2) return false; padding = true; }
+    else if (padding || !((c >= 'A' && c <= 'Z') ||
+                         (c >= 'a' && c <= 'z') ||
+                         (c >= '0' && c <= '9') || c == '+' || c == '/')) return false;
+  }
+  return true;
+}
+bool decodeBase64(const char* input, char* output, size_t cap, size_t& decoded) {
+  decoded = 0;
+  if (mbedtls_base64_decode(reinterpret_cast<unsigned char*>(output), cap - 1,
+                            &decoded, reinterpret_cast<const unsigned char*>(input),
+                            strlen(input)) != 0 || decoded >= cap) return false;
+  output[decoded] = 0;
+  return memchr(output, 0, decoded) == nullptr;
+}
+void dropTcpClient(bool transportLost) {
+  if (armedVariant < 2 && !armedFromUSB) armedVariant = 255;
+  if (transportLost && tcpAuthenticated) {
+    ++transportFaults;
+    if (busSessionActive()) stopEverything(HOST_STOP);
+  }
+  tcpAuthenticated = false;
+  tcpHadActiveSession = false;
+  wifiLineUsed = 0;
+  wifiLineDiscard = false;
+  if (wifiClient) wifiClient.stop();
+  out.dropTcpAtCurrent();
+}
+bool tokenMatches(const char* supplied) {
+  if (!validHexToken(wifiToken) || strlen(supplied) != 32) return false;
+  uint8_t diff = 0;
+  for (size_t i = 0; i < 32; ++i) {
+    char c = supplied[i];
+    if (c >= 'A' && c <= 'F') c = static_cast<char>(c + ('a' - 'A'));
+    diff |= static_cast<uint8_t>(c ^ wifiToken[i]);
+  }
+  return diff == 0;
+}
+void startSta() {
+  if (!wifiConfigured || !prefsReady || busSessionActive()) return;
+  const String ssid = wifiPrefs.getString("ssid", "");
+  const String pass = wifiPrefs.getString("pass", "");
+  if (ssid.length() < 1 || ssid.length() > 32 ||
+      pass.length() < 8 || pass.length() > 63) {
+    wifiConfigured = false;
+    return;
+  }
+  WiFi.mode(WIFI_STA); // NEVER enable an access point
+  WiFi.persistent(false);
+  WiFi.setHostname("sme105-bridge");
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(ssid.c_str(), pass.c_str()); // asynchronous; no waiting or retry TX
+  wifiLastRetryMs = millis();
+}
+void initializeWiFi() {
+  prefsReady = wifiPrefs.begin("sme105wifi", false);
+  if (!prefsReady) { WiFi.mode(WIFI_OFF); return; }
+  const String savedToken = wifiPrefs.getString("token", "");
+  if (savedToken.length() == 32 && validHexToken(savedToken.c_str())) {
+    memcpy(wifiToken, savedToken.c_str(), 33);
+  } else if (!generateToken()) {
+    clearSecrets(wifiToken, sizeof(wifiToken));
+    WiFi.mode(WIFI_OFF);
+    return;
+  }
+  const String ssid = wifiPrefs.getString("ssid", "");
+  const String pass = wifiPrefs.getString("pass", "");
+  wifiConfigured = ssid.length() >= 1 && ssid.length() <= 32 &&
+                   pass.length() >= 8 && pass.length() <= 63;
+  if (wifiConfigured) startSta();
+  else WiFi.mode(WIFI_OFF);
+}
+void printWiFiStatus() {
+  out.print(F("WIFI_STATUS state="));
+  if (!wifiConfigured) out.print(F("DISABLED"));
+  else if (WiFi.status() == WL_CONNECTED) out.print(F("CONNECTED"));
+  else out.print(F("CONNECTING"));
+  out.print(F(" ip="));
+  if (wifiConfigured && WiFi.status() == WL_CONNECTED) out.print(WiFi.localIP());
+  else out.print(F("0.0.0.0"));
+  out.print(F(" port=")); out.print(kWiFiPort);
+  out.print(F(" clients=")); out.print(tcpAuthenticated ? 1 : 0);
+  // Canonical host label is stable; callers must use IP until CONNECTED.
+  // Actual mDNS resolution is opportunistic, never a safety authority.
+  out.println(F(" host=sme105-bridge.local"));
+}
+void processWiFiProvision(const char* command) {
+  if (!commandFromUSB) { out.println(F("DENIED usb_only")); return; }
+  if (busSessionActive() || stage == FINISHING) {
+    out.println(F("DENIED wifi_busy")); return;
+  }
+  constexpr size_t prefix = sizeof("WIFI_CONFIG ") - 1;
+  const char* left = command + prefix;
+  const char* space = strchr(left, ' ');
+  if (!space || strchr(space + 1, ' ') || !prefsReady || !validHexToken(wifiToken)) {
+    out.println(F("DENIED wifi_config_invalid")); return;
+  }
+  char encSSID[48] = {};
+  char ssid[33] = {}, password[64] = {};
+  const size_t firstLen = static_cast<size_t>(space - left);
+  size_t sn = 0, pn = 0;
+  bool okay = firstLen > 0 && firstLen < sizeof encSSID;
+  if (okay) { memcpy(encSSID, left, firstLen); encSSID[firstLen] = 0; }
+  okay = okay && validBase64(encSSID, 44) && validBase64(space + 1, 84) &&
+         decodeBase64(encSSID, ssid, sizeof ssid, sn) &&
+         decodeBase64(space + 1, password, sizeof password, pn) &&
+         sn >= 1 && sn <= 32 && pn >= 8 && pn <= 63;
+  for (size_t i = 0; okay && i < sn; ++i)
+    if (static_cast<uint8_t>(ssid[i]) < 32) okay = false;
+  for (size_t i = 0; okay && i < pn; ++i)
+    if (static_cast<uint8_t>(password[i]) < 32 ||
+        static_cast<uint8_t>(password[i]) > 126) okay = false;
+  if (okay) {
+    dropTcpClient(false);
+    if (wifiServerStarted) { wifiServer.end(); wifiServerStarted = false; }
+    if (mdnsStarted) { MDNS.end(); mdnsStarted = false; }
+    WiFi.disconnect(true, false);
+    const bool saved = wifiPrefs.putString("ssid", ssid) == sn &&
+                       wifiPrefs.putString("pass", password) == pn;
+    if (saved) {
+      wifiConfigured = true;
+      startSta();
+      out.println(F("WIFI_CONFIG OK saved=1 reconnecting=1"));
+    } else {
+      wifiPrefs.remove("ssid"); wifiPrefs.remove("pass");
+      wifiConfigured = false;
+      WiFi.mode(WIFI_OFF);
+      out.println(F("DENIED wifi_config_invalid"));
+    }
+  } else out.println(F("DENIED wifi_config_invalid"));
+  clearSecrets(password, sizeof(password));
+  clearSecrets(ssid, sizeof(ssid));
+  clearSecrets(encSSID, sizeof(encSSID));
+}
 
 void IRAM_ATTR deOff() {
   GPIO.out_w1tc = 1UL << kDE;
@@ -322,8 +587,8 @@ void IRAM_ATTR uart1ISR(void*) {
 
 void onReferenceError(hardwareSerial_error_t) { ++handshakeErrors; }
 void outputHex(uint8_t value) {
-  if (value < 16) Serial.print('0');
-  Serial.print(value, HEX);
+  if (value < 16) out.print('0');
+  out.print(value, HEX);
 }
 void closeNative() {
   deOff(); disableSlotTimer(); disableDeTimer();
@@ -340,6 +605,7 @@ void closeReference() {
   pinMode(kDI, INPUT);
 }
 void stopEverything(Fault reason) {
+  armedVariant = 255; // A stopped/faulted session never preserves pending authority
   portENTER_CRITICAL(&txLock);
   stopLatched = true;
   deOff(); disableSlotTimer(); disableDeTimer();
@@ -454,20 +720,20 @@ bool openNative() {
 }
 void beginSession(Stage target, uint8_t kind) {
   if (stage != IDLE || !gateReady || deTimer == nullptr || slotTimer == nullptr) {
-    Serial.println(F("DENIED busy_or_unready")); return;
+    out.println(F("DENIED busy_or_unready")); return;
   }
   // OBSERVE transmits 2400-baud source frames, unlike LISTEN_9600.
   // Never allow repeated active handshakes from a persistent USB client.
   if (target == CART_PASSIVE && kind == 3) {
     if (observeConsumed) {
-      Serial.println(F("DENIED observe_already_used")); return;
+      out.println(F("DENIED observe_already_used")); return;
     }
     observeConsumed = true; // consume before any possible handshake TX
   }
   if (target == CART_READ &&
-      (transmitConsumed || armedVariant != kind ||
+      (transmitConsumed || armedVariant != kind || armedFromUSB != commandFromUSB ||
        static_cast<int32_t>(armExpiresMs - millis()) <= 0)) {
-    Serial.println(F("DENIED arm_required_or_consumed")); return;
+    out.println(F("DENIED arm_required_or_consumed")); return;
   }
   if (target == CART_READ) transmitConsumed = true; // before any 2400 TX
   armedVariant = 255;
@@ -480,18 +746,18 @@ void beginSession(Stage target, uint8_t kind) {
   variant = kind;
   const bool listen = target == CART_PASSIVE && kind == 2;
   if (listen) {
-    if (!openNative()) { stopEverything(CART_INIT); Serial.println(F("FAULT reason=CART_INIT")); return; }
+    if (!openNative()) { stopEverything(CART_INIT); out.println(F("FAULT reason=CART_INIT")); return; }
     stopLatched = false;
     stage = CART_PASSIVE; captureStartedMs = millis();
-    Serial.println(F("EVENT session=LISTEN_9600 origin=RO_ONLY no_tx=1"));
+    out.println(F("EVENT session=LISTEN_9600 origin=RO_ONLY no_tx=1"));
     return;
   }
   if (!openReference()) { stopEverything(CART_INIT); return; }
   stopLatched = false;
   stage = QUIET;
   stageStartedMs = millis();
-  Serial.print(F("EVENT session="));
-  Serial.println(target == CART_READ ? F("READ_CANDIDATE") : F("OBSERVE"));
+  out.print(F("EVENT session="));
+  out.println(target == CART_READ ? F("READ_CANDIDATE") : F("OBSERVE"));
 }
 
 bool sendReference(const uint8_t (&bytes)[11]) {
@@ -517,7 +783,7 @@ void pollHandshake() {
     if (now - stageStartedMs >= kQuietMs) {
       if (!sendReference(kEchoId)) { stopEverything(HSK_TX); return; }
       stage = ECHO_TX; stageStartedMs = now;
-      Serial.println(F("EVENT h2400_tx=ECHO_ID bytes=11 candidate=1"));
+      out.println(F("EVENT h2400_tx=ECHO_ID bytes=11 candidate=1"));
     }
   } else if (stage == ECHO_TX || stage == GO_TX) {
     const uint32_t elapsed = static_cast<uint32_t>(esp_timer_get_time()) - refTxStartedUs;
@@ -530,13 +796,13 @@ void pollHandshake() {
         stage = ACK_WAIT;
         stageStartedMs = ackLastMs = now;
         ackCount = 0;
-        Serial.println(F("EVENT h2400_tx_done=ECHO_ID"));
+        out.println(F("EVENT h2400_tx_done=ECHO_ID"));
       } else {
         if (!openNative()) { stopEverything(CART_INIT); return; }
         stopLatched = false;
         stage = variant >= 2 ? CART_PASSIVE : CART_READ;
         captureStartedMs = now;
-        Serial.println(F("EVENT cart=9600_8N1 raw_ro=1 ecu_verified=0 dtc_verified=0"));
+        out.println(F("EVENT cart=9600_8N1 raw_ro=1 ecu_verified=0 dtc_verified=0"));
       }
     }
   } else if (stage == ACK_WAIT) {
@@ -546,8 +812,8 @@ void pollHandshake() {
       ack[ackCount++] = static_cast<uint8_t>(c);
       ackLastMs = now;
       // H2400 logs preserve candidate bytes; host must not infer ECU ownership.
-      Serial.print(F("H2400 t_ms=")); Serial.print(now);
-      Serial.print(F(" byte=")); outputHex(static_cast<uint8_t>(c)); Serial.println();
+      out.print(F("H2400 t_ms=")); out.print(now);
+      out.print(F(" byte=")); outputHex(static_cast<uint8_t>(c)); out.println();
     }
     if (handshakeErrors || ackCount > 12 || now - stageStartedMs >= kAckMs) {
       stopEverything(HSK_ACK); return;
@@ -556,10 +822,10 @@ void pollHandshake() {
       if (memcmp(ack, kEchoId, 11) || ack[11] != 0x01) {
         stopEverything(HSK_ACK); return;
       }
-      Serial.println(F("EVENT ack=candidate_11_echo_plus_01 source=UNVERIFIED"));
+      out.println(F("EVENT ack=candidate_11_echo_plus_01 source=UNVERIFIED"));
       if (!sendReference(kGoCart)) { stopEverything(HSK_TX); return; }
       stage = GO_TX; stageStartedMs = now;
-      Serial.println(F("EVENT h2400_tx=GO_CART bytes=11 candidate=1"));
+      out.println(F("EVENT h2400_tx=GO_CART bytes=11 candidate=1"));
     }
   }
 }
@@ -572,12 +838,12 @@ void flushPadReports() {
   while (sentPadReports < padCount) {
     const uint8_t i = sentPadReports++;
     const CmdWord selected = word(variant, i);
-    Serial.print(F("TX_PAD slot=")); Serial.print(i);
-    Serial.print(F(" expected=")); outputHex(selected.first); outputHex(selected.second);
-    Serial.print(F(" observed=")); outputHex(padRx[i][0]); outputHex(padRx[i][1]);
-    Serial.print(F(" tx_us=")); Serial.print(txStartUs[i]);
-    Serial.print(F(" done_us=")); Serial.print(txDoneUs[i]);
-    Serial.print(F(" match=")); Serial.println(i < wordsVerified ? 1 : 0);
+    out.print(F("TX_PAD slot=")); out.print(i);
+    out.print(F(" expected=")); outputHex(selected.first); outputHex(selected.second);
+    out.print(F(" observed=")); outputHex(padRx[i][0]); outputHex(padRx[i][1]);
+    out.print(F(" tx_us=")); out.print(txStartUs[i]);
+    out.print(F(" done_us=")); out.print(txDoneUs[i]);
+    out.print(F(" match=")); out.println(i < wordsVerified ? 1 : 0);
   }
 }
 void flushRaw() {
@@ -587,18 +853,18 @@ void flushRaw() {
     const int len = snprintf(line, sizeof(line), "RX t_us=%lu byte=%02X\n",
                              static_cast<unsigned long>(value.at), value.value);
     if (len <= 0 || len >= static_cast<int>(sizeof(line))) break;
-    if (Serial.availableForWrite() < len) break; // never block USB and disturb MCU timing
-    Serial.write(reinterpret_cast<const uint8_t*>(line), static_cast<size_t>(len));
+    if (out.freeBytes() < static_cast<size_t>(len)) break; // bounded, never block either transport
+    out.write(reinterpret_cast<const uint8_t*>(line), static_cast<size_t>(len));
     rxRead = (rxRead + 1) & (kRxRingSize - 1);
   }
 }
 void pollActive() {
   if (stage == CART_READ || stage == CART_PASSIVE) {
-    if (reportedErrors != uartErr) { reportedErrors = uartErr; Serial.print(F("EVENT uart_errors=")); Serial.println(uartErr); }
-    if (reportedLost != lostRx) { reportedLost = lostRx; Serial.print(F("EVENT rx_lost=")); Serial.println(lostRx); }
+    if (reportedErrors != uartErr) { reportedErrors = uartErr; out.print(F("EVENT uart_errors=")); out.println(uartErr); }
+    if (reportedLost != lostRx) { reportedLost = lostRx; out.print(F("EVENT rx_lost=")); out.println(lostRx); }
     if (baselineCount != lastReportedBaseline && baselineCount == 16) {
       lastReportedBaseline = baselineCount;
-      Serial.println(F("EVENT baseline=16 synced=1 authority=unverified"));
+      out.println(F("EVENT baseline=16 synced=1 authority=unverified"));
     }
     if (millis() - captureStartedMs >= kCaptureMs) stopEverything(CAPTURE_TIMEOUT);
   }
@@ -608,72 +874,210 @@ void reportEnd() {
   flushPadReports();
   flushRaw();
   if (rxRead != rxWrite) return;
-  Serial.print(F("END reason=")); Serial.print(static_cast<unsigned>(failure));
-  Serial.print(F(" ro_bytes=")); Serial.print(rxTotal);
-  Serial.print(F(" ro_lost=")); Serial.print(lostRx);
-  Serial.print(F(" uart_errors=")); Serial.print(uartErr);
-  Serial.print(F(" pad_verified=")); Serial.print(wordsVerified);
-  Serial.print(F(" words_started=")); Serial.print(wordsStarted);
-  Serial.println(F(" ecu_verified=0 dtc_verified=0 DE=LOW"));
+  out.print(F("END reason=")); out.print(static_cast<unsigned>(failure));
+  out.print(F(" ro_bytes=")); out.print(rxTotal);
+  out.print(F(" ro_lost=")); out.print(lostRx);
+  out.print(F(" uart_errors=")); out.print(uartErr);
+  out.print(F(" pad_verified=")); out.print(wordsVerified);
+  out.print(F(" words_started=")); out.print(wordsStarted);
+  out.println(F(" ecu_verified=0 dtc_verified=0 DE=LOW"));
   stage = IDLE;
 }
 void printStatus() {
-  Serial.print(F("STATUS SME105_USB_BRIDGE_V1 stage=")); Serial.print(static_cast<unsigned>(stage));
+  out.print(F("STATUS SME105_USB_BRIDGE_V1 stage=")); out.print(static_cast<unsigned>(stage));
   const bool transmitting = (stage == ECHO_TX || stage == GO_TX || slotInFlight);
-  Serial.print(transmitting ? F(" DE=ACTIVE_GUARDED") : F(" DE=LOW"));
-  Serial.print(F(" auto_tx=0 gate4=")); Serial.print(gateReady ? 1 : 0);
-  Serial.print(F(" pad_rx=")); Serial.print(nativeReady ? 1 : 0);
-  Serial.print(F(" read_used=")); Serial.print(transmitConsumed ? 1 : 0);
-  Serial.print(F(" observe_used=")); Serial.print(observeConsumed ? 1 : 0);
-  Serial.print(F(" armed="));
+  out.print(transmitting ? F(" DE=ACTIVE_GUARDED") : F(" DE=LOW"));
+  out.print(F(" auto_tx=0 gate4=")); out.print(gateReady ? 1 : 0);
+  out.print(F(" pad_rx=")); out.print(nativeReady ? 1 : 0);
+  out.print(F(" read_used=")); out.print(transmitConsumed ? 1 : 0);
+  out.print(F(" observe_used=")); out.print(observeConsumed ? 1 : 0);
+  out.print(F(" transport_lost=")); out.print(transportFaults);
+  out.print(F(" out_overflow=")); out.print(out.overflow());
+  out.print(F(" armed="));
   if (armedVariant < 2 && !transmitConsumed &&
       static_cast<int32_t>(armExpiresMs - millis()) > 0)
-    Serial.print(armedVariant == 0 ? F("A4") : F("0E"));
-  else Serial.print(F("NONE"));
-  Serial.print(F(" fault=")); Serial.println(static_cast<unsigned>(failure));
+    out.print(armedVariant == 0 ? F("A4") : F("0E"));
+  else out.print(F("NONE"));
+  out.print(F(" fault=")); out.println(static_cast<unsigned>(failure));
 }
 void printPins() {
-  Serial.println(F("PINS ro16=GPIO16_UART1 de18=GPIO18_RMT2..5 di17=GPIO17_UART2_TX+PAD_RX no_arbitrary_tx=1"));
+  out.println(F("PINS ro16=GPIO16_UART1 de18=GPIO18_RMT2..5 di17=GPIO17_UART2_TX+PAD_RX no_arbitrary_tx=1"));
 }
-void runCommand(const char* cmd) {
-  if (!strcmp(cmd, "STOP")) {
-    if (stage != IDLE && stage != FINISHING) { stopEverything(HOST_STOP); Serial.println(F("EVENT stop=accepted DE=LOW")); }
-    else { deOff(); Serial.println(F("EVENT stop=idle DE=LOW")); }
+void processTcpLine(char* line) {
+  if (!tcpAuthenticated) {
+    if (stage != IDLE || strncmp(line, "AUTH ", 5) || !tokenMatches(line + 5)) {
+      // Never return session output or device data to an unauthenticated peer.
+      const char deny[] = "DENIED auth\n";
+      if (wifiClient.fd() >= 0)
+        (void)::send(wifiClient.fd(), deny, sizeof(deny) - 1, MSG_DONTWAIT);
+      dropTcpClient(false);
+      return;
+    }
+    tcpAuthenticated = true;
+    out.markTcpAuthenticated();
+    // Host's security handshake requires EXACT LF, not Arduino Print CRLF.
+    out.print(F("AUTH OK\n"));
     return;
   }
-  if (!strcmp(cmd, "HELLO")) { Serial.println(F("HELLO SME105_USB_BRIDGE_V1 protocol=1 usb_baud=115200 no_auto_tx=1")); return; }
+  commandFromUSB = false;
+  runCommand(line);
+  commandFromUSB = true;
+}
+void pollWiFi() {
+  if (!wifiConfigured || !prefsReady) return;
+  if (WiFi.status() != WL_CONNECTED) {
+    if (wifiClient.connected() || tcpAuthenticated) dropTcpClient(true);
+    if (wifiServerStarted) { wifiServer.end(); wifiServerStarted = false; }
+    if (mdnsStarted) { MDNS.end(); mdnsStarted = false; }
+    if (!busSessionActive() &&
+        static_cast<uint32_t>(millis() - wifiLastRetryMs) >= kStaRetryMs) {
+      wifiLastRetryMs = millis();
+      WiFi.reconnect(); // STA-only retry; NEVER a vehicle command
+    }
+    return;
+  }
+  if (!wifiServerStarted) {
+    // mDNS and socket initialization are task-level potentially costly;
+    // never start them during the phase-critical live CART sequence.
+    if (busSessionActive()) return;
+    wifiServer.begin();
+    wifiServerStarted = true;
+    if (!mdnsStarted && MDNS.begin("sme105-bridge")) {
+      mdnsStarted = true;
+      MDNS.addService("sme105", "tcp", kWiFiPort);
+    }
+  }
+  // An authenticated controller can disappear just as a new connection
+  // arrives. Revoke its ongoing vehicle session BEFORE considering anyone
+  // new. A new TCP peer must never inherit command authority mid-session.
+  if (tcpAuthenticated && !wifiClient.connected()) dropTcpClient(true);
+  WiFiClient incoming = wifiServer.accept();
+  if (incoming) {
+    if (wifiClient.connected() || busSessionActive() || stage == FINISHING)
+      incoming.stop(); // at most one; no connection takeover of live UART
+    else {
+      dropTcpClient(false);
+      wifiClient = incoming;
+      wifiClient.setNoDelay(true);
+      wifiAuthStartedMs = millis();
+      wifiLineUsed = 0;
+      wifiLineDiscard = false;
+    }
+  }
+  if (!wifiClient.connected()) {
+    if (tcpAuthenticated) dropTcpClient(true);
+    return;
+  }
+  if (!tcpAuthenticated &&
+      static_cast<uint32_t>(millis() - wifiAuthStartedMs) > kAuthDeadlineMs) {
+    dropTcpClient(false);
+    return;
+  }
+  // Bounded input per loop: a noisy WiFi peer must never monopolize CART ISR.
+  for (int budget = 0; budget < 96 && wifiClient.connected() && wifiClient.available(); ++budget) {
+    const int octet = wifiClient.read();
+    if (octet < 0) break;
+    const char ch = static_cast<char>(octet);
+    if (ch == '\n' || ch == '\r') {
+      if (wifiLineDiscard) { dropTcpClient(tcpAuthenticated); return; }
+      if (wifiLineUsed) {
+        wifiLine[wifiLineUsed] = 0;
+        processTcpLine(wifiLine);
+        clearSecrets(wifiLine, sizeof wifiLine);
+        wifiLineUsed = 0;
+        if (!wifiClient.connected()) return;
+      }
+    } else if (ch < 32 || ch > 126 || wifiLineUsed >= sizeof(wifiLine) - 1) {
+      // Do not permit an unlimited line or fragmented parser state.
+      wifiLineDiscard = true;
+    } else if (!wifiLineDiscard) {
+      wifiLine[wifiLineUsed++] = ch;
+    }
+  }
+  if (tcpAuthenticated && busSessionActive()) tcpHadActiveSession = true;
+  if (out.tcpSendFailed()) { dropTcpClient(true); return; }
+  if (tcpAuthenticated) out.drainTCP(wifiClient);
+  if (out.tcpSendFailed()) dropTcpClient(true);
+}
+void runCommand(const char* cmd) {
+  if (!strncmp(cmd, "WIFI_CONFIG ", sizeof("WIFI_CONFIG ") - 1)) {
+    processWiFiProvision(cmd); return;
+  }
+  if (!strcmp(cmd, "WIFI_STATUS")) { printWiFiStatus(); return; }
+  if (!strcmp(cmd, "WIFI_TOKEN")) {
+    if (!commandFromUSB) { out.println(F("DENIED usb_only")); return; }
+    if (busSessionActive() || !prefsReady || !validHexToken(wifiToken)) {
+      out.println(F("DENIED wifi_unready")); return;
+    }
+    // Deliberately BYPASS fanout. Never leak token into TCP or raw output.
+    Serial.print(F("WIFI_TOKEN ")); Serial.println(wifiToken);
+    return;
+  }
+  if (!strcmp(cmd, "WIFI_FORGET")) {
+    if (!commandFromUSB) { out.println(F("DENIED usb_only")); return; }
+    if (busSessionActive() || stage == FINISHING || !prefsReady) {
+      out.println(F("DENIED wifi_busy")); return;
+    }
+    dropTcpClient(false);
+    if (wifiServerStarted) { wifiServer.end(); wifiServerStarted = false; }
+    if (mdnsStarted) { MDNS.end(); mdnsStarted = false; }
+    wifiConfigured = false;
+    wifiPrefs.remove("ssid");
+    wifiPrefs.remove("pass");
+    WiFi.disconnect(true, true);
+    WiFi.mode(WIFI_OFF);
+    if (!generateToken()) out.println(F("DENIED wifi_unready"));
+    else out.println(F("WIFI_FORGET OK"));
+    return;
+  }
+  if (!strcmp(cmd, "STOP")) {
+    armedVariant = 255; // STOP from either transport revokes every pending ARM
+    if (stage != IDLE && stage != FINISHING) { stopEverything(HOST_STOP); out.println(F("EVENT stop=accepted DE=LOW")); }
+    else { deOff(); out.println(F("EVENT stop=idle DE=LOW")); }
+    return;
+  }
+  if (!strcmp(cmd, "HELLO")) { out.println(F("HELLO SME105_USB_BRIDGE_V1 protocol=1 usb_baud=115200 no_auto_tx=1")); return; }
   if (!strcmp(cmd, "HELP")) {
-    Serial.println(F("COMMANDS HELLO HELP STATUS PINS LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E STOP RESET_IDLE"));
-    Serial.println(F("READ_* only after matching ARM_* within 15s; one diagnostic attempt per boot; no clear/actuate/raw write"));
+    out.println(F("COMMANDS HELLO HELP STATUS PINS LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E STOP RESET_IDLE"));
+    out.println(F("READ_* only after matching ARM_* within 15s; one diagnostic attempt per boot; no clear/actuate/raw write"));
+    out.println(F("WIFI USB_ONLY: WIFI_CONFIG <SSID_BASE64> <PASSWORD_BASE64> | WIFI_TOKEN | WIFI_FORGET; WIFI_STATUS read-only"));
     return;
   }
   if (!strcmp(cmd, "STATUS")) { printStatus(); return; }
   if (!strcmp(cmd, "PINS")) { printPins(); return; }
   if (!strcmp(cmd, "RESET_IDLE")) {
-    if (stage != IDLE || slotInFlight || !stopLatched) Serial.println(F("DENIED busy"));
-    else { failure = NO_FAULT; armedVariant = 255; Serial.println(F("EVENT idle_reset no_read_rearm=1")); }
+    if (stage != IDLE || slotInFlight || !stopLatched) out.println(F("DENIED busy"));
+    else { failure = NO_FAULT; armedVariant = 255; out.println(F("EVENT idle_reset no_read_rearm=1")); }
     return;
   }
   if (!strcmp(cmd, "ARM_A4") || !strcmp(cmd, "ARM_0E")) {
-    if (stage != IDLE || transmitConsumed) { Serial.println(F("DENIED read_used_or_busy")); return; }
+    if (stage != IDLE || transmitConsumed) { out.println(F("DENIED read_used_or_busy")); return; }
     armedVariant = strcmp(cmd, "ARM_A4") == 0 ? 0 : 1;
+    armedFromUSB = commandFromUSB;
     armExpiresMs = millis() + kArmMs;
-    Serial.print(F("EVENT read_armed variant=")); Serial.print(armedVariant == 0 ? F("A4") : F("0E"));
-    Serial.println(F(" valid_ms=15000 no_tx_yet=1"));
+    out.print(F("EVENT read_armed variant=")); out.print(armedVariant == 0 ? F("A4") : F("0E"));
+    out.println(F(" valid_ms=15000 no_tx_yet=1"));
     return;
   }
   if (!strcmp(cmd, "READ_A4")) { beginSession(CART_READ, 0); return; }
   if (!strcmp(cmd, "READ_0E")) { beginSession(CART_READ, 1); return; }
   if (!strcmp(cmd, "OBSERVE")) { beginSession(CART_PASSIVE, 3); return; }
   if (!strcmp(cmd, "LISTEN_9600")) { beginSession(CART_PASSIVE, 2); return; }
-  Serial.println(F("DENIED unknown_or_unsafe_command"));
+  out.println(F("DENIED unknown_or_unsafe_command"));
 }
 void pollUsb() {
-  while (Serial.available()) {
+  // Maximum input budget protects the phase-critical CART service loop.
+  for (int budget = 0; budget < 192 && Serial.available(); ++budget) {
     const char ch = static_cast<char>(Serial.read());
     if (ch == '\n' || ch == '\r') {
       if (discardLine) { discardLine = false; commandUsed = 0; continue; }
-      if (commandUsed) { commandBuffer[commandUsed] = 0; runCommand(commandBuffer); commandUsed = 0; }
+      if (commandUsed) {
+        commandBuffer[commandUsed] = 0;
+        commandFromUSB = true;
+        runCommand(commandBuffer);
+        clearSecrets(commandBuffer, sizeof commandBuffer);
+        commandUsed = 0;
+      }
     } else if (ch < 32 || ch > 126 || commandUsed >= sizeof(commandBuffer) - 1) {
       discardLine = true;
       commandUsed = 0;
@@ -703,20 +1107,34 @@ void setup() {
   gateReady = setupGate();
   deOff();
   stopLatched = true;
-  Serial.println(F("BOOT SME105_USB_BRIDGE_V1 no_auto_tx=1 DE=LOW source_commands_unverified=1"));
-  if (!gateReady || !deTimer || !slotTimer) Serial.println(F("FAULT reason=HARDWARE_INIT no_transmit=1"));
+  out.println(F("BOOT SME105_USB_BRIDGE_V1 no_auto_tx=1 DE=LOW source_commands_unverified=1"));
+  if (!gateReady || !deTimer || !slotTimer) out.println(F("FAULT reason=HARDWARE_INIT no_transmit=1"));
+  initializeWiFi(); // STA credentials + token from NVS; NEVER starts ECU TX
 }
 void loop() {
   pollUsb();
+  pollWiFi();
   if (stage == QUIET || stage == ECHO_TX || stage == ACK_WAIT || stage == GO_TX) pollHandshake();
   pollActive();
   flushRaw();
+  // A slow/hostile transport cannot silently force unbounded buffering or
+  // authorize further ECU slots. Disconnect TCP on backpressure: its host
+  // sees no END and must mark the session incomplete. USB retains evidence.
+  if (out.freeBytes() < 128 || out.overflow()) {
+    if (busSessionActive()) stopEverything(TRANSPORT_BACKPRESSURE);
+    if (tcpAuthenticated) dropTcpClient(false);
+  }
   if (stage == FAULTED) {
     const Fault reason = failure;
     stopEverything(reason);
-    Serial.print(F("FAULT reason=")); Serial.println(static_cast<unsigned>(reason));
+    out.print(F("FAULT reason=")); out.println(static_cast<unsigned>(reason));
   }
   flushPadReports();
   if (stage == FINISHING) reportEnd();
+  out.drainUSB();
+  if (tcpAuthenticated) {
+    out.drainTCP(wifiClient);
+    if (out.tcpSendFailed()) dropTcpClient(true);
+  }
   delay(0);
 }

@@ -11,6 +11,8 @@ import argparse
 import hashlib
 import os
 import re
+import socket
+import stat
 import threading
 import time
 from collections.abc import Callable
@@ -23,6 +25,9 @@ import serial
 
 ROOT = Path(__file__).resolve().parents[1]
 BAUD = 115200
+TCP_PORT = 8765
+DEFAULT_TOKEN_FILE = Path("~/.config/sme105/bridge-token").expanduser()
+TOKEN_HEX = re.compile(rb"^[0-9a-fA-F]{32}$")
 COMMANDS = ("STATUS", "LISTEN", "HELLO", "REQUEST_A4", "REQUEST_0E", "STOP", "EXIT")
 CAR_TRANSMIT = frozenset(("HELLO", "REQUEST_A4", "REQUEST_0E"))
 WIRE_COMMANDS = frozenset(("HELLO", "PINS", "STATUS", "LISTEN_9600", "OBSERVE", "ARM_A4",
@@ -60,6 +65,106 @@ class SerialPort(Protocol):
     def write(self, data: bytes) -> int: ...
 
     def flush(self) -> None: ...
+
+
+def load_wifi_token(path: Path) -> bytes:
+    """Load a provisioned 128-bit token without logging or disclosing it."""
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
+            raise BridgeError("WiFi token file must be regular, private (0600), and not a symlink")
+        if info.st_uid != os.getuid():
+            raise BridgeError("WiFi token file ownership mismatch")
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "rb") as stream:
+            current = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(current.st_mode) or current.st_mode & 0o077 or
+                    (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino)):
+                raise BridgeError("WiFi token file changed during open")
+            data = stream.read(128)
+    except OSError as exc:
+        raise BridgeError("Cannot read secure WiFi token file") from exc
+    token = data.strip(b"\r\n")
+    if not TOKEN_HEX.fullmatch(token) or data not in (token, token + b"\n"):
+        raise BridgeError("Invalid WiFi token file format (expected 32 hex characters)")
+    return token.lower()
+
+
+class AuthenticatedTcpPort:
+    """Serial-like adapter for one authenticated, non-reconnecting TCP socket.
+
+    No user command crosses the network until AUTH OK is received. Authentication
+    traffic is intentionally excluded from the raw ECU evidence transcript and
+    never printed. read() distinguishes a quiet socket from EOF.
+    """
+
+    def __init__(self, host: str, token: bytes, *,
+                 port: int = TCP_PORT, connect_timeout: float = 4.0,
+                 read_timeout: float = 0.05) -> None:
+        if not host or host.strip() != host or any(
+                c in host for c in ("/", "\\", ":", " ", "\n", "\r", "@")):
+            raise BridgeError("Invalid WiFi hostname: supply only an IPv4 or DNS/mDNS name")
+        if not TOKEN_HEX.fullmatch(token):
+            raise BridgeError("Malformed WiFi credential")
+        if not 1 <= port <= 65535:
+            raise BridgeError("Invalid TCP port")
+        try:
+            conn = socket.create_connection((host, port), timeout=connect_timeout)
+        except OSError as exc:
+            raise BridgeError("Cannot connect to authenticated SME105 WiFi bridge") from exc
+        self._socket = conn
+        self.closed = False
+        try:
+            conn.settimeout(connect_timeout)
+            conn.sendall(b"AUTH " + token + b"\n")
+            response = bytearray()
+            # Read a single frame strictly; never emit/log credentials or
+            # treat extra bytes as an already-authorized command response.
+            while not response.endswith(b"\n") and len(response) < 64:
+                chunk = conn.recv(1)
+                if not chunk:
+                    raise BridgeError("WiFi authentication socket closed")
+                response.extend(chunk)
+            if bytes(response) != b"AUTH OK\n":
+                raise BridgeError("WiFi bridge authentication rejected")
+            conn.settimeout(read_timeout)
+        except (OSError, BridgeError) as exc:
+            conn.close()
+            if isinstance(exc, BridgeError):
+                raise
+            raise BridgeError("WiFi bridge authentication failed") from exc
+
+    def read(self, size: int = 1) -> bytes:
+        if self.closed:
+            raise BridgeError("WiFi bridge socket closed")
+        try:
+            data = self._socket.recv(size)
+        except TimeoutError:
+            return b""
+        except OSError as exc:
+            raise BridgeError("WiFi bridge connection lost") from exc
+        if not data:
+            raise BridgeError("WiFi bridge disconnected (no automatic reconnection)")
+        return data
+
+    def write(self, data: bytes) -> int:
+        if self.closed:
+            raise BridgeError("WiFi bridge socket closed")
+        try:
+            self._socket.sendall(data)
+        except OSError as exc:
+            raise BridgeError("WiFi bridge write failed; command outcome uncertain") from exc
+        return len(data)
+
+    def flush(self) -> None:
+        # TCP sendall() has no userland buffered bytes to flush; it does not
+        # imply that the firmware accepted or executed any vehicle command.
+        pass
+
+    def close(self) -> None:
+        if not self.closed:
+            self.closed = True
+            self._socket.close()
 
 
 @dataclass(frozen=True)
@@ -394,7 +499,7 @@ class BridgeClient:
                 if written != len(data):
                     raise BridgeError("partial USB command write; TX state uncertain")
                 self.port.flush()
-            except (OSError, serial.SerialException) as exc:
+            except (OSError, serial.SerialException, BridgeError) as exc:
                 raise BridgeError(f"USB command write failed: {exc}") from exc
 
     def _wait_response(self, name: str, generation: int,
@@ -590,6 +695,11 @@ def main(argv: list[str] | None = None,
          display: Callable[[str], None] = print) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default="/dev/ttyUSB0")
+    parser.add_argument("--host", help="WiFi bridge hostname/IP (for example sme105-bridge.local)")
+    parser.add_argument("--token-file", type=Path, default=DEFAULT_TOKEN_FILE,
+                        help="private 0600 file containing the 128-bit WiFi token")
+    parser.add_argument("--tcp-port", type=int, default=TCP_PORT,
+                        help=argparse.SUPPRESS)
     parser.add_argument("--startup-seconds", type=float, default=1.5,
                         help="settle ESP32 USB reset before accepting protocol records")
     parser.add_argument("--output-dir", type=Path,
@@ -610,19 +720,19 @@ def main(argv: list[str] | None = None,
     port: SerialPort | None = None
     exit_code = 0
     try:
-        port = serial.Serial(args.port, BAUD, timeout=0.05,
-                             write_timeout=0.8, dsrdtr=False,
-                             rtscts=False)
-        port.dtr = False
-        port.rts = False
-        # The CP210x may reset the ESP32 when USB opens. ROM boot chatter at
-        # 115200 is not part of our authenticated USB protocol, and can even
-        # contain truncated/garbled text. Do not let it corrupt the immutable
-        # diagnostic record, which begins only after the boot has settled.
-        # There is no active RX/TX diagnostic session before this boundary.
-        if args.startup_seconds:
-            time.sleep(args.startup_seconds)
-            port.reset_input_buffer()
+        if args.host:
+            token = load_wifi_token(args.token_file.expanduser())
+            port = AuthenticatedTcpPort(args.host, token, port=args.tcp_port)
+        else:
+            port = serial.Serial(args.port, BAUD, timeout=0.05,
+                                 write_timeout=0.8, dsrdtr=False, rtscts=False)
+            port.dtr = False
+            port.rts = False
+            # Opening CP210x USB can reset the device; discard only ROM boot
+            # chatter before the first diagnostic operation. WiFi has no reset.
+            if args.startup_seconds:
+                time.sleep(args.startup_seconds)
+                port.reset_input_buffer()
         client = BridgeClient(port, evidence, display=display)
         client.start()
         # USB HELLO does not communicate with the ECU. Confirm the exact
@@ -687,8 +797,8 @@ def main(argv: list[str] | None = None,
             if port is not None:
                 try:
                     port.close()
-                except (OSError, serial.SerialException) as exc:
-                    display(f"USB close error: {exc}")
+                except (OSError, serial.SerialException, BridgeError) as exc:
+                    display(f"Bridge close error: {exc}")
                     exit_code = 2
     return exit_code
 
