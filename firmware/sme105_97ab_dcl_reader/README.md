@@ -126,6 +126,60 @@ but until an off-vehicle flash and isolated same-wire desk test succeed,
 **do not try V2 B transmission on the vehicle**. No claim is made that
 RMT0 instrumented acquisition will work on the real bus yet.
 
+## V3: first-word-only car diagnostic, flashed and bench-verified
+
+After a complete isolated V2 desk run passed twice (raw captures
+`20261103T090337573272Z-desk.txt` and
+`20261103T090411542115Z-desk.txt`), V3 was built and flashed on the
+ESP32, with the unchanged GPIO connections. It is a separate
+**one-word diagnostic**, not a fresh full fault-code read.
+
+- `PROBE_B_FIRST_ONCE` performs the same exact reference handshake
+  and validates 16 CART ID headers, then emits **at most one source-fixed
+  2-byte word: `01 B0`** in ID0 slot1. After it gets both local echo bytes
+  and TX_DONE, it deliberately stops *before* ID1 or any other B word.
+  If the first byte is wrong it aborts immediately as in V2.
+- Parallel GPIO17 **DI pad** RMT1 and GPIO16 **RO pad** RMT0 waveform
+  probes run only during the first word. GPIO17 is an
+  INPUT_OUTPUT (still driven by UART2 TX); both RMT inputs are restored
+  by the normal GPIO matrix routine after port initialization. No wires,
+  output GPIOs or line driver commands have been added.
+- On mismatch the capture includes
+  `CART_FIRST_ECHO_MISMATCH`, `CART_RO_RMT`, `CART_RO_EDGE`,
+  `CART_DI_RMT`, `CART_DI_EDGE`, and
+  `CART_PROBE_RESULT first_word_confirmed=0`.
+  These are independent **ESP pad** observations, not differential
+  A/B measurements or proof of ECU acceptance.
+- V3 was flashed successfully, its flash write hashes verified and
+  STATUS/PINS/RX_TEST passed. An actual isolated MAX487 bench run
+  passed all 4 synthetic words, including 01B0, with UART1 echo and
+  UART2 TX_DONE. Both RMT channels captured completed packets.
+
+Exact isolated V3 desk evidence:
+
+`captures/SME105_97AB/20261103T091141184623Z-desk.txt`
+
+SHA256:
+`1040616f06174002f5b0cfc2acec026b17cce5d4cfe042e48248b53eab2a1474`
+
+**Next single in-car diagnostic**, only after the isolated desk test and
+the adapter is returned to its verified vehicle DCL port, key ON
+engine OFF:
+
+~~~sh
+PYTHONPATH=src ./.venv/bin/python scripts/sme105_97ab_session.py \
+    --action probe-first --vehicle-confirmed
+~~~
+
+Type `PROBE_B_FIRST_ONCE` at the prompt. Preserve the new raw file
+under `captures/SME105_97AB/` for next analysis.
+Do NOT follow it immediately with `dtc-a4`, `dtc-0e` or another
+probe. If the single 01B0 word is confirmed, that is **not a DTC**
+result: the next software iteration will decide the full B sequence.
+If it fails, compare DI17 and RO16 waveforms, reason code, UART status
+and DE route against the two verified desk captures before changing
+the bus timing or firmware.
+
 ## Host commands
 
 From project root, with current USB connected:

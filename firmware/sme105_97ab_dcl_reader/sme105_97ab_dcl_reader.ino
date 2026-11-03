@@ -52,6 +52,7 @@ bool rawEnabled = false;
 bool referenceUartEnabled = false;
 bool oneShotConsumed = false;
 bool requestMode = false;
+bool probeFirstOnly = false;
 bool stopByHost = false;
 char commandLine[32] = {};
 size_t lineUsed = 0;
@@ -77,6 +78,17 @@ constexpr size_t kRoWaveLimit = 48;
 rmt_item32_t roWave[kRoWaveLimit] = {};
 uint8_t roWaveCount = 0;
 bool roWaveOverflow = false;
+// Parallel DI17 pad readback. The RMT1 RX input sees the actual ESP32 pad,
+// while UART2 still owns its TX output matrix; it does not drive the pin.
+RingbufHandle_t diWaveRing = nullptr;
+bool diWaveReady = false;
+bool diWaveStarted = false;
+bool diWaveStartFailed = false;
+bool diWaveFromCompletedPacket = false;
+rmt_item32_t diWave[kRoWaveLimit] = {};
+uint8_t diWaveCount = 0;
+bool diWaveOverflow = false;
+bool probeWordConfirmed = false;
 volatile bool echoMismatch = false;
 volatile uint8_t echoExpectedByte = 0;
 volatile uint8_t echoActualByte = 0;
@@ -406,8 +418,15 @@ bool open9600() {
   gpio_matrix_in(kRx, U1RXD_IN_IDX, false);
   if (GPIO.func_in_sel_cfg[U1RXD_IN_IDX].func_sel != kRx ||
       GPIO.func_in_sel_cfg[U1RXD_IN_IDX].sig_in_sel != 1) return false;
-  gpio_set_direction(GPIO_NUM_17, GPIO_MODE_OUTPUT);
+  // GPIO17 must remain an output to MAX487 DI *and* an input for the
+  // parallel RMT1 pad witness. OUTPUT-only would disable the input gate
+  // and yield empty/false DI captures even with correct UART2 TX.
+  gpio_set_direction(GPIO_NUM_17, GPIO_MODE_INPUT_OUTPUT);
   gpio_matrix_out(GPIO_NUM_17, U2TXD_OUT_IDX, false, false);
+  gpio_matrix_in(GPIO_NUM_17, RMT_SIG_IN1_IDX, false);
+  if (GPIO.func_in_sel_cfg[RMT_SIG_IN1_IDX].func_sel != 17 ||
+      GPIO.func_in_sel_cfg[RMT_SIG_IN1_IDX].sig_in_sel != 1 ||
+      GPIO.func_out_sel_cfg[17].func_sel != U2TXD_OUT_IDX) return false;
   UART1.int_ena.val = 0;
   UART1.int_clr.val = 0xFFFFFFFF;
   UART1.conf0.rxfifo_rst = 1;
@@ -499,6 +518,24 @@ bool setupRoWave() {
           roWaveRing != nullptr);
 }
 
+bool setupDiWave() {
+  rmt_config_t config = {};
+  config.rmt_mode = RMT_MODE_RX;
+  config.channel = RMT_CHANNEL_1;
+  config.gpio_num = GPIO_NUM_17;
+  config.clk_div = 80;
+  config.mem_block_num = 1;
+  config.rx_config.filter_en = false;
+  config.rx_config.idle_threshold = 8000;
+  if (rmt_config(&config) != ESP_OK ||
+      rmt_driver_install(RMT_CHANNEL_1, 2048, 0) != ESP_OK ||
+      rmt_get_ringbuf_handle(RMT_CHANNEL_1, &diWaveRing) != ESP_OK ||
+      diWaveRing == nullptr) return false;
+  // RMT RX configuration may change pin output mode. UART2 TX is always
+  // explicitly routed again by open9600() prior to any diagnostic send.
+  return true;
+}
+
 void stopRoWave() {
   if (!roWaveStarted) return;
   (void)rmt_rx_stop(RMT_CHANNEL_0);
@@ -526,6 +563,32 @@ void stopRoWave() {
       rmt_item32_t item = {};
       item.val = value;
       roWave[roWaveCount++] = item;
+    }
+  }
+}
+
+void stopDiWave() {
+  if (!diWaveStarted) return;
+  (void)rmt_rx_stop(RMT_CHANNEL_1);
+  diWaveStarted = false;
+  size_t bytes = 0;
+  void* packet = nullptr;
+  while ((packet = xRingbufferReceive(diWaveRing, &bytes, 0))) {
+    diWaveFromCompletedPacket = true;
+    const auto* items = static_cast<const rmt_item32_t*>(packet);
+    for (size_t i = 0; i < bytes / sizeof(rmt_item32_t); ++i) {
+      if (diWaveCount < kRoWaveLimit) diWave[diWaveCount++] = items[i];
+      else diWaveOverflow = true;
+    }
+    vRingbufferReturnItem(diWaveRing, packet);
+  }
+  if (!diWaveFromCompletedPacket) {
+    for (uint8_t i = 0; i < kRoWaveLimit; ++i) {
+      const uint32_t value = RMTMEM.chan[1].data32[i].val;
+      if ((value & 0x7FFF) == 0) break;
+      rmt_item32_t item = {};
+      item.val = value;
+      diWave[diWaveCount++] = item;
     }
   }
 }
@@ -581,6 +644,14 @@ void dumpReport() {
       Serial.print(F(" de_gpio_input_sample=")); Serial.print(echoDeLevel);
       Serial.print(F(" de_mux_route=")); Serial.println(echoDeRoute);
     }
+    if (probeFirstOnly) {
+      Serial.print(F("CART_PROBE_RESULT first_word_confirmed="));
+      Serial.print(probeWordConfirmed ? 1 : 0);
+      Serial.print(F(" transmitted_words=")); Serial.print(request.requested);
+      Serial.print(F(" confirmed_words=")); Serial.print(request.completed);
+      Serial.print(F(" reason=")); Serial.print(static_cast<unsigned>(request.fault));
+      Serial.println(F(" no_full_B=1 no_dtc_claim=1"));
+    }
     if (request.stage == cart_candidate::Stage::Failed) {
       Serial.print(F("CART_RO_RMT scope=GPIO16_RX_ONLY items=")); Serial.print(roWaveCount);
       Serial.print(F(" overflow=")); Serial.print(roWaveOverflow ? 1 : 0);
@@ -591,6 +662,20 @@ void dumpReport() {
       for (uint8_t i = 0; i < roWaveCount; ++i) {
         const rmt_item32_t& edge = roWave[i];
         Serial.print(F("CART_RO_EDGE item=")); Serial.print(i);
+        Serial.print(F(" level0=")); Serial.print(edge.level0);
+        Serial.print(F(" dur0_us=")); Serial.print(edge.duration0);
+        Serial.print(F(" level1=")); Serial.print(edge.level1);
+        Serial.print(F(" dur1_us=")); Serial.println(edge.duration1);
+      }
+      Serial.print(F("CART_DI_RMT scope=GPIO17_RX_ONLY items=")); Serial.print(diWaveCount);
+      Serial.print(F(" overflow=")); Serial.print(diWaveOverflow ? 1 : 0);
+      Serial.print(F(" start_failed=")); Serial.print(diWaveStartFailed ? 1 : 0);
+      Serial.print(F(" source=")); Serial.print(diWaveFromCompletedPacket ?
+          F("RMT_PACKET") : F("RMTMEM_STOP_SNAPSHOT_UNVERIFIED"));
+      Serial.println(F(" absolute_edge_time=UNAVAILABLE pad_output_only=1"));
+      for (uint8_t i = 0; i < diWaveCount; ++i) {
+        const rmt_item32_t& edge = diWave[i];
+        Serial.print(F("CART_DI_EDGE item=")); Serial.print(i);
         Serial.print(F(" level0=")); Serial.print(edge.level0);
         Serial.print(F(" dur0_us=")); Serial.print(edge.duration0);
         Serial.print(F(" level1=")); Serial.print(edge.level1);
@@ -611,10 +696,12 @@ void dumpReport() {
   Serial.println(F(" ecu_verified=0 dtc_verified=0"));
 }
 
-void attempt(cart_candidate::Variant variant, bool sendB) {
+void attempt(cart_candidate::Variant variant, bool sendB, bool firstWordOnly = false) {
   oneShotConsumed = true; // consume before the first handshake TX
   stopLatched = false; // no slot alarm or active transmit exists yet
   requestMode = sendB;
+  probeFirstOnly = firstWordOnly;
+  probeWordConfirmed = false;
   stopByHost = false;
   request = cart_candidate::FourWordRequest(variant);
   echoMismatch = false;
@@ -627,12 +714,18 @@ void attempt(cart_candidate::Variant variant, bool sendB) {
   roWaveCount = 0;
   roWaveOverflow = false;
   roWaveStarted = false;
+  diWaveStartFailed = false;
+  diWaveFromCompletedPacket = false;
+  diWaveCount = 0;
+  diWaveOverflow = false;
+  diWaveStarted = false;
   uartErrors = 0;
   driverOff();
   // A lingering CART stream after a previous session is not an invitation
   // to start another 2400 baud master handshake over active ECU traffic.
   if (!begin2400() || (sendB &&
-       (!slotTimer || !watchdog || rmtChannelsReady != 4 || !roWaveReady))) {
+       (!slotTimer || !watchdog || rmtChannelsReady != 4 ||
+        !roWaveReady || !diWaveReady))) {
     end2400(); Serial.println(F("ABORT reference_init_failed")); return;
   }
   uint32_t preBytes = 0;
@@ -666,8 +759,10 @@ void attempt(cart_candidate::Variant variant, bool sendB) {
     if (sendB && request.stage == cart_candidate::Stage::Request &&
         request.requested == 0 && !roWaveStarted && !roWaveStartFailed) {
       if (rmt_rx_start(RMT_CHANNEL_0, true) == ESP_OK) roWaveStarted = true;
-      else {
+      if (rmt_rx_start(RMT_CHANNEL_1, true) == ESP_OK) diWaveStarted = true;
+      if (!roWaveStarted || !diWaveStarted) {
         roWaveStartFailed = true;
+        diWaveStartFailed = true;
         stopActiveRequest();
         break;
       }
@@ -676,7 +771,15 @@ void attempt(cart_candidate::Variant variant, bool sendB) {
     // extra receiver before the next CART frame. Leaving an 8ms-idle
     // RMT receiver running through 10s of periodic ID traffic would
     // exhaust its 64-item hardware buffer and interfere with UART.
-    if (sendB && roWaveStarted && request.completed >= 1) stopRoWave();
+    if (sendB && request.completed >= 1) {
+      if (roWaveStarted) stopRoWave();
+      if (diWaveStarted) stopDiWave();
+      if (probeFirstOnly) {
+        probeWordConfirmed = true;
+        stopActiveRequest();
+        break;
+      }
+    }
     if (hostStopRequested()) {
       stopByHost = true;
       stopActiveRequest();
@@ -693,6 +796,7 @@ void attempt(cart_candidate::Variant variant, bool sendB) {
   if (roWaveStarted) {
     stopRoWave();
   }
+  if (diWaveStarted) stopDiWave();
   Serial.print(F("CART_RUN mode="));
   Serial.print(sendB ? F("ACTIVE_CANDIDATE") : F("PASSIVE_AFTER_HANDSHAKE"));
   Serial.print(F(" stopped=")); Serial.println(stopByHost ? 1 : 0);
@@ -700,8 +804,9 @@ void attempt(cart_candidate::Variant variant, bool sendB) {
 }
 
 void help() {
-  Serial.println(F("COMMANDS STATUS | PINS | HELP | PREVIEW_B_A4 | PREVIEW_B_0E | RX_TEST | DESK_MAX_ONCE | OBSERVE_CART_ONCE | READ_DTC_A4_ONCE | READ_DTC_0E_ONCE | STOP"));
+  Serial.println(F("COMMANDS STATUS | PINS | HELP | PREVIEW_B_A4 | PREVIEW_B_0E | RX_TEST | DESK_MAX_ONCE | PROBE_B_FIRST_ONCE | OBSERVE_CART_ONCE | READ_DTC_A4_ONCE | READ_DTC_0E_ONCE | STOP"));
   Serial.println(F("97AB-12A650-KA; B attempts manual one-shot, unqualified on vehicle; no auto TX at boot"));
+  Serial.println(F("PROBE_B_FIRST_ONCE only sends 01B0 if qualified, NEVER remaining B words or a DTC request"));
   Serial.println(F("Never clears DTCs, starts KOEO tests, repeats TX, or accepts arbitrary opcodes"));
 }
 
@@ -789,6 +894,12 @@ void deskMaxOnce() {
         break;
       }
       roWaveStarted = true;
+      if (rmt_rx_start(RMT_CHANNEL_1, true) != ESP_OK) {
+        pass = false;
+        diWaveStartFailed = true;
+        break;
+      }
+      diWaveStarted = true;
     }
     UART2.int_clr.tx_done = 1;
     UART2.int_ena.tx_done = 1;
@@ -825,14 +936,20 @@ void deskMaxOnce() {
     delay(11);
     stopRoWave();
   }
+  if (diWaveStarted) stopDiWave();
   const bool scopePass = roWaveFromCompletedPacket && roWaveCount > 0 &&
-      !roWaveOverflow && !roWaveStartFailed;
+      !roWaveOverflow && !roWaveStartFailed &&
+      diWaveFromCompletedPacket && diWaveCount > 0 &&
+      !diWaveOverflow && !diWaveStartFailed;
   pass = pass && scopePass;
   close9600();
   benchMode = false;
   Serial.print(F("DESK_RO_SCOPE items=")); Serial.print(roWaveCount);
   Serial.print(F(" complete_packet=")); Serial.print(roWaveFromCompletedPacket ? 1 : 0);
   Serial.print(F(" overflow=")); Serial.println(roWaveOverflow ? 1 : 0);
+  Serial.print(F("DESK_DI_SCOPE items=")); Serial.print(diWaveCount);
+  Serial.print(F(" complete_packet=")); Serial.print(diWaveFromCompletedPacket ? 1 : 0);
+  Serial.print(F(" overflow=")); Serial.println(diWaveOverflow ? 1 : 0);
   Serial.print(F("DESK_END ")); Serial.print(pass && completed == 4 ? F("PASS") : F("FAIL"));
   Serial.print(F(" completed=")); Serial.print(completed);
   Serial.print(F(" uart_errors=")); Serial.print(uartErrors);
@@ -843,11 +960,13 @@ void deskMaxOnce() {
 void command() {
   if (!std::strcmp(commandLine, "STATUS")) {
     driverOff();
-    Serial.print(F("STATUS SME105_97AB_READER_V2 ecu=97AB-12A650-KA DE=LOW auto_tx=0 attempt_used="));
+    Serial.print(F("STATUS SME105_97AB_READER_V3 ecu=97AB-12A650-KA DE=LOW auto_tx=0 attempt_used="));
     Serial.print(oneShotConsumed ? 1 : 0);
     Serial.print(F(" timers=")); Serial.print(watchdog && slotTimer ? 2 : 0);
     Serial.print(F(" gate4=")); Serial.print(rmtChannelsReady == 4 ? 1 : 0);
-    Serial.print(F(" ro_scope=")); Serial.println(roWaveReady ? 1 : 0);
+    Serial.print(F(" ro_scope=")); Serial.print(roWaveReady ? 1 : 0);
+    Serial.print(F(" di_scope=")); Serial.print(diWaveReady ? 1 : 0);
+    Serial.println(F(" first_probe=1"));
   } else if (!std::strcmp(commandLine, "HELP")) help();
   else if (!std::strcmp(commandLine, "PREVIEW_B_A4") ||
            !std::strcmp(commandLine, "PREVIEW_B_0E")) {
@@ -860,12 +979,17 @@ void command() {
     Serial.print(F(" de18=")); Serial.print(digitalRead(18) == HIGH ? 1 : 0);
     Serial.print(F(" gate4=")); Serial.print(rmtChannelsReady == 4 ? 1 : 0);
     Serial.print(F(" ro_scope=")); Serial.print(roWaveReady ? 1 : 0);
+    Serial.print(F(" di_scope=")); Serial.print(diWaveReady ? 1 : 0);
     Serial.println(F(" DE=LOW no_tx=1"));
   }
   else if (!std::strcmp(commandLine, "RX_TEST")) rxTest();
   else if (!std::strcmp(commandLine, "DESK_MAX_ONCE")) {
     if (oneShotConsumed) Serial.println(F("DENIED one_attempt_consumed"));
     else deskMaxOnce();
+  }
+  else if (!std::strcmp(commandLine, "PROBE_B_FIRST_ONCE")) {
+    if (oneShotConsumed) Serial.println(F("DENIED one_attempt_consumed"));
+    else attempt(cart_candidate::Variant::FlxA4, true, true);
   }
   else if (!std::strcmp(commandLine, "OBSERVE_CART_ONCE")) {
     if (oneShotConsumed) Serial.println(F("DENIED one_attempt_consumed"));
@@ -906,8 +1030,10 @@ void setup() {
   }
   roWaveReady = setupRoWave();
   if (!roWaveReady) Serial.println(F("FATAL RMT_RO_SCOPE_INIT_FAILED: B TX denied"));
+  diWaveReady = setupDiWave();
+  if (!diWaveReady) Serial.println(F("FATAL RMT_DI_SCOPE_INIT_FAILED: B TX denied"));
   delay(250);
-  Serial.println(F("SME105_97AB_READER_V2 NO_AUTO_TX FIRST_WORD_WAVEFORM"));
+  Serial.println(F("SME105_97AB_READER_V3 NO_AUTO_TX FIRST_B_PROBE_DI_RO"));
   help();
 }
 

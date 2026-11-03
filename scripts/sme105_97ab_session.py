@@ -24,11 +24,13 @@ else:
 
 ROOT = Path(__file__).resolve().parents[1]
 STATUS = re.compile(
-    rb"^STATUS SME105_97AB_READER_V([12]) ecu=97AB-12A650-KA DE=LOW "
-    rb"auto_tx=0 attempt_used=([01]) timers=2 gate4=1( ro_scope=1)?\r?\n$"
+    rb"^STATUS SME105_97AB_READER_V([123]) ecu=97AB-12A650-KA DE=LOW "
+    rb"auto_tx=0 attempt_used=([01]) timers=2 gate4=1"
+    rb"( ro_scope=1)?( di_scope=1 first_probe=1)?\r?\n$"
 )
 PINS = re.compile(
-    rb"^PINS ro16=1 de18=0 gate4=1( ro_scope=1)? DE=LOW no_tx=1\r?\n$"
+    rb"^PINS ro16=1 de18=0 gate4=1( ro_scope=1)?( di_scope=1)? "
+    rb"DE=LOW no_tx=1\r?\n$"
 )
 COMMANDS = {
     "status": b"STATUS\n",
@@ -40,9 +42,10 @@ COMMANDS = {
     "observe-cart": b"OBSERVE_CART_ONCE\n",
     "dtc-a4": b"READ_DTC_A4_ONCE\n",
     "dtc-0e": b"READ_DTC_0E_ONCE\n",
+    "probe-first": b"PROBE_B_FIRST_ONCE\n",
 }
-EXPLICIT = {"desk", "observe-cart", "dtc-a4", "dtc-0e"}
-VEHICLE = {"observe-cart", "dtc-a4", "dtc-0e"}
+EXPLICIT = {"desk", "observe-cart", "dtc-a4", "dtc-0e", "probe-first"}
+VEHICLE = {"observe-cart", "dtc-a4", "dtc-0e", "probe-first"}
 ENDING = re.compile(rb"^CART_END [^\r\n]+\r?$", re.MULTILINE)
 ABORT = re.compile(rb"^(?:ABORT |CART_ABORT |DENIED |ACK_REJECT |REF_ACK_OVERFLOW )", re.MULTILINE)
 DESK_WORD = re.compile(
@@ -52,6 +55,7 @@ DESK_WORD = re.compile(
 DESK_SAMPLES = (b"55AA", b"33CC", b"0FF0", b"01B0")
 DESK_BEGIN = b"DESK_BEGIN MAX_UART1_RX16_UART2_TX17_RMT_DE18 no_car=1"
 DESK_SCOPE = re.compile(rb"^DESK_RO_SCOPE items=([0-9]+) complete_packet=1 overflow=0$")
+DESK_DI_SCOPE = re.compile(rb"^DESK_DI_SCOPE items=([0-9]+) complete_packet=1 overflow=0$")
 DESK_END = (
     b"DESK_END PASS completed=4 uart_errors=0 cutoff=0 "
     b"B_TX=0 ECU_TX=0 DE=LOW"
@@ -60,10 +64,12 @@ DESK_END = (
 
 def verify_desk(raw: bytes) -> bool:
     rows = raw.replace(b"\r", b"").splitlines()
-    if len(rows) != 7 or rows[0] != DESK_BEGIN or rows[-1] != DESK_END:
+    if len(rows) != 8 or rows[0] != DESK_BEGIN or rows[-1] != DESK_END:
         return False
-    scope = DESK_SCOPE.fullmatch(rows[-2])
-    if scope is None or int(scope[1]) == 0:
+    ro_scope = DESK_SCOPE.fullmatch(rows[-3])
+    di_scope = DESK_DI_SCOPE.fullmatch(rows[-2])
+    if (ro_scope is None or int(ro_scope[1]) == 0 or
+            di_scope is None or int(di_scope[1]) == 0):
         return False
     for i, row in enumerate(rows[1:5]):
         matched = DESK_WORD.fullmatch(row)
@@ -95,7 +101,7 @@ def read_record(port: serial.Serial, seconds: float, *, end: bytes | None = None
     return bytes(output)
 
 
-def quiet_status(port: serial.Serial, *, require_v2: bool = False) -> bool:
+def quiet_status(port: serial.Serial, *, require_v3: bool = False) -> bool:
     for _ in range(5):  # Read-only retries; NEVER retry an active command.
         port.reset_input_buffer()
         port.write(COMMANDS["status"])
@@ -104,14 +110,17 @@ def quiet_status(port: serial.Serial, *, require_v2: bool = False) -> bool:
         match = STATUS.fullmatch(raw)
         if match:
             print(raw.decode("ascii").strip())
-            is_v2 = match[1] == b"2" and match[3] == b" ro_scope=1"
-            is_old_v1 = match[1] == b"1" and match[3] is None
-            if not (is_v2 or is_old_v1):
+            is_v3 = (match[1] == b"3" and match[3] == b" ro_scope=1" and
+                     match[4] == b" di_scope=1 first_probe=1")
+            is_v2 = (match[1] == b"2" and match[3] == b" ro_scope=1" and
+                     match[4] is None)
+            is_old_v1 = match[1] == b"1" and match[3] is None and match[4] is None
+            if not (is_v3 or is_v2 or is_old_v1):
                 raise RuntimeError("version/scope identity mismatch; no command sent")
-            if require_v2 and not is_v2:
+            if require_v3 and not is_v3:
                 raise RuntimeError(
-                    "old V1 firmware still installed; flash V2 off-vehicle "
-                    "before any new desk/vehicle diagnostic attempt"
+                    "V3 firmware not installed; flash V3 with vehicle disconnected "
+                    "before diagnostic test"
                 )
             return match[2] == b"0"
     raise RuntimeError("incorrect/noisy firmware STATUS; no command sent")
@@ -153,7 +162,7 @@ def main() -> int:
             port.rts = False
             time.sleep(1.5)
             port.reset_input_buffer()
-            unused = quiet_status(port, require_v2=action in EXPLICIT)
+            unused = quiet_status(port, require_v3=action in EXPLICIT)
             if action == "status":
                 return 0
             if action in EXPLICIT and not unused:
@@ -163,7 +172,10 @@ def main() -> int:
             port.flush()
             pins = read_record(port, 1.1)
             pin_match = PINS.fullmatch(pins)
-            if not pin_match or (action in EXPLICIT and pin_match[1] != b" ro_scope=1"):
+            if (not pin_match or
+                    (action in EXPLICIT and
+                     (pin_match[1] != b" ro_scope=1" or
+                      pin_match[2] != b" di_scope=1"))):
                 raise RuntimeError(f"GPIO/DE preflight failed: {pins[-120:]!r}")
             if action == "pins":
                 print(pins.decode("ascii").strip())
@@ -176,7 +188,7 @@ def main() -> int:
                         return 2
                 else:
                     print(f"Sending ONE isolated DESK command: {expected}")
-                if not quiet_status(port, require_v2=True):
+                if not quiet_status(port, require_v3=True):
                     raise RuntimeError("status changed before one-shot dispatch")
             port.reset_input_buffer()
             port.write(COMMANDS[action])
@@ -206,6 +218,20 @@ def main() -> int:
             if ENDING.search(raw) is None:
                 print("Incomplete/aborted session, preserve raw evidence and do NOT auto-retry")
                 return 3
+            if action == "probe-first":
+                probe = re.search(
+                    rb"^CART_PROBE_RESULT first_word_confirmed=([01]) "
+                    rb"transmitted_words=(\d+) confirmed_words=(\d+) reason=(\d+) "
+                    rb"no_full_B=1 no_dtc_claim=1\r?$",
+                    raw, re.MULTILINE,
+                )
+                if probe is None:
+                    print("First B-word probe missing its report; preserve capture, do not retry")
+                    return 3
+                print("First B word echo:", "CONFIRMED" if probe[1] == b"1" else "FAILED")
+                print("B command complete: NO. DTC codes read: NO.")
+                return (0 if probe[1] == b"1" and probe[2] == b"1" and
+                        probe[3] == b"1" else 3)
             try:
                 report = analyze(raw)
                 print("Offline analysis:", report["classification"])
