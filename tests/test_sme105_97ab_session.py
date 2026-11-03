@@ -17,9 +17,9 @@ SOURCE = (ROOT / "firmware" / "sme105_97ab_dcl_reader" /
 
 class HostAndSourceTests(unittest.TestCase):
     def test_status_requires_one_exact_clean_complete_line(self):
-        good = (b"STATUS SME105_97AB_READER_V1 ecu=97AB-12A650-KA DE=LOW "
-                b"auto_tx=0 attempt_used=0 timers=2 gate4=1\r\n")
-        self.assertEqual(reader.STATUS.fullmatch(good)[1], b"0")
+        good = (b"STATUS SME105_97AB_READER_V2 ecu=97AB-12A650-KA DE=LOW "
+                b"auto_tx=0 attempt_used=0 timers=2 gate4=1 ro_scope=1\r\n")
+        self.assertEqual(reader.STATUS.fullmatch(good)[2], b"0")
         for bad in (
             good[:-2], b"noise" + good, good + good,
             good.replace(b"gate4=1", b"gate4=0"),
@@ -29,6 +29,35 @@ class HostAndSourceTests(unittest.TestCase):
         ):
             with self.subTest(bad=bad[:25]):
                 self.assertIsNone(reader.STATUS.fullmatch(bad))
+
+    def test_v1_status_is_readable_but_cannot_issue_new_traffic(self):
+        original = (b"STATUS SME105_97AB_READER_V1 ecu=97AB-12A650-KA DE=LOW "
+                    b"auto_tx=0 attempt_used=0 timers=2 gate4=1\r\n")
+        v2 = original.replace(b"READER_V1", b"READER_V2").replace(
+            b"gate4=1", b"gate4=1 ro_scope=1"
+        )
+
+        class DummyPort:
+            def __init__(self):
+                self.written = []
+
+            def reset_input_buffer(self):
+                pass
+
+            def write(self, data):
+                self.written.append(data)
+
+            def flush(self):
+                pass
+
+        with patch.object(reader, "read_record", return_value=original):
+            port = DummyPort()
+            self.assertTrue(reader.quiet_status(port))
+            with self.assertRaisesRegex(RuntimeError, "old V1 firmware"):
+                reader.quiet_status(port, require_v2=True)
+            self.assertTrue(all(data == b"STATUS\n" for data in port.written))
+        with patch.object(reader, "read_record", return_value=v2):
+            self.assertTrue(reader.quiet_status(DummyPort(), require_v2=True))
 
     def test_timed_ack_for_new_uart1_releases_provisional_codes_only(self):
         raw = active_candidate_transcript()
@@ -107,6 +136,8 @@ class HostAndSourceTests(unittest.TestCase):
         self.assertIn("void deskMaxOnce()", code)
         self.assertIn("READ_DTC_A4_ONCE", code)
         self.assertIn("READ_DTC_0E_ONCE", code)
+        self.assertIn("roWaveReady = setupRoWave()", code)
+        self.assertIn("echoActualByte = octet", code)
         self.assertNotIn("SME105_ACTIVE_B_TX=1", code)
         for unsafe in ("CLEAR_DTC_ONCE", "KOER_ONCE", "RAW_WRITE", "AUTO_RETRY"):
             self.assertNotIn(unsafe, code)
@@ -119,6 +150,7 @@ class HostAndSourceTests(unittest.TestCase):
                 f"tx_done=1 delta_us=2088 match=1".encode()
                 for i, word in enumerate(reader.DESK_SAMPLES)
             ),
+            b"DESK_RO_SCOPE items=11 complete_packet=1 overflow=0",
             reader.DESK_END,
         ]
         good = b"\r\n".join(rows) + b"\r\n"
@@ -128,6 +160,8 @@ class HostAndSourceTests(unittest.TestCase):
             good.replace(b"index=2", b"index=1", 1),
             good.replace(b"delta_us=2088", b"delta_us=2288", 1),
             good.replace(b"match=1", b"match=0", 1),
+            good.replace(b"items=11", b"items=0", 1),
+            good.replace(b"complete_packet=1", b"complete_packet=0", 1),
             good.replace(b"coalesced=0", b"coalesced=1", 1),
             good + b"extra\n",
             good.replace(b" rx_count=2", b" rx_count=1", 1),
