@@ -100,7 +100,13 @@ client then uses the same command names `HELLO`, `STATUS`, `PINS`, `STOP`,
 `LISTEN_9600`, `OBSERVE`, `ARM_A4`/`READ_A4`, `ARM_0E`/`READ_0E`, and
 `RESET_IDLE`; they do not require another firmware flash. USB remains active,
 and each `RX t_us=<decimal> byte=<HH>` record, `TX_PAD`, `FAULT`, and `END`
-is mirrored to USB and authenticated TCP using a bounded fan-out queue.
+is queued for USB and authenticated TCP. While TCP is authenticated, it is
+the **mandatory evidence receiver**; USB is an optional best-effort mirror.
+An unplugged or unmonitored USB Serial port must not terminate a Wi-Fi-only
+CART capture. If that optional mirror falls more than the queue capacity
+behind, stale USB bytes are discarded with a monotonically counted
+`usb_skipped` field in `STATUS` (also shown in `OTA_DIAG`). USB-only sessions
+still require USB delivery and fail closed on bounded output backpressure.
 
 `WIFI_CONFIG`, `WIFI_TOKEN` and `WIFI_FORGET` **cannot** be invoked from
 Wi-Fi, even after authentication. A pending `ARM_A4` or `ARM_0E` can only be
@@ -113,14 +119,15 @@ session causes immediate safe STOP and prevents any new controller from
 taking over until that session finishes.
 
 **Transport safety:** The TCP socket uses nonblocking sends; it cannot wait
-for a slow peer in an ESP32 CART timing loop. The two output subscribers
-have independent read cursors and a finite 16 KiB fan-out queue. On an active
-session with network backpressure, overflow, client disconnect, or TCP send
-failure, the bridge stops the ECU transmission path. A disconnected TCP
-client may not receive `END`; that absence makes its evidence incomplete,
-not successful. Check the full RX count against `END ro_bytes` and require
-`ro_lost=0`, `uart_errors=0`; `STATUS` also exposes `transport_lost` and
-`out_overflow`. No UART/TCP output is performed by the protected CART ISRs.
+for a slow peer in an ESP32 CART timing loop. The output subscribers have
+independent cursors and a finite 16 KiB fan-out queue. On an active session
+with **primary transport** backpressure, overflow, client disconnect, or TCP
+send failure, the bridge stops the ECU transmission path. USB stays primary
+when there is no authenticated TCP connection. A disconnected TCP client may
+not receive `END`; that absence makes its evidence incomplete, not successful.
+Check the full RX count against `END ro_bytes` and require `ro_lost=0`,
+`uart_errors=0`; `STATUS` also exposes `transport_lost`, `out_overflow` and
+`usb_skipped`. No UART/TCP output is performed by the protected CART ISRs.
 
 **Security boundary:** TCP is deliberately *not* TLS-encrypted; use only a
 trusted WPA2/WPA3 local Wi-Fi network. Do not expose/forward port 8765 to the

@@ -147,7 +147,9 @@ uint8_t lastReportedBaseline = 0;
 
 // No Wi-Fi operation in CART/UART/timer ISR paths. Firmware emits bounded
 // ASCII into a single fan-out queue. USB and authenticated TCP have separate
-// cursors: neither is silently allowed to skip a byte.
+// cursors. An authenticated TCP controller is the primary evidence recipient;
+// USB remains best-effort and skipped bytes are explicitly counted. When no
+// TCP controller is authenticated, USB alone constrains the bounded queue.
 class BridgeOutput : public Print {
  public:
   size_t write(uint8_t byte) override {
@@ -181,12 +183,22 @@ class BridgeOutput : public Print {
     otaTcpPrimary_ = enabled;
   }
   uint32_t usbSkipped() const { return usbSkipped_; }
-  void dropTcpAtCurrent() { tcpRead_ = write_; tcpEnabled_ = false; tcpSendFailed_ = false; }
+  void dropTcpAtCurrent() {
+    // A Wi-Fi-only capture can leave an optional, unplugged USB consumer far
+    // behind. Never make its stale cursor wedge a new USB-only operation.
+    if (tcpEnabled_ && write_ - usbRead_ >= kWireQueueSize - 512) {
+      usbSkipped_ += write_ - usbRead_;
+      usbRead_ = write_;
+    }
+    tcpRead_ = write_;
+    tcpEnabled_ = false;
+    tcpSendFailed_ = false;
+  }
   void markTcpAuthenticated() { tcpRead_ = write_; tcpEnabled_ = true; tcpSendFailed_ = false; }
   bool tcpSendFailed() const { return tcpSendFailed_; }
   void drainUSB() {
     if (usbRead_ == write_) return;
-    if (otaTcpPrimary_ && write_ - usbRead_ > kWireQueueSize) {
+    if (tcpEnabled_ && write_ - usbRead_ >= kWireQueueSize) {
       usbSkipped_ += write_ - usbRead_;
       usbRead_ = write_;
       return;
@@ -216,10 +228,10 @@ class BridgeOutput : public Print {
   }
  private:
   uint32_t used() const {
-    // While TCP is unauthenticated/disconnected, tcpRead_=write_ and USB
-    // alone constrains the queue. When authenticated, both cursors constrain it.
-    if (otaTcpPrimary_ && tcpEnabled_) return write_ - tcpRead_;
-    return write_ - (tcpEnabled_ ? std::min(usbRead_, tcpRead_) : usbRead_);
+    // Authenticated TCP sessions (including live CART capture and OTA) must
+    // not be terminated by an unopened USB terminal. TCP still fails closed
+    // on its own send/backpressure failure. USB-only sessions remain bounded.
+    return tcpEnabled_ ? write_ - tcpRead_ : write_ - usbRead_;
   }
   uint8_t bytes_[kWireQueueSize] = {};
   uint32_t write_ = 0, usbRead_ = 0, tcpRead_ = 0, overflow_ = 0;
@@ -1961,6 +1973,7 @@ void printStatus() {
   out.print(F(" observe_used=")); out.print(observeConsumed ? 1 : 0);
   out.print(F(" transport_lost=")); out.print(transportFaults);
   out.print(F(" out_overflow=")); out.print(out.overflow());
+  out.print(F(" usb_skipped=")); out.print(out.usbSkipped());
   out.print(F(" armed="));
   if (armedVariant < 2 && !transmitConsumed &&
       static_cast<int32_t>(armExpiresMs - millis()) > 0)
