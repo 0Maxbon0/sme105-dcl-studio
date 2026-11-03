@@ -1,5 +1,46 @@
 # Ford 97AB-12A650-KA SME-105, one-shot DCL reader
 
+## V4: vehicle RAW capture, adapted from existing CART references
+
+The owner's priority is **save the actual UART receive stream**, not
+interpret or translate DTCs. No further isolated desk trial is required for
+this V4 workflow. The PC saves a full timestamped `.txt` capture and an
+unchanged-order UART1 RO `.bin` file, both with SHA256.
+
+The V3 one-word car probe (`20261103T091354379996Z-probe-first.txt`,
+SHA256 `f336195b30228ba7c1c526118f0effe7b3f874cd22a08083455ef88cf22fb52d`)
+reproduced `6D` where `01` was expected. Its first four unverified DI
+RMT items also resemble a 9600/8N1 `6D` byte. This points to a specific
+TX path to investigate, **not** to proven ECU response or a decoded DTC.
+The V3 ISR wrote UART2 FIFO through an APB bitfield; the installed ESP32
+vendor HAL instead writes TX bytes to `UART_FIFO_AHB_REG(2)`. V4 adopts the
+vendor's AHB write convention for its RAW command.
+
+V4 sends the reference `01 B0 | FF 5F | 26 A4 | 00 A0` sequence in
+ID0..ID3 diagnostic slots, following
+`flxkrmr/eec-iv-reader-arduino` `Cart.cpp` / `EecIv.cpp` behavior and
+`doncreat0r/eeciv` CART timing. It checks 16 ID headers first and only
+schedules subsequent fixed words if the next actual ID header has the
+expected parity/cadence. **A mismatching local echo no longer discards
+the raw stream or suppresses the next correctly scheduled word**.
+Four TX slots maximum, 10-second fixed capture, no auto repeat/clear/test,
+and no attempt to classify the bytes. The MAX487 `/RE` is grounded, so
+RO includes possible local self-echo; there is no verified separation of
+ECU-origin and self-echo bytes without additional physical measurement.
+The flxkrmr B=26A4 variant is an experiment, not proven for this SME-105.
+
+Manual one-shot on the car with key ON, engine OFF:
+
+~~~sh
+PYTHONPATH=src ./.venv/bin/python scripts/sme105_97ab_session.py \
+    --action raw-a4 --vehicle-confirmed
+~~~
+
+Type `RAW_A4_ONCE` once. The CLI saves `captures/SME105_97AB/*-raw-a4.txt`
+and `*-raw-a4.bin`, prints both hashes, and does not interpret DTC codes.
+An incomplete word sequence is still saved as evidence. No USB command
+triggers a vehicle attempt unless the operator types the exact token.
+
 The user goal is deliberately small: **stored codes first, sensor values
 second**. The ESP32 Arduino 2.0.17 image reuses the **existing**
 ESP32 + MAX487 + BSS138 wiring, with **no other GPIO jumper or XY-K485**.

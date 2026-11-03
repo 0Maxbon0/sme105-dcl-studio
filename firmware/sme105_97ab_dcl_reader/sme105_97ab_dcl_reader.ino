@@ -12,6 +12,7 @@
 #include <soc/rmt_struct.h>
 #include <soc/timer_group_struct.h>
 #include <soc/uart_struct.h>
+#include <soc/uart_reg.h>
 #include <cstring>
 #include "cart_b_active_model.h"
 #include "stop_line_matcher.h"
@@ -33,11 +34,17 @@ constexpr uint64_t kHandshakeCutoffUs = 100000;
 constexpr uint32_t kSlotCutoffUs = 2250;  // <2.3ms, <2500us slot
 constexpr uint32_t kMinSlotLeadUs = 180;
 constexpr uint32_t kMaxSlotLeadUs = 1250;
-constexpr size_t kMaxEvents = 8192;
+// Retain the whole bounded 10s four-slot response locally; printing to USB
+// from the UART ISR would disturb CART's microsecond slot schedule.
+constexpr size_t kMaxEvents = 16384;
 constexpr uint8_t kEchoId[11] = {0,0,0,0,0,1,0x82,0,0,0,0x83};
 constexpr uint8_t kGoCart[11] = {0,0,0,0,0,1,0x04,0,0,0,0x05};
 
-struct RxEvent { uint32_t completeUs; uint8_t octet; };
+// 5 bytes per sample instead of 8: 16K raw time-stamped UART bytes fit
+// inside the ESP32's actual linker DRAM region. Compiler generates safe
+// unaligned-field accesses for the packed timestamp on Xtensa.
+struct __attribute__((packed)) RxEvent { uint32_t completeUs; uint8_t octet; };
+static_assert(sizeof(RxEvent) == 5, "raw capture events must be compact");
 RxEvent observations[kMaxEvents];
 volatile uint32_t rxCount = 0;
 volatile uint32_t uartErrors = 0;
@@ -99,8 +106,74 @@ volatile uint32_t echoUart2Status = 0;
 volatile uint32_t echoDeRoute = 0;
 volatile uint8_t echoDeLevel = 0;
 cart_candidate::FourWordRequest request(cart_candidate::Variant::FlxA4);
+// Raw CART command port: flxkrmr Cart.cpp sends one fixed diagnostic
+// parameter word in the ID0..ID3 slot, without requiring a local echo.
+// doncreat0r Diag324.c similarly keeps the UART RX stream as independent
+// evidence. Only the fixed stored-code request A4 is allowed here.
+// All RO bytes (including possible self-echo) are retained unmodified.
+bool rawBMode = false;
+volatile bool rawStarted = false;
+volatile bool rawSlotArmed = false;
+volatile uint8_t rawWordsScheduled = 0;
+volatile uint8_t rawWordsStarted = 0;
+volatile uint8_t rawWordsDone = 0;
+volatile uint8_t rawExpectedId = 1;
+volatile uint8_t rawFault = 0;
+volatile uint32_t rawLastSyncUs = 0;
+volatile uint32_t rawSlotTargetUs = 0;
+volatile uint32_t rawStartUs[4] = {};
+volatile uint32_t rawDoneUs[4] = {};
+struct RawOctet { uint32_t timeUs; uint8_t byte; };
+RawOctet rawLastFour[4] = {};
+volatile uint8_t rawLastFourCount = 0;
 
 bool hostStopRequested();
+bool IRAM_ATTR armSlot(uint32_t targetUs);
+void IRAM_ATTR failIsr(cart_candidate::Fault fault);
+
+void IRAM_ATTR rawObserveHeader(uint8_t octet, uint32_t atUs) {
+  // Only a full ID header at the expected cadence may schedule the next
+  // source-pinned word; self-echo contents are never parsed or discarded.
+  if (!rawStarted || rawWordsScheduled >= 4 || rawFault) return;
+  if (rawLastFourCount < 4) {
+    rawLastFour[rawLastFourCount++] = {atUs, octet};
+  } else {
+    for (int i = 0; i < 3; ++i) rawLastFour[i] = rawLastFour[i + 1];
+    rawLastFour[3] = {atUs, octet};
+  }
+  if (rawLastFourCount < 4 || rawWordsDone != rawWordsScheduled ||
+      rawWordsStarted != rawWordsScheduled || rawSlotArmed || slotInFlight) return;
+  if (rawLastFour[0].byte || rawLastFour[1].byte ||
+      rawLastFour[3].byte !=
+          cart_candidate::parity(rawLastFour[2].byte, rawExpectedId)) return;
+  // Borrow the already-working 4-byte ID timing qualification from
+  // FourWordRequest::validHeader. A matching parity pattern alone is not
+  // sufficient to release the following word on a real ECU bus.
+  const uint32_t gap01 = rawLastFour[1].timeUs - rawLastFour[0].timeUs;
+  const uint32_t gap12 = rawLastFour[2].timeUs - rawLastFour[1].timeUs;
+  const uint32_t gap23 = rawLastFour[3].timeUs - rawLastFour[2].timeUs;
+  const uint32_t expectedGap12 = request.phase == 4 ? 1458 : 1042;
+  if (gap01 < 867 || gap01 > 1217 ||
+      gap12 < expectedGap12 - 175 || gap12 > expectedGap12 + 175 ||
+      gap23 < 867 || gap23 > 1217) return;
+  const uint32_t syncUs = rawLastFour[1].timeUs;
+  const uint32_t delta = syncUs - rawLastSyncUs;
+  if (!((delta >= 9825 && delta <= 10175) ||
+        (delta >= 12325 && delta <= 12675))) {
+    rawFault = 1; // wrong CART frame cadence; no more transmit
+    failIsr(cart_candidate::Fault::BadCadence);
+    return;
+  }
+  rawLastSyncUs = syncUs;
+  ++rawExpectedId;
+  rawSlotTargetUs = syncUs + 2917; // upstream CART ID 4-bit word slot
+  ++rawWordsScheduled;
+  rawSlotArmed = true;
+  if (!armSlot(rawSlotTargetUs)) {
+    rawFault = 2;
+    failIsr(cart_candidate::Fault::LateTimer);
+  }
+}
 
 void driverOff() {
   // A canceled RMT pulse must never regain ownership of DE on GPIO18.
@@ -165,6 +238,45 @@ void IRAM_ATTR watchdogISR() {
 void IRAM_ATTR slotISR() {
   disableSlotAlarm();
   portENTER_CRITICAL_ISR(&slotGuard);
+  if (rawBMode) {
+    const uint32_t now = static_cast<uint32_t>(esp_timer_get_time());
+    const int32_t timing = static_cast<int32_t>(now - rawSlotTargetUs);
+    if (!rawStarted || !requestMode || request.stage == cart_candidate::Stage::Failed ||
+        !rawSlotArmed || rawWordsStarted >= 4 || slotInFlight ||
+        rawFault || rmtChannelsReady != 4 || timing < -175 || timing > 175 ||
+        UART2.status.txfifo_cnt != 0 || !(GPIO.in & (1UL << 16))) {
+      rawFault = 3;
+      failIsr(cart_candidate::Fault::LateTimer);
+      portEXIT_CRITICAL_ISR(&slotGuard);
+      return;
+    }
+    if (!armAbsoluteTimer(0, kSlotCutoffUs)) {
+      rawFault = 4;
+      failIsr(cart_candidate::Fault::Timeout);
+      portEXIT_CRITICAL_ISR(&slotGuard);
+      return;
+    }
+    UART2.int_clr.tx_done = 1;
+    UART2.int_ena.tx_done = 1;
+    slotInFlight = true;
+    rawSlotArmed = false;
+    const uint8_t wordIndex = rawWordsStarted++;
+    rawStartUs[wordIndex] = now;
+    const int channel = 2 + wordIndex;
+    GPIO.func_out_sel_cfg[18].func_sel = RMT_SIG_OUT2_IDX + wordIndex;
+    RMT.conf_ch[channel].conf1.mem_rd_rst = 1;
+    RMT.conf_ch[channel].conf1.mem_rd_rst = 0;
+    RMT.conf_ch[channel].conf1.tx_start = 1;
+    const cart_candidate::Word next =
+        cart_candidate::word(cart_candidate::Variant::FlxA4, wordIndex);
+    // The vendor's ESP32 HAL uses 32-bit AHB FIFO stores, not the APB
+    // fifo.rw_byte bitfield. V3's first car word repeatedly read back 6D
+    // despite an intended 01; this removes that source-level discrepancy.
+    WRITE_PERI_REG(UART_FIFO_AHB_REG(2), next.first);
+    WRITE_PERI_REG(UART_FIFO_AHB_REG(2), next.second);
+    portEXIT_CRITICAL_ISR(&slotGuard);
+    return;
+  }
   if (!requestMode || request.stage != cart_candidate::Stage::Request ||
       !kBEnabled || stopLatched) {
     portEXIT_CRITICAL_ISR(&slotGuard);
@@ -221,11 +333,13 @@ void IRAM_ATTR uartISR(void*) {
   const uint32_t pending = UART1.int_st.val;
   if (pending & ((1UL << 2) | (1UL << 3) | (1UL << 4) | (1UL << 8))) {
     ++uartErrors;
+    if (rawBMode) rawFault = 5; // RX error can arrive with ZERO FIFO bytes
     if (requestMode) failIsr(cart_candidate::Fault::RxError);
   }
   const uint32_t count = UART1.status.rxfifo_cnt;
   if (count > 1) {
     ++coalesced;
+    if (rawBMode) rawFault = 5;
     if (requestMode) failIsr(cart_candidate::Fault::RxError);
   }
   for (uint32_t i = 0; i < count; ++i) {
@@ -236,12 +350,20 @@ void IRAM_ATTR uartISR(void*) {
       observations[pos].completeUs = atUs;
       observations[pos].octet = octet;
       rxCount = pos + 1;
-    } else ++dropped;
+    } else {
+      ++dropped;
+      if (rawBMode) rawFault = 5;
+    }
     if (requestMode && request.stage != cart_candidate::Stage::Failed &&
         request.stage != cart_candidate::Stage::Response) {
       if (uartErrors || coalesced || dropped || pos >= kMaxEvents) {
+        if (rawBMode) rawFault = 5;
         failIsr(cart_candidate::Fault::RxError);
       } else {
+        if (rawBMode && rawStarted) {
+          rawObserveHeader(octet, atUs);
+          continue;
+        }
         if (!echoMismatch && request.stage == cart_candidate::Stage::Request &&
             request.requested > request.completed && request.activeTx &&
             !request.awaitingTimer) {
@@ -262,7 +384,16 @@ void IRAM_ATTR uartISR(void*) {
         }
         const auto status = request.onByte(octet, atUs);
         if (status == cart_candidate::Event::ArmSlot) {
+          if (rawBMode) {
+            rawStarted = true;
+            rawWordsScheduled = 1;
+            rawExpectedId = 1;
+            rawLastSyncUs = request.targetUs[0] - 2917;
+            rawSlotTargetUs = request.targetUs[0];
+            rawSlotArmed = true;
+          }
           if (!armSlot(request.targetUs[request.requested - 1])) {
+            if (rawBMode) rawFault = 2;
             failIsr(cart_candidate::Fault::LateTimer);
           }
         } else if (status == cart_candidate::Event::Abort) {
@@ -285,6 +416,19 @@ void IRAM_ATTR txDoneISR(void*) {
     if (benchMode) {
       benchTxDoneUs = static_cast<uint32_t>(esp_timer_get_time());
       ++benchTxDone;
+    } else if (rawBMode && requestMode && wasTransmitting &&
+               request.stage != cart_candidate::Stage::Failed) {
+      const uint32_t atUs = static_cast<uint32_t>(esp_timer_get_time());
+      const uint8_t index = rawWordsDone;
+      if (index >= rawWordsStarted || index >= 4 ||
+          atUs - rawStartUs[index] < 1900 ||
+          atUs - rawStartUs[index] >= 2250) {
+        rawFault = 6;
+        failIsr(cart_candidate::Fault::InvalidTxDuration);
+      } else {
+        rawDoneUs[index] = atUs;
+        ++rawWordsDone;
+      }
     } else if (requestMode && wasTransmitting &&
         request.stage != cart_candidate::Stage::Failed) {
       const auto result = request.onTxDone(
@@ -609,7 +753,23 @@ void dumpReport() {
   Serial.print(F(" dropped=")); Serial.print(dropped);
   Serial.print(F(" capped=")); Serial.print(n == kMaxEvents ? 1 : 0);
   Serial.print(F(" cutoff=")); Serial.println(cutoffTriggered ? 1 : 0);
-  if (requestMode) {
+  if (rawBMode) {
+    Serial.print(F("CART_RAW_B source=flxkrmr_A4 fixed_words=4 started="));
+    Serial.print(rawWordsStarted);
+    Serial.print(F(" tx_done=")); Serial.print(rawWordsDone);
+    Serial.print(F(" scheduled=")); Serial.print(rawWordsScheduled);
+    Serial.print(F(" next_id=")); Serial.print(rawExpectedId);
+    Serial.print(F(" fault=")); Serial.print(rawFault);
+    Serial.println(F(" no_echo_gate=1 no_decode=1"));
+    for (uint8_t i = 0; i < rawWordsStarted && i < 4; ++i) {
+      const auto word = cart_candidate::word(cart_candidate::Variant::FlxA4, i);
+      Serial.print(F("CART_RAW_TX frame=")); Serial.print(i);
+      Serial.print(F(" word=")); printHex(word.first); printHex(word.second);
+      Serial.print(F(" start_us=")); Serial.print(rawStartUs[i]);
+      Serial.print(F(" tx_done_us=")); Serial.println(rawDoneUs[i]);
+    }
+    Serial.println(F("CART_RAW_RO note=ALL_RX_BYTES_INCLUDING_POSSIBLE_SELF_ECHO"));
+  } else if (requestMode) {
     Serial.print(F("CART_B_STATE stage=")); Serial.print(static_cast<unsigned>(request.stage));
     Serial.print(F(" reason=")); Serial.print(static_cast<unsigned>(request.fault));
     Serial.print(F(" baseline=")); Serial.print(request.baselineFrames);
@@ -696,10 +856,23 @@ void dumpReport() {
   Serial.println(F(" ecu_verified=0 dtc_verified=0"));
 }
 
-void attempt(cart_candidate::Variant variant, bool sendB, bool firstWordOnly = false) {
+void attempt(cart_candidate::Variant variant, bool sendB, bool firstWordOnly = false,
+             bool rawOnly = false) {
   oneShotConsumed = true; // consume before the first handshake TX
   stopLatched = false; // no slot alarm or active transmit exists yet
   requestMode = sendB;
+  rawBMode = rawOnly;
+  rawStarted = false;
+  rawSlotArmed = false;
+  rawWordsScheduled = rawWordsStarted = rawWordsDone = 0;
+  rawExpectedId = 1;
+  rawFault = 0;
+  rawLastSyncUs = rawSlotTargetUs = 0;
+  rawLastFourCount = 0;
+  for (int i = 0; i < 4; ++i) {
+    rawStartUs[i] = rawDoneUs[i] = 0;
+    rawLastFour[i] = {0, 0};
+  }
   probeFirstOnly = firstWordOnly;
   probeWordConfirmed = false;
   stopByHost = false;
@@ -756,7 +929,7 @@ void attempt(cart_candidate::Variant variant, bool sendB, bool firstWordOnly = f
     // The last validated baseline ID15 completes ~6.5ms before the next
     // ID0. Start parallel GPIO16 RMT sampling here in task context rather
     // than calling the non-ISR-safe RMT driver from the native UART ISR.
-    if (sendB && request.stage == cart_candidate::Stage::Request &&
+    if (sendB && !rawBMode && request.stage == cart_candidate::Stage::Request &&
         request.requested == 0 && !roWaveStarted && !roWaveStartFailed) {
       if (rmt_rx_start(RMT_CHANNEL_0, true) == ESP_OK) roWaveStarted = true;
       if (rmt_rx_start(RMT_CHANNEL_1, true) == ESP_OK) diWaveStarted = true;
@@ -771,7 +944,7 @@ void attempt(cart_candidate::Variant variant, bool sendB, bool firstWordOnly = f
     // extra receiver before the next CART frame. Leaving an 8ms-idle
     // RMT receiver running through 10s of periodic ID traffic would
     // exhaust its 64-item hardware buffer and interfere with UART.
-    if (sendB && request.completed >= 1) {
+    if (sendB && !rawBMode && request.completed >= 1) {
       if (roWaveStarted) stopRoWave();
       if (diWaveStarted) stopDiWave();
       if (probeFirstOnly) {
@@ -785,8 +958,14 @@ void attempt(cart_candidate::Variant variant, bool sendB, bool firstWordOnly = f
       stopActiveRequest();
       break;
     }
-    if (uartErrors || coalesced || dropped || rxCount == kMaxEvents ||
-        (sendB && request.stage == cart_candidate::Stage::Failed)) break;
+    if (rxCount == kMaxEvents) break;
+    if (!rawBMode && (uartErrors || coalesced || dropped ||
+        (sendB && request.stage == cart_candidate::Stage::Failed))) break;
+    if (rawBMode && (uartErrors || coalesced || dropped) &&
+        request.stage != cart_candidate::Stage::Failed) {
+      rawFault = rawFault ? rawFault : 5;
+      stopActiveRequest(); // no more TX, but keep RX raw until time limit
+    }
     delay(1);
   }
   close9600();
@@ -798,13 +977,15 @@ void attempt(cart_candidate::Variant variant, bool sendB, bool firstWordOnly = f
   }
   if (diWaveStarted) stopDiWave();
   Serial.print(F("CART_RUN mode="));
-  Serial.print(sendB ? F("ACTIVE_CANDIDATE") : F("PASSIVE_AFTER_HANDSHAKE"));
+  Serial.print(rawBMode ? F("RAW_SOURCE_A4") :
+               (sendB ? F("ACTIVE_CANDIDATE") : F("PASSIVE_AFTER_HANDSHAKE")));
   Serial.print(F(" stopped=")); Serial.println(stopByHost ? 1 : 0);
   dumpReport();
 }
 
 void help() {
-  Serial.println(F("COMMANDS STATUS | PINS | HELP | PREVIEW_B_A4 | PREVIEW_B_0E | RX_TEST | DESK_MAX_ONCE | PROBE_B_FIRST_ONCE | OBSERVE_CART_ONCE | READ_DTC_A4_ONCE | READ_DTC_0E_ONCE | STOP"));
+  Serial.println(F("COMMANDS STATUS | PINS | HELP | PREVIEW_B_A4 | PREVIEW_B_0E | RX_TEST | RAW_A4_ONCE | DESK_MAX_ONCE | PROBE_B_FIRST_ONCE | OBSERVE_CART_ONCE | READ_DTC_A4_ONCE | READ_DTC_0E_ONCE | STOP"));
+  Serial.println(F("RAW_A4_ONCE follows fixed flxkrmr B=01B0 FF5F 26A4 00A0, records every RO byte; no echo gate/decoder"));
   Serial.println(F("97AB-12A650-KA; B attempts manual one-shot, unqualified on vehicle; no auto TX at boot"));
   Serial.println(F("PROBE_B_FIRST_ONCE only sends 01B0 if qualified, NEVER remaining B words or a DTC request"));
   Serial.println(F("Never clears DTCs, starts KOEO tests, repeats TX, or accepts arbitrary opcodes"));
@@ -960,13 +1141,13 @@ void deskMaxOnce() {
 void command() {
   if (!std::strcmp(commandLine, "STATUS")) {
     driverOff();
-    Serial.print(F("STATUS SME105_97AB_READER_V3 ecu=97AB-12A650-KA DE=LOW auto_tx=0 attempt_used="));
+    Serial.print(F("STATUS SME105_97AB_READER_V4 ecu=97AB-12A650-KA DE=LOW auto_tx=0 attempt_used="));
     Serial.print(oneShotConsumed ? 1 : 0);
     Serial.print(F(" timers=")); Serial.print(watchdog && slotTimer ? 2 : 0);
     Serial.print(F(" gate4=")); Serial.print(rmtChannelsReady == 4 ? 1 : 0);
     Serial.print(F(" ro_scope=")); Serial.print(roWaveReady ? 1 : 0);
     Serial.print(F(" di_scope=")); Serial.print(diWaveReady ? 1 : 0);
-    Serial.println(F(" first_probe=1"));
+    Serial.println(F(" first_probe=1 raw_a4=1"));
   } else if (!std::strcmp(commandLine, "HELP")) help();
   else if (!std::strcmp(commandLine, "PREVIEW_B_A4") ||
            !std::strcmp(commandLine, "PREVIEW_B_0E")) {
@@ -990,6 +1171,10 @@ void command() {
   else if (!std::strcmp(commandLine, "PROBE_B_FIRST_ONCE")) {
     if (oneShotConsumed) Serial.println(F("DENIED one_attempt_consumed"));
     else attempt(cart_candidate::Variant::FlxA4, true, true);
+  }
+  else if (!std::strcmp(commandLine, "RAW_A4_ONCE")) {
+    if (oneShotConsumed) Serial.println(F("DENIED one_attempt_consumed"));
+    else attempt(cart_candidate::Variant::FlxA4, true, false, true);
   }
   else if (!std::strcmp(commandLine, "OBSERVE_CART_ONCE")) {
     if (oneShotConsumed) Serial.println(F("DENIED one_attempt_consumed"));
@@ -1033,7 +1218,7 @@ void setup() {
   diWaveReady = setupDiWave();
   if (!diWaveReady) Serial.println(F("FATAL RMT_DI_SCOPE_INIT_FAILED: B TX denied"));
   delay(250);
-  Serial.println(F("SME105_97AB_READER_V3 NO_AUTO_TX FIRST_B_PROBE_DI_RO"));
+  Serial.println(F("SME105_97AB_READER_V4 NO_AUTO_TX RAW_REFERENCE_A4"));
   help();
 }
 

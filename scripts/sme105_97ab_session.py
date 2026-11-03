@@ -24,9 +24,9 @@ else:
 
 ROOT = Path(__file__).resolve().parents[1]
 STATUS = re.compile(
-    rb"^STATUS SME105_97AB_READER_V([123]) ecu=97AB-12A650-KA DE=LOW "
+    rb"^STATUS SME105_97AB_READER_V([1234]) ecu=97AB-12A650-KA DE=LOW "
     rb"auto_tx=0 attempt_used=([01]) timers=2 gate4=1"
-    rb"( ro_scope=1)?( di_scope=1 first_probe=1)?\r?\n$"
+    rb"( ro_scope=1)?( di_scope=1 first_probe=1)?( raw_a4=1)?\r?\n$"
 )
 PINS = re.compile(
     rb"^PINS ro16=1 de18=0 gate4=1( ro_scope=1)?( di_scope=1)? "
@@ -43,9 +43,10 @@ COMMANDS = {
     "dtc-a4": b"READ_DTC_A4_ONCE\n",
     "dtc-0e": b"READ_DTC_0E_ONCE\n",
     "probe-first": b"PROBE_B_FIRST_ONCE\n",
+    "raw-a4": b"RAW_A4_ONCE\n",
 }
-EXPLICIT = {"desk", "observe-cart", "dtc-a4", "dtc-0e", "probe-first"}
-VEHICLE = {"observe-cart", "dtc-a4", "dtc-0e", "probe-first"}
+EXPLICIT = {"desk", "observe-cart", "dtc-a4", "dtc-0e", "probe-first", "raw-a4"}
+VEHICLE = {"observe-cart", "dtc-a4", "dtc-0e", "probe-first", "raw-a4"}
 ENDING = re.compile(rb"^CART_END [^\r\n]+\r?$", re.MULTILINE)
 ABORT = re.compile(rb"^(?:ABORT |CART_ABORT |DENIED |ACK_REJECT |REF_ACK_OVERFLOW )", re.MULTILINE)
 DESK_WORD = re.compile(
@@ -84,8 +85,8 @@ def read_record(port: serial.Serial, seconds: float, *, end: bytes | None = None
     output = bytearray()
     deadline = time.monotonic() + seconds
     last_received = time.monotonic()
-    while time.monotonic() < deadline and len(output) < 1_000_000:
-        chunk = port.read(min(4096, 1_000_000 - len(output)))
+    while time.monotonic() < deadline and len(output) < 2_000_000:
+        chunk = port.read(min(4096, 2_000_000 - len(output)))
         output += chunk
         if chunk:
             last_received = time.monotonic()
@@ -101,7 +102,7 @@ def read_record(port: serial.Serial, seconds: float, *, end: bytes | None = None
     return bytes(output)
 
 
-def quiet_status(port: serial.Serial, *, require_v3: bool = False) -> bool:
+def quiet_status(port: serial.Serial, *, require_v4: bool = False) -> bool:
     for _ in range(5):  # Read-only retries; NEVER retry an active command.
         port.reset_input_buffer()
         port.write(COMMANDS["status"])
@@ -110,16 +111,21 @@ def quiet_status(port: serial.Serial, *, require_v3: bool = False) -> bool:
         match = STATUS.fullmatch(raw)
         if match:
             print(raw.decode("ascii").strip())
+            is_v4 = (match[1] == b"4" and match[3] == b" ro_scope=1" and
+                     match[4] == b" di_scope=1 first_probe=1" and
+                     match[5] == b" raw_a4=1")
             is_v3 = (match[1] == b"3" and match[3] == b" ro_scope=1" and
-                     match[4] == b" di_scope=1 first_probe=1")
+                     match[4] == b" di_scope=1 first_probe=1" and
+                     match[5] is None)
             is_v2 = (match[1] == b"2" and match[3] == b" ro_scope=1" and
-                     match[4] is None)
-            is_old_v1 = match[1] == b"1" and match[3] is None and match[4] is None
-            if not (is_v3 or is_v2 or is_old_v1):
+                     match[4] is None and match[5] is None)
+            is_old_v1 = (match[1] == b"1" and match[3] is None and
+                         match[4] is None and match[5] is None)
+            if not (is_v4 or is_v3 or is_v2 or is_old_v1):
                 raise RuntimeError("version/scope identity mismatch; no command sent")
-            if require_v3 and not is_v3:
+            if require_v4 and not is_v4:
                 raise RuntimeError(
-                    "V3 firmware not installed; flash V3 with vehicle disconnected "
+                    "V4 RAW firmware not installed; flash the current firmware "
                     "before diagnostic test"
                 )
             return match[2] == b"0"
@@ -138,6 +144,29 @@ def save_raw(raw: bytes, action: str) -> Path:
     return path
 
 
+def save_ro_binary(raw: bytes, transcript: Path) -> Path | None:
+    """Save the exact captured RO UART bytes, in order, without decoding them.
+
+    Frames containing our own local TX echo cannot be source-attributed by RO.
+    Keep the original timestamped transcript separately and unchanged.
+    """
+    match = re.search(rb"^CART_CAPTURE n=(\d+)\b", raw, re.MULTILINE)
+    if match is None:
+        return None
+    values = re.findall(rb"^CART_EVT t_us=\d+ byte=([0-9A-F]{2})\r?$",
+                        raw, re.MULTILINE)
+    if len(values) != int(match[1]):
+        print("RAW RO binary withheld: transcript event count mismatch")
+        return None
+    result = bytes(int(value, 16) for value in values)
+    destination = transcript.with_suffix(".bin")
+    with destination.open("xb") as target:
+        target.write(result)
+    print(f"Raw UART1 RO bytes: {destination} ({len(result)} bytes)")
+    print(f"RO BIN SHA256: {hashlib.sha256(result).hexdigest()}")
+    return destination
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default="/dev/ttyUSB0")
@@ -153,8 +182,11 @@ def main() -> int:
     if action in VEHICLE and not args.vehicle_confirmed:
         parser.error("vehicle DCL command requires --vehicle-confirmed")
     if action in VEHICLE:
-        print("Experimental command: one manual attempt, engine off, external interface must be qualified.")
-        print("Never retry after uncertain send or a failed capture; first inspect original evidence.")
+        if action == "raw-a4":
+            print("KOEO RAW capture: one A4 reference request, saving every UART1 RO byte.")
+        else:
+            print("Experimental command: one manual attempt, engine off, external interface must be qualified.")
+            print("Never retry after uncertain send or a failed capture; first inspect original evidence.")
     try:
         with serial.Serial(args.port, 115200, timeout=0.15, write_timeout=0.8,
                            dsrdtr=False, rtscts=False) as port:
@@ -162,7 +194,7 @@ def main() -> int:
             port.rts = False
             time.sleep(1.5)
             port.reset_input_buffer()
-            unused = quiet_status(port, require_v3=action in EXPLICIT)
+            unused = quiet_status(port, require_v4=action in EXPLICIT)
             if action == "status":
                 return 0
             if action in EXPLICIT and not unused:
@@ -188,16 +220,16 @@ def main() -> int:
                         return 2
                 else:
                     print(f"Sending ONE isolated DESK command: {expected}")
-                if not quiet_status(port, require_v3=True):
+                if not quiet_status(port, require_v4=True):
                     raise RuntimeError("status changed before one-shot dispatch")
             port.reset_input_buffer()
             port.write(COMMANDS[action])
             port.flush()
             if action in VEHICLE:
-                # 8192 timed UART event lines over a 115200bps USB serial
+                # 16384 timed UART event lines over a 115200bps USB serial
                 # link may take much longer to drain than the 10s ECU
                 # observation interval. Never truncate before CART_END.
-                raw = read_record(port, 80.0, end=b" ecu_verified=0 dtc_verified=0\r\n")
+                raw = read_record(port, 120.0, end=b" ecu_verified=0 dtc_verified=0\r\n")
                 # Early reference failure may not print CART_END.
                 if b"ABORT " in raw and b"CART_RUN " not in raw:
                     pass
@@ -214,7 +246,45 @@ def main() -> int:
     print(raw.decode("ascii", "backslashreplace")[-25000:])
     if action in EXPLICIT:
         path = save_raw(raw, action)
+        raw_ro = save_ro_binary(raw, path) if action == "raw-a4" else None
         if action in VEHICLE:
+            if action == "raw-a4":
+                state = re.search(
+                    rb"^CART_RAW_B source=flxkrmr_A4 fixed_words=4 started=(\d+) "
+                    rb"tx_done=(\d+) scheduled=(\d+) next_id=(\d+) fault=(\d+) "
+                    rb"no_echo_gate=1 no_decode=1\r?$", raw, re.MULTILINE,
+                )
+                raw_capture = re.search(
+                    rb"^CART_CAPTURE n=(\d+) uart_errors=(\d+) coalesced=(\d+) "
+                    rb"dropped=(\d+) capped=([01]) cutoff=([01])\r?$",
+                    raw, re.MULTILINE,
+                )
+                raw_end = re.search(
+                    rb"^CART_END bytes=(\d+) uart_errors=(\d+) dropped=(\d+) "
+                    rb"cutoff=([01]) ecu_verified=0 dtc_verified=0\r?$",
+                    raw, re.MULTILINE,
+                )
+                print("UART1 RO bytes saved without any DTC interpretation.")
+                print("Possible local transmit echo is INCLUDED in the raw stream.")
+                if state:
+                    print(f"Fixed A4 words: {state[2].decode()}/4 TX_DONE; "
+                          f"fault={state[5].decode()}")
+                valid_capture = (
+                    raw_capture is not None and raw_end is not None and
+                    raw_capture[1] == raw_end[1] and
+                    raw_capture[2] == raw_end[2] and
+                    raw_capture[4] == raw_end[3] and
+                    raw_capture[6] == raw_end[4] and
+                    all(value == b"0" for value in raw_capture.groups()[1:]) and
+                    b"CART_RUN mode=RAW_SOURCE_A4 stopped=0" in raw
+                )
+                if (ENDING.search(raw) is None or state is None or
+                        raw_ro is None or not valid_capture or
+                        state[1] != b"4" or state[2] != b"4" or
+                        state[3] != b"4" or state[5] != b"0"):
+                    print("RAW capture / TX may be incomplete. Files retained; no retry.")
+                    return 3
+                return 0
             if ENDING.search(raw) is None:
                 print("Incomplete/aborted session, preserve raw evidence and do NOT auto-retry")
                 return 3
