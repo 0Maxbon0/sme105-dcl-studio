@@ -1,12 +1,18 @@
 # SME-105 Ford DCL: one-image interactive USB + Wi-Fi bridge (engineering candidate)
 
-**Status: compiled source, NOT validated on this ECU or approved for live diagnostic use.**
+**Status: USB/Wi-Fi bench verified, TX2 local pad proof verified; NOT validated on this ECU or approved for live diagnostic use.**
 This is a separate, permanent-format ESP32 firmware image. Once it has been
 installed and independently checked, host software can operate it over one
 115200-baud USB serial connection **or authenticated Wi-Fi TCP**, without
 generating/flashing a new sketch for every protocol observation. **Neither
 compiling nor a USB acknowledgement
 proves a correct A/B bus signal or an ECU diagnostic response.**
+
+The candidate diagnostic words are compared against the upstream sources
+[flxkrmr/eec-iv-reader-arduino](https://github.com/flxkrmr/eec-iv-reader-arduino)
+and [doncreat0r/eeciv](https://github.com/doncreat0r/eeciv). Neither repo
+certifies this **97AB-12A650-KA** ECU or confirms our A4/0E variants.
+This work is CART-only; not the DESK branch.
 
 This image exists because actual car V5 data from GPIO17 decoded **6D CC,
 29 E9, 6C 3C, 98 47** where the earlier software intended **01 B0,
@@ -124,6 +130,195 @@ hardware-encrypted unless ESP32 flash encryption/NVS encryption is
 separately enabled. The token prevents unauthenticated commands but does not
 prove physical ECU safety, authorization for unsafe B requests, or a DTC.
 
+## Signed OTA firmware updates without returning to USB
+
+The bridge supports an **authenticated and publisher-signed OTA update** via
+the existing Wi-Fi TCP port **8765**. The active firmware partition is never
+overwritten. ESP32's existing 4 MB `default.csv` partition table already has
+two application slots (`app0`/`app1`), each **1,310,720 bytes**, plus separate
+NVS at offset `0x9000` and OTA metadata at `0xe000`. No new partition table
+is needed; changing the table could erase credentials or prevent rollback.
+Only upload the **PlatformIO application `firmware.bin`**, not a merged flash,
+bootloader, or partition image. The first USB firmware upload is owned by the
+Prime operator; all subsequent signed *application* updates can use Wi-Fi.
+
+### Publisher key and signature contract
+
+The ESP32 contains only the **P-256 ECDSA public key** pinned in the sketch.
+Its DER SubjectPublicKeyInfo SHA-256 fingerprint is:
+
+```text
+4f3bb05f5a94fe931bce67f91057ab17e3d5ea4734dc066a722f47c27e682e79
+```
+
+The owner controls the separate signing **private key outside the Git repo**.
+Do not copy the private key into firmware, Git, chats, CI logs, network
+messages or captures. The device verifies each signed manifest **before
+calling `esp_ota_begin`**, then independently hashes every binary byte and
+rejects an image whose SHA-256 or ESP32 image validation fails. The public
+key alone cannot produce a valid update. A publisher-key rotation requires
+a new version signed by the previously trusted key.
+
+After the normal authenticated TCP exchange (`AUTH <32hex>` → exact
+`AUTH OK\n`), the **flow-controlled OTA_BEGIN2** updater sends this
+**single ASCII line**, terminated by LF:
+
+```text
+OTA_BEGIN2 <size_decimal> <64_lowercase_sha256hex> <version_decimal> <ECDSA_P256_DER_signature_base64>
+```
+
+The signature is ECDSA P-256 with SHA-256 over the *exact* UTF-8 bytes:
+
+```text
+SME105-OTA-V1
+esp32dev
+<size_decimal>
+<64_lowercase_sha256hex>
+<version_decimal>
+```
+
+Each displayed line ends in **one LF byte** (including the final version
+line). There are **no blank lines or spaces** around substituted values.
+Decimal size/version have no leading zeroes. Versions are
+strictly increasing (the first signed upgrade from the USB-installed base
+version `1` must be `2` or greater). The firmware image size must be from
+65,536 up to **1,310,720 bytes**, inclusive. The signature is an ASN.1 DER
+ECDSA signature, encoded as standard padded Base64 without wrapping.
+
+For example, an owner's **offline** signing process can produce the DER
+signature using OpenSSL (the content of `manifest.txt` must follow the exact
+five-line format above):
+
+```sh
+openssl dgst -sha256 \
+  -sign "$HOME/.config/sme105/ota-signing-key.pem" \
+  -out signature.der manifest.txt
+base64 -w0 signature.der
+```
+
+The host uploader should calculate size/hash itself, construct that canonical
+manifest, sign it using the private key only on the trusted signing machine,
+and never print the key. This is a signing example, **not** a recommendation
+to transmit the firmware manually through a text terminal.
+
+### Binary transfer and result checks
+
+1. Authenticate as normal on TCP port 8765 and request `OTA_STATUS`.
+2. Send the validated signed `OTA_BEGIN2` line. The ESP32 replies
+   `OTA_READY size=<decimal> chunk=8192\r\n` **only after signature and inactive-slot
+   admission have succeeded**. Invalid signatures/bounds get
+   `OTA_FAIL reason=<generic>\r\n` without changing the running image.
+3. **Only after receiving `OTA_READY`**, send up to **8,192 raw bytes** of
+   `firmware.bin`. The device writes bounded 512-byte portions and replies
+   `OTA_PROGRESS received=<cumulative_count>\r\n` after each **non-final**
+   window has passed `esp_ota_write` and incremental SHA-256. The host checks
+   that exact monotonic offset before sending the next window. The final
+   window receives only `OTA_OK`. No Base64, delimiters, separators or final
+   newline are added to the binary. A 15-second device idle timeout or
+   five-minute total limit, TCP disconnect, Wi-Fi loss, invalid digest or
+   malformed image aborts without switching the boot partition. The obsolete
+   `OTA_BEGIN` sender is rejected before flash; never silently downgrade the
+   OTA transfer protocol or replay uncertain bytes.
+4. On fully verified image, receive
+   `OTA_OK version=<decimal> sha256=<64lowerhex> rebooting=1\r\n`.
+   The device stages the inactive partition as the next boot and reboots;
+   missing `OTA_OK` is **not** proof of success. The device gives the final
+   TCP response a short bounded drain/grace period before restarting. If the
+   complete signed image was sent but its final receipt disappeared, the host
+   **never resends the image**: it may recover only by independently
+   authenticating a new-boot `PENDING_VERIFY` state on a different app slot,
+   then issuing the previously approved `OTA_CONFIRM` exactly once. Any
+   inconsistent or unconfirmed state is a failure, not implicit success.
+5. After reboot, reconnect and authenticate on TCP port 8765 (using the
+   **existing NVS token**) and ask `OTA_STATUS`. The new app is deliberately
+   `boot_health=PENDING_VERIFY`, `confirm_required=1` until remote access is
+   demonstrated. Send the **same signed manifest version and binary SHA**:
+
+   ```text
+   OTA_CONFIRM <version_decimal> <64_lowercase_sha256hex>
+   ```
+
+   It must reply `OTA_CONFIRM OK version=<n>\r\n`. This proves that the new
+   app's authenticated remote interface works and that the client knows the
+   exact image admitted by the previous firmware. `OTA_CONFIRM` is accepted
+   **only on authenticated TCP**, never over USB. The host must not re-upload
+   the image automatically just because the device rebooted.
+6. Wait for the eight-second first-boot health interval and poll `OTA_STATUS`
+   again. A healthy upgrade should show `running=app0` or `running=app1`,
+   `boot_health=VALID`, `confirm_required=0`, `rollback=1`, and
+   `accepted_version` equal to the signed version. It also emits
+   `OTA_BOOT state=VALID version=<n>`. If the authenticating client cannot
+   reconnect and confirm **within 45 seconds**, the new image rolls back.
+
+An `OTA_STATUS` example (read-only over authenticated TCP **or USB**):
+
+```text
+OTA_STATUS state=IDLE received=0 size=0 running=app1 boot=app1 accepted_version=2 boot_health=VALID confirm_required=0 rollback=1
+```
+
+After an unsuccessful transfer, authenticated TCP may request read-only
+`OTA_DIAG`: it reports accepted flash byte offset, write count/longest write,
+last failure, reset reason and bounded RTC progress without exposing
+SSID/password, bearer token, signing key or firmware content. The USB-only
+`OTA_DEBUG` uses physical serial and never injects diagnostic lines into the
+OTA TCP protocol. Neither command initiates an ECU request or firmware update.
+
+Recommended laptop workflow after building the exact application image:
+
+```bash
+PYTHONPATH=src ./.venv/bin/python scripts/sme105_wifi_ota.py \
+  --firmware firmware/sme105_usb_bridge/.pio/build/esp32dev/firmware.bin \
+  --manifest "$HOME/.config/sme105/next-firmware.json" \
+  --sign-manifest --version 6
+
+PYTHONPATH=src ./.venv/bin/python scripts/sme105_wifi_ota.py \
+  --firmware firmware/sme105_usb_bridge/.pio/build/esp32dev/firmware.bin \
+  --manifest "$HOME/.config/sme105/next-firmware.json" \
+  --host 192.168.1.10 --upload
+
+PYTHONPATH=src ./.venv/bin/python scripts/sme105_wifi_ota.py \
+  --firmware firmware/sme105_usb_bridge/.pio/build/esp32dev/firmware.bin \
+  --manifest "$HOME/.config/sme105/next-firmware.json" \
+  --host 192.168.1.10 --check-installed
+```
+
+The version/path are examples (the latest live hardware validation accepted
+version **5**): use a **strictly higher version** than the device's accepted
+version and a fresh manifest path, since signing refuses overwrite. DHCP
+may change the example IP. Keep the P-256 private signing
+key offline with a secure backup; it is never embedded in the ESP32.
+
+**OTA admission is fail-closed:** the bridge rejects OTA on USB, without
+`AUTH`, during any ECU session, with an ARM pending, during a previous OTA,
+or while a new image awaits boot-health verification. During OTA, no
+`OBSERVE`, `READ`, `LISTEN`, or other vehicle-affecting command can start.
+`STOP` may abort an *in-progress* OTA receive, preserving the old partition.
+The existing `GPIO18 DE` fail-safe and original CART timing/interrupt code
+are not changed by this OTA transport.
+
+**Automatic first-boot rollback:** Arduino ESP32's default behavior would
+otherwise mark an OTA image valid *before* `setup()`. This sketch overrides
+`verifyRollbackLater()` to defer the ESP-IDF bootloader's validation until
+after a real app health check. The first boot requires working low-DE
+hardware initialization, valid Wi-Fi credentials/token, a reachable WLAN,
+a successfully started TCP listener, and the **authenticated `OTA_CONFIRM`
+proof delivered through that listener**. It waits at least eight seconds.
+If health cannot be established within 45 seconds, the app requests
+`esp_ota_mark_app_invalid_rollback_and_reboot()`. A crash/reset before
+confirmation causes the rollback-enabled bootloader to reject the unverified
+image on the following boot. The accepted anti-rollback version in NVS is
+advanced only after successful new-app health checks, not merely when the
+image download completes. NVS Wi-Fi credentials are left intact.
+
+**Limits of rollback:** it requires the *previous* application slot and OTA
+metadata to remain valid. It cannot recover from a broken bootloader,
+destructive partition rewrite, damaged flash or physical compromise. The
+OTA protocol protects **publisher authenticity and image integrity**, not
+network confidentiality (TCP is not TLS). A device on an untrusted LAN
+could intercept the session token; use a trusted local WPA2/WPA3 network,
+never expose TCP port 8765 directly to the Internet, and keep the signing
+private key offline.
+
 ### Explicit host commands
 
 | Command | Effect |
@@ -132,6 +327,7 @@ prove physical ECU safety, authorization for unsafe B requests, or a DTC.
 | `STATUS` | Read-only state, DE status, consumed read and OBSERVE latches, optional arm, fault. |
 | `PINS` | Read-only GPIO assignment. |
 | `HELP` | Print exact command allowlist. |
+| `TX2_BENCH` | **Required once after every reboot before any `READ_*`**. Runs two 2400 reference frames and four 9600 UART2 words, checking all GPIO17 UART2 RX bytes and independent input-only RMT first word. GPIO18 DE stays LOW; no ECU request. `PASS_LOCAL_PAD` does **not** prove MAX487 A/B or ECU acceptance. Explicitly available over authenticated TCP or USB. |
 | `LISTEN_9600` | **No bus TX**: 10s UART1 RO capture at 9600 8N1, no 2400 handshake. Needs an already present CART stream. |
 | `OBSERVE` | **Active 2400 handshake** (fixed Echo ID + Go CART only), then 10s raw 9600 RO capture. **At most once per ESP32 boot**; not a passive bus operation. |
 | `ARM_A4` | Prepare one *candidate* stored-code sequence, no bus TX; expires after 15s. |
@@ -153,6 +349,22 @@ separately authorized by the operator. Both B-command variants are conflicting s
 sources and remain unverified for the SME-105; do **not** issue them against
 a vehicle until the known GPIO17 waveform mismatch has been understood and
 authorized electrical controls reviewed.
+
+To qualify **only the local TX2 pad** from the office without a USB serial
+connection, use the explicit authenticated command from the laptop:
+
+```bash
+PYTHONPATH=src ./.venv/bin/python scripts/sme105_usb_bridge.py \
+  --host 192.168.1.10 --command TX2_BENCH
+```
+
+The host demands two complete reference frames, four ordered UART2 pad
+readbacks (`01B0 FF5F 26A4 00A0`), independent GPIO17 RMT input waveform
+decoding `01B0`, `DE=LOW` throughout, exact `TX2_BENCH_END PASS_LOCAL_PAD`
+and a fresh `STATUS` confirming `tx2_bench_used=1 tx2_bench_pass=1`.
+Malformed, missing, duplicated or contradictory evidence is rejected; the
+host never automatically retries or sends `OBSERVE`, `ARM_*` or `READ_*`.
+This is not a MAX487 A/B differential measurement or ECU/DTC validation.
 
 ### Wire text protocol (the host must save this stream)
 

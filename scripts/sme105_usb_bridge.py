@@ -28,9 +28,9 @@ BAUD = 115200
 TCP_PORT = 8765
 DEFAULT_TOKEN_FILE = Path("~/.config/sme105/bridge-token").expanduser()
 TOKEN_HEX = re.compile(rb"^[0-9a-fA-F]{32}$")
-COMMANDS = ("STATUS", "LISTEN", "HELLO", "REQUEST_A4", "REQUEST_0E", "STOP", "EXIT")
+COMMANDS = ("STATUS", "TX2_BENCH", "LISTEN", "HELLO", "REQUEST_A4", "REQUEST_0E", "STOP", "EXIT")
 CAR_TRANSMIT = frozenset(("HELLO", "REQUEST_A4", "REQUEST_0E"))
-WIRE_COMMANDS = frozenset(("HELLO", "PINS", "STATUS", "LISTEN_9600", "OBSERVE", "ARM_A4",
+WIRE_COMMANDS = frozenset(("HELLO", "PINS", "STATUS", "TX2_BENCH", "LISTEN_9600", "OBSERVE", "ARM_A4",
                            "READ_A4", "ARM_0E", "READ_0E", "STOP"))
 SOURCE_WORDS = "01B0 FF5F 26A4 00A0"
 V5_GPIO17_WORDS = "6DCC 29E9 6C3C 9847"
@@ -53,10 +53,100 @@ TX_PAD = re.compile(
     rb"observed=([0-9A-F]{4}) tx_us=(\d{1,10}) "
     rb"done_us=(\d{1,10}) match=([01])$"
 )
+TX2_BENCH_TIMEOUT = 15.0
+TX2_REF = re.compile(
+    rb"^TX2_BENCH_REF frame=([01]) bytes=11 uart_baud=2400 de_low=1 external_bus_disabled=1$"
+)
+TX2_BEGIN = re.compile(
+    rb"^TX2_BENCH_BEGIN gpio17_pad_rx=1 de18=LOW reference_2400_frames=2 "
+    rb"config_9600=1 source=AHB_FIFO clk_div=0x[0-9A-F]{1,8} "
+    rb"uart_conf0=0x[0-9A-F]{1,8}$"
+)
+TX2_WORD = re.compile(
+    rb"^TX2_BENCH_WORD slot=([0-3]) expected=([0-9A-F]{4}) observed=([0-9A-F]{4}) "
+    rb"rx_count=(\d{1,3}) rx_count_mid=(\d{1,3}) rx_count_after=(\d{1,3}) "
+    rb"rx_mem_before=0x[0-9A-F]{1,8} rx_mem_mid=0x[0-9A-F]{1,8} "
+    rb"rx_mem_after=0x[0-9A-F]{1,8} raw_flags=0x([0-9A-F]{1,8}) "
+    rb"done=([01]) elapsed_us=(\d{1,7}) de_low=([01]) match=([01])$"
+)
+TX2_RMT = re.compile(rb"^TX2_BENCH_RMT scope=GPIO17 source=RMT_COMPLETE_PACKET items=(\d{1,2})$")
+TX2_RMT_DECODE = b"TX2_BENCH_RMT_DECODE expected=01B0 match=1"
+TX2_RMT_EDGE = re.compile(
+    rb"^TX2_BENCH_RMT_EDGE i=(\d{1,2}) l0=([01]) d0_us=(\d{1,5}) "
+    rb"l1=([01]) d1_us=(\d{1,5})$"
+)
+TX2_END = (
+    b"TX2_BENCH_END result=PASS_LOCAL_PAD completed=4 DE=LOW "
+    b"no_rmt_start=1 ecu_tx=0 no_auto_retry=1"
+)
 
 
 class BridgeError(RuntimeError):
     """Untrusted bridge identity, truncated capture, or uncertain command."""
+
+
+class Tx2BenchWitness:
+    """Ordered, single-use proof of the GPIO17 pad-only TX2 bench."""
+
+    WORDS = (b"01B0", b"FF5F", b"26A4", b"00A0")
+
+    def __init__(self) -> None:
+        self.phase = "ref"
+        self.refs = 0
+        self.words = 0
+        self.rmt_items = 0
+        self.edges = 0
+
+    def feed(self, line: bytes) -> bool:
+        """Return True only for the exact complete local-only END witness."""
+        if line.startswith((b"TX2_BENCH_DENIED", b"TX2_BENCH_END result=FAIL")):
+            raise BridgeError("TX2_BENCH denied or failed on device")
+        if self.phase == "ref":
+            ref = TX2_REF.fullmatch(line)
+            if ref is not None and int(ref[1]) == self.refs:
+                self.refs += 1
+                if self.refs == 2:
+                    self.phase = "begin"
+                return False
+        elif self.phase == "begin":
+            if TX2_BEGIN.fullmatch(line):
+                self.phase = "word"
+                return False
+        elif self.phase == "word":
+            word = TX2_WORD.fullmatch(line)
+            if (word is not None and int(word[1]) == self.words and
+                    word[2] == word[3] == self.WORDS[self.words] and
+                    int(word[4]) == 2 and
+                    not (int(word[7], 16) & 0x1C) and
+                    word[8] == word[10] == word[11] == b"1" and
+                    1800 <= int(word[9]) <= 3200):
+                self.words += 1
+                if self.words == 4:
+                    self.phase = "rmt"
+                return False
+        elif self.phase == "rmt":
+            packet = TX2_RMT.fullmatch(line)
+            if packet is not None and 0 < int(packet[1]) <= 48:
+                self.rmt_items = int(packet[1])
+                self.phase = "decode"
+                return False
+        elif self.phase == "decode":
+            if line == TX2_RMT_DECODE:
+                self.phase = "edge"
+                return False
+        elif self.phase == "edge":
+            edge = TX2_RMT_EDGE.fullmatch(line)
+            if (edge is not None and int(edge[1]) == self.edges and
+                    int(edge[3]) <= 32767 and int(edge[5]) <= 32767):
+                self.edges += 1
+                if self.edges == self.rmt_items:
+                    self.phase = "end"
+                return False
+        elif self.phase == "end":
+            if line == TX2_END:
+                self.phase = "done"
+                return True
+        raise BridgeError("malformed, missing, reordered or duplicated TX2_BENCH witness")
 
 
 class SerialPort(Protocol):
@@ -248,14 +338,19 @@ class EvidenceRecorder:
         if self.fault is None:
             self.fault = reason
 
-    def feed(self, data: bytes) -> list[bytes]:
+    def feed(self, data: bytes) -> list[tuple[bytes, int]]:
+        """Return complete lines with the accepted RX count at each line boundary.
+
+        A transport read can contain an entire session, so the caller must
+        not use the recorder's final count when processing an earlier EVENT.
+        """
         if self.closed:
             raise BridgeError("capture already closed")
         # The transcript persists BEFORE any interpretation of framed events.
         self._txt.write(data)
         self._txt_hash.update(data)
         self.usb_bytes += len(data)
-        completed: list[bytes] = []
+        completed: list[tuple[bytes, int]] = []
         self._buffer.extend(data)
         while True:
             end = self._buffer.find(b"\n")
@@ -273,8 +368,8 @@ class EvidenceRecorder:
             if len(line) > MAX_LINE:
                 self._fault("overlong serial event")
                 continue
-            completed.append(line)
             self._parse_rx(line.rstrip(b"\r\n"))
+            completed.append((line, self.rx_bytes))
         return completed
 
     def _parse_rx(self, line: bytes) -> None:
@@ -357,6 +452,9 @@ class BridgeClient:
         self._request_sent = False
         self._verified_status = False
         self._session_ended = threading.Event()
+        self._tx2_bench_attempted = False
+        self._tx2_bench: Tx2BenchWitness | None = None
+        self._tx2_bench_completed = False
 
     @property
     def fault(self) -> str | None:
@@ -374,7 +472,7 @@ class BridgeClient:
                 data = self.port.read(4096)
                 if not data:
                     continue
-                for raw_line in self.evidence.feed(data):
+                for raw_line, rx_count_at_line in self.evidence.feed(data):
                     line = raw_line.rstrip(b"\r\n")
                     try:
                         parsed = parse_status(line)
@@ -402,9 +500,19 @@ class BridgeClient:
                         self._set_integrity_fault("wrong bridge GPIO pin topology")
                     if line.startswith(b"EVENT session="):
                         with self._condition:
-                            self._session_start_rx = self.evidence.rx_bytes
+                            self._session_start_rx = rx_count_at_line
                             self._session_name = line.decode("ascii", "replace")
                             self._session_ended.clear()
+                    if line.startswith(b"TX2_BENCH_"):
+                        with self._condition:
+                            try:
+                                if self._tx2_bench is None:
+                                    raise BridgeError("unsolicited TX2_BENCH witness")
+                                self._tx2_bench_completed = self._tx2_bench.feed(line)
+                            except BridgeError as exc:
+                                if self._integrity_error is None:
+                                    self._integrity_error = str(exc)
+                            self._condition.notify_all()
                     if line.startswith(b"EVENT read_armed"):
                         armed = ARM_EVENT.fullmatch(line)
                         if armed is None:
@@ -451,7 +559,7 @@ class BridgeClient:
                             self._set_integrity_fault("malformed/untrusted END record")
                         else:
                             reported = int(ended[2])
-                            actual = self.evidence.rx_bytes - self._session_start_rx
+                            actual = rx_count_at_line - self._session_start_rx
                             if reported != actual:
                                 self._set_integrity_fault(
                                     f"END RX count mismatch: firmware={reported}, USB={actual}"
@@ -558,6 +666,47 @@ class BridgeClient:
         if self.fault:
             raise BridgeError(f"firmware/capture evidence fault: {self.fault}")
 
+    def _run_tx2_bench(self) -> None:
+        """Explicit local pad selftest: no ECU bus driver activation."""
+        if self._tx2_bench_attempted:
+            raise BridgeError("TX2_BENCH already attempted this host session")
+        initial = self.status()
+        self._validate_idle_for_vehicle(initial)
+        if (initial.field("tx2_bench_used") != "0" or
+                initial.field("tx2_bench_pass") != "0" or
+                initial.field("observe_used") != "0"):
+            raise BridgeError("TX2_BENCH unavailable or already used on this boot")
+        self._tx2_bench_attempted = True  # a partial send must never auto-retry
+        with self._condition:
+            self._tx2_bench = Tx2BenchWitness()
+            self._tx2_bench_completed = False
+        try:
+            self._send("TX2_BENCH")
+            deadline = time.monotonic() + TX2_BENCH_TIMEOUT
+            with self._condition:
+                while not self._tx2_bench_completed:
+                    if self._reader_error or self._integrity_error or self.evidence.fault:
+                        raise BridgeError(self.fault or "TX2_BENCH evidence failed")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise BridgeError("TX2_BENCH complete witness missing; no retry")
+                    self._condition.wait(remaining)
+            # A stale pre-bench STATUS is insufficient. status() sends a new
+            # command after END and checks the reply's safe pin and boot latch.
+            fresh = self.status()
+            if (fresh.field("tx2_bench_used") != "1" or
+                    fresh.field("tx2_bench_pass") != "1" or
+                    fresh.field("stage") != "0" or
+                    fresh.field("fault") != "0" or
+                    fresh.field("read_used") != "0"):
+                raise BridgeError("fresh STATUS lacks a successful TX2_BENCH boot latch")
+        except BridgeError as exc:
+            self._set_integrity_fault(f"TX2_BENCH unverified: {exc}")
+            raise
+        self.display("TX2_BENCH verified: 4/4 GPIO17 pad words, independent RMT "
+                     "01B0, DE LOW, ecu_tx=0; fresh STATUS pass=1. "
+                     "Local-only preflight; no ECU read performed.")
+
     def _await_arm(self, variant: str, timeout: float = 2.0) -> None:
         with self._condition:
             previous = self._arm_generation
@@ -606,6 +755,9 @@ class BridgeClient:
         if command == "STOP":
             self.stop()
             self.display("STOP acknowledged by firmware (DE=LOW)")
+            return
+        if command == "TX2_BENCH":
+            self._run_tx2_bench()
             return
         if command == "HELLO" and self._hello_sent:
             raise BridgeError("HELLO already attempted this host session")
@@ -685,8 +837,9 @@ def confirm_vehicle(command: str, user_input: Callable[[str], str] = input,
 
 
 def menu(display: Callable[[str], None] = print) -> None:
-    display("Commands: STATUS | LISTEN | HELLO | REQUEST_A4 | REQUEST_0E | STOP | EXIT")
-    display("LISTEN is RX-only. HELLO uses active 2400-baud handshake; "
+    display("Commands: STATUS | TX2_BENCH | LISTEN | HELLO | REQUEST_A4 | REQUEST_0E | STOP | EXIT")
+    display("TX2_BENCH is local GPIO17 pad/RMT preflight with DE LOW. "
+            "LISTEN is RX-only. HELLO uses active 2400-baud handshake; "
             "REQUEST needs ARM and a separately approved READ.")
 
 

@@ -4,13 +4,21 @@
 #include <Preferences.h>
 #include <ESPmDNS.h>
 #include <esp_system.h>
+#include <esp_attr.h>
 #include <bootloader_random.h>
 #include <mbedtls/base64.h>
+#include <mbedtls/pk.h>
+#include <mbedtls/sha256.h>
+#include <esp_ota_ops.h>
+#include <esp_partition.h>
+#include <esp_flash_partitions.h>
+#include <sdkconfig.h>
 #include <lwip/sockets.h>
 #include <cerrno>
 #include <driver/gpio.h>
 #include <driver/uart.h>
 #include <driver/rmt.h>
+#include <freertos/ringbuf.h>
 #include <esp_intr_alloc.h>
 #include <esp_timer.h>
 #include <soc/soc.h>
@@ -22,6 +30,15 @@
 #include <soc/rmt_struct.h>
 #include <cstring>
 #include <algorithm>
+
+// Arduino ESP32 normally marks a freshly OTA-booted image VALID inside
+// initArduino(), BEFORE setup() can check our pins or Wi-Fi state. Deferring
+// validation is essential: IDF's OTA bootloader must be able to roll back
+// if the new image crashes or fails health checks on its first boot.
+#if !defined(CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE)
+#error "Signed OTA requires the ESP32 bootloader rollback-enabled SDK"
+#endif
+extern "C" bool verifyRollbackLater(void) { return true; }
 
 // Ford EEC-IV experimental 97AB SME-105 USB field bridge.
 // There is NO arbitrary bus write API and NO automatic vehicle transmission.
@@ -41,6 +58,24 @@ constexpr uint16_t kWiFiPort = 8765;
 constexpr size_t kWireQueueSize = 16384; // bounded, no allocation/IO in ISR
 constexpr uint32_t kAuthDeadlineMs = 5000;
 constexpr uint32_t kStaRetryMs = 10000;
+constexpr size_t kOtaChunkSize = 512;
+// OTA v2 application-layer flow control: no more than 8 KiB accepted
+// before the authenticated uploader observes a monotonic progress ACK.
+constexpr uint32_t kOtaWindowSize = 8192;
+constexpr uint32_t kOtaIdleTimeoutMs = 15000;
+constexpr uint32_t kOtaTotalTimeoutMs = 300000;
+constexpr uint32_t kOtaFirstBootCheckMs = 8000;
+// ::send(MSG_DONTWAIT) only copies bytes into lwIP; it does not prove that
+// the uploader has received OTA_OK. Keep the socket alive briefly afterwards.
+constexpr uint32_t kOtaOkDrainGraceMs = 1500;
+constexpr uint32_t kOtaRebootMaxDelayMs = 4500;
+constexpr uint32_t kOtaCurrentVersion = 1;
+constexpr size_t kOtaAppSlotMax = 0x140000; // default 4MB ESP32 OTA partition table
+constexpr char kOtaPublisherPublicPEM[] =
+  "-----BEGIN PUBLIC KEY-----\n"
+  "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEwvvqJc/ITbuRup3AyoBDWBMsfgZh\n"
+  "9E86r45Rtj1drURltBc9zoqYxKpZUQqyH8nZxqsAAuuD8Xsh0VognZiBYw==\n"
+  "-----END PUBLIC KEY-----\n";
 static_assert((kRxRingSize & (kRxRingSize - 1)) == 0, "ring power of two");
 static_assert((kWireQueueSize & (kWireQueueSize - 1)) == 0, "wire ring power of two");
 
@@ -100,6 +135,8 @@ volatile bool observeConsumed = false; // active Echo-ID/Go-CART, not passive sn
 uint8_t armedVariant = 255;
 bool armedFromUSB = true; // ARM/READ must originate on the same authenticated transport
 bool nativeReady = false, refReady = false, gateReady = false;
+bool tx2BenchUsed = false; // One explicit operator-commanded pad test per boot.
+bool tx2BenchPassed = false; // Volatile: reset on boot; never inferred from FIFO writes.
 uint8_t gateChannels = 0;
 char commandBuffer[176] = {}; // USB-only base64 provisioning up to 44+84 chars
 uint8_t commandUsed = 0;
@@ -130,11 +167,30 @@ class BridgeOutput : public Print {
   uint32_t usbCursor() const { return usbRead_; }
   uint32_t tcpCursor() const { return tcpRead_; }
   uint32_t overflow() const { return overflow_; }
+  // During signed OTA, the authenticated TCP updater is the mandatory
+  // recipient; serial is optional observation. A closed USB monitor must
+  // not prevent the OTA reply from reaching the authenticated uploader.
+  void setOtaTcpPrimary(bool enabled) {
+    if (!enabled && otaTcpPrimary_ &&
+        write_ - usbRead_ >= kWireQueueSize - 512) {
+      // Skip only when the optional USB cursor could block new output.
+      // Preserve ordinary OTA_FAIL/progress lines for an open USB monitor.
+      usbSkipped_ += write_ - usbRead_;
+      usbRead_ = write_;
+    }
+    otaTcpPrimary_ = enabled;
+  }
+  uint32_t usbSkipped() const { return usbSkipped_; }
   void dropTcpAtCurrent() { tcpRead_ = write_; tcpEnabled_ = false; tcpSendFailed_ = false; }
   void markTcpAuthenticated() { tcpRead_ = write_; tcpEnabled_ = true; tcpSendFailed_ = false; }
   bool tcpSendFailed() const { return tcpSendFailed_; }
   void drainUSB() {
     if (usbRead_ == write_) return;
+    if (otaTcpPrimary_ && write_ - usbRead_ > kWireQueueSize) {
+      usbSkipped_ += write_ - usbRead_;
+      usbRead_ = write_;
+      return;
+    }
     const int capacity = Serial.availableForWrite();
     if (capacity <= 0) return;
     const size_t len = std::min(static_cast<size_t>(capacity),
@@ -162,11 +218,13 @@ class BridgeOutput : public Print {
   uint32_t used() const {
     // While TCP is unauthenticated/disconnected, tcpRead_=write_ and USB
     // alone constrains the queue. When authenticated, both cursors constrain it.
+    if (otaTcpPrimary_ && tcpEnabled_) return write_ - tcpRead_;
     return write_ - (tcpEnabled_ ? std::min(usbRead_, tcpRead_) : usbRead_);
   }
   uint8_t bytes_[kWireQueueSize] = {};
   uint32_t write_ = 0, usbRead_ = 0, tcpRead_ = 0, overflow_ = 0;
-  bool tcpEnabled_ = false, tcpSendFailed_ = false;
+  bool tcpEnabled_ = false, tcpSendFailed_ = false, otaTcpPrimary_ = false;
+  uint32_t usbSkipped_ = 0;
 };
 BridgeOutput out;
 Preferences wifiPrefs;
@@ -177,16 +235,253 @@ bool tcpHadActiveSession = false;
 bool wifiServerStarted = false;
 bool prefsReady = false, mdnsStarted = false, commandFromUSB = true;
 char wifiToken[33] = {};
-char wifiLine[96] = {};
+char wifiLine[240] = {}; // OTA_BEGIN signed manifest fits; never unbounded
 uint8_t wifiLineUsed = 0;
 bool wifiLineDiscard = false;
 uint32_t wifiAuthStartedMs = 0, wifiLastRetryMs = 0;
 uint32_t transportFaults = 0;
+
+enum class OtaPhase : uint8_t { Idle, Receiving, RebootPending };
+struct SignedOtaState {
+  OtaPhase phase = OtaPhase::Idle;
+  esp_ota_handle_t handle = 0;
+  const esp_partition_t* target = nullptr;
+  uint32_t size = 0, received = 0, version = 0;
+  uint32_t beganMs = 0, lastDataMs = 0, restartDeadlineMs = 0;
+  uint32_t nextWindowEnd = 0, progressQueuedAt = 0;
+  uint32_t otaOkQueuedAt = 0, otaOkDrainedAtMs = 0;
+  bool waitingProgressDrain = false, otaOkDrained = false;
+  uint8_t expectedHash[32] = {};
+  char hexHash[65] = {};
+  mbedtls_sha256_context digest = {};
+  bool shaInitialized = false, handleOpen = false;
+};
+SignedOtaState signedOta;
+// USB-only observability for supervised uploads. These values never enter
+// the authenticated TCP response stream and never contain keys or tokens.
+// Retain the final byte offset across abortSignedOta() so a postmortem
+// cannot confuse 0 received with an almost-complete body.
+struct OtaDiagnostic {
+  uint32_t lastReceived = 0;
+  uint32_t writes = 0;
+  uint32_t longestWriteUs = 0;
+  uint32_t lastWriteUs = 0;
+  uint32_t lastProgressMs = 0;
+  const char* lastFailure = "NONE"; // only immutable source literals
+  const char* operation = "IDLE";
+};
+OtaDiagnostic otaDiagnostic;
+// RTC no-init RAM survives many CPU/software watchdog resets, unlike normal
+// .bss. It is diagnostic ONLY, never an OTA admission or version authority.
+// A power loss may erase it; magic/check detect uninitialized/torn records.
+struct OtaRtcTrace {
+  uint32_t magic;
+  uint32_t imageBytes;
+  uint32_t acceptedBytes;
+  uint32_t imageVersion;
+  uint32_t phase;  // 1=BEGIN, 2=BODY, 3=ABORT, 4=FULL, 5=BOOT_PENDING
+  uint32_t check;
+};
+RTC_NOINIT_ATTR OtaRtcTrace otaRtcTrace;
+constexpr uint32_t kOtaRtcMagic = 0x53A1057Au;
+void storeOtaRtcTrace(uint32_t phase) {
+  otaRtcTrace.magic = 0; // two-phase validity, never accept partially written
+  otaRtcTrace.imageBytes = signedOta.size;
+  otaRtcTrace.acceptedBytes = signedOta.received;
+  otaRtcTrace.imageVersion = signedOta.version;
+  otaRtcTrace.phase = phase;
+  otaRtcTrace.check = kOtaRtcMagic ^ otaRtcTrace.imageBytes ^
+                      otaRtcTrace.acceptedBytes ^ otaRtcTrace.imageVersion ^
+                      otaRtcTrace.phase;
+  otaRtcTrace.magic = kOtaRtcMagic;
+}
+bool otaRtcTraceValid() {
+  return otaRtcTrace.magic == kOtaRtcMagic &&
+         otaRtcTrace.imageBytes >= 65536 &&
+         otaRtcTrace.imageBytes <= kOtaAppSlotMax &&
+         otaRtcTrace.acceptedBytes <= otaRtcTrace.imageBytes &&
+         otaRtcTrace.phase >= 1 && otaRtcTrace.phase <= 5 &&
+         otaRtcTrace.check == (kOtaRtcMagic ^ otaRtcTrace.imageBytes ^
+                              otaRtcTrace.acceptedBytes ^
+                              otaRtcTrace.imageVersion ^ otaRtcTrace.phase);
+}
+bool otaFirstBootPending = false, otaBootHealthFailed = false;
+bool otaPendingNetworkConfirmed = false;
+bool otaRollbackAttempted = false;
+uint32_t otaAcceptedVersion = kOtaCurrentVersion;
+// NVS putBytes commits one pending manifest atomically. The existing v2
+// ota_pending/ota_p_sha keys remain for OTA_CONFIRM and older accepted-version
+// continuity, but are never sufficient to advance ota_ver after a crash.
+constexpr uint32_t kOtaLedgerMagic = 0x534F5441u;
+struct OtaPendingLedger {
+  uint32_t magic = kOtaLedgerMagic;
+  uint32_t version = 0, imageSize = 0;
+  uint32_t targetAddress = 0, targetSize = 0;
+  uint8_t targetSubtype = 0;
+  char targetLabel[17] = {};
+  uint8_t sha256[32] = {};
+};
+// Explicit prototypes keep Arduino's auto-prototype pass from emitting
+// signatures for OtaPendingLedger before the type has been declared.
+bool loadPendingOtaLedger(OtaPendingLedger& ledger);
+bool ledgerTargetsRunningApp(const OtaPendingLedger& ledger,
+                             const esp_partition_t* running);
+bool runningAppMatchesSignedHash(const OtaPendingLedger& ledger,
+                                 const esp_partition_t* running);
+OtaPendingLedger otaTrustedLedger;
+bool otaLedgerTrusted = false;
+bool otaLedgerAlreadyValid = false; // bootloader rollback no longer possible
+uint32_t otaLedgerRetryAfterMs = 0;
+
+void clearPendingOtaLedger() {
+  if (!prefsReady) return;
+  // A power cut while cleaning these keys is harmless: ota_ver was already
+  // committed, or the running app is a different (rolled-back) partition.
+  wifiPrefs.remove("ota_ledger");
+  wifiPrefs.remove("ota_pending");
+  wifiPrefs.remove("ota_p_sha");
+}
+bool loadPendingOtaLedger(OtaPendingLedger& ledger) {
+  if (!prefsReady ||
+      wifiPrefs.getBytesLength("ota_ledger") != sizeof(ledger) ||
+      wifiPrefs.getBytes("ota_ledger", &ledger, sizeof(ledger)) != sizeof(ledger))
+    return false;
+  return ledger.magic == kOtaLedgerMagic &&
+      ledger.version > kOtaCurrentVersion &&
+      ledger.imageSize >= 65536 && ledger.imageSize <= kOtaAppSlotMax &&
+      ledger.targetSize == kOtaAppSlotMax &&
+      (ledger.targetSubtype == ESP_PARTITION_SUBTYPE_APP_OTA_0 ||
+       ledger.targetSubtype == ESP_PARTITION_SUBTYPE_APP_OTA_1) &&
+      ledger.targetLabel[0] != '\0' && ledger.targetLabel[16] == '\0';
+}
+bool ledgerTargetsRunningApp(const OtaPendingLedger& ledger,
+                             const esp_partition_t* running) {
+  return running && running->type == ESP_PARTITION_TYPE_APP &&
+      running->subtype == ledger.targetSubtype &&
+      running->address == ledger.targetAddress &&
+      running->size == ledger.targetSize &&
+      strncmp(running->label, ledger.targetLabel, sizeof(running->label)) == 0;
+}
+bool runningAppMatchesSignedHash(const OtaPendingLedger& ledger,
+                                 const esp_partition_t* running) {
+  if (!ledgerTargetsRunningApp(ledger, running) ||
+      ledger.imageSize > running->size) return false;
+  mbedtls_sha256_context hash;
+  mbedtls_sha256_init(&hash);
+  bool ok = mbedtls_sha256_starts_ret(&hash, 0) == 0;
+  uint8_t block[1024] = {}, calculated[32] = {};
+  for (uint32_t offset = 0; ok && offset < ledger.imageSize;) {
+    const size_t count = std::min(static_cast<size_t>(ledger.imageSize - offset),
+                                  sizeof(block));
+    ok = esp_partition_read(running, offset, block, count) == ESP_OK &&
+         mbedtls_sha256_update_ret(&hash, block, count) == 0;
+    offset += static_cast<uint32_t>(count);
+    if ((offset & 0x3FFFu) == 0) delay(0); // keep scheduler/watchdog serviced
+  }
+  if (ok) ok = mbedtls_sha256_finish_ret(&hash, calculated) == 0 &&
+               constantTimeEqual(calculated, ledger.sha256, sizeof(calculated));
+  mbedtls_sha256_free(&hash);
+  return ok;
+}
+bool acceptValidPendingOta() {
+  // This is called only AFTER IDF reports VALID and the signed flash image
+  // and partition identity have been checked. Failure keeps all active
+  // commands blocked; the next boot can retry from the durable NVS ledger.
+  if (!otaLedgerTrusted || !otaLedgerAlreadyValid || !prefsReady) return false;
+  otaLedgerRetryAfterMs = millis() + 2000; // bounded NVS endurance on failure
+  if (otaTrustedLedger.version > otaAcceptedVersion &&
+      (wifiPrefs.putUInt("ota_ver", otaTrustedLedger.version) != sizeof(uint32_t) ||
+       wifiPrefs.getUInt("ota_ver", 0) != otaTrustedLedger.version)) return false;
+  otaAcceptedVersion = std::max(otaAcceptedVersion, otaTrustedLedger.version);
+  clearPendingOtaLedger();
+  otaFirstBootPending = false;
+  otaLedgerAlreadyValid = false;
+  out.print(F("OTA_BOOT state=VALID version="));
+  out.println(otaAcceptedVersion);
+  return true;
+}
+
 void runCommand(const char* command);
 void stopEverything(Fault reason);
+void abortSignedOta(const char* reason);
+void pollSignedOtaBody();
+void serviceOtaHealthAndRestart();
 
 bool busSessionActive() {
   return stage != IDLE && stage != FINISHING && stage != FAULTED;
+}
+bool otaUpdating() { return signedOta.phase != OtaPhase::Idle; }
+bool validBase64(const char* s, size_t maxEncoded);
+void clearSecrets(void* target, size_t size);
+
+bool parseUnsignedDecimal(const char* text, uint32_t& number) {
+  number = 0;
+  if (!text || !*text || (text[0] == '0' && text[1])) return false;
+  for (const char* c = text; *c; ++c) {
+    if (*c < '0' || *c > '9') return false;
+    const uint32_t digit = static_cast<uint32_t>(*c - '0');
+    if (number > (UINT32_MAX - digit) / 10) return false;
+    number = number * 10 + digit;
+  }
+  return true;
+}
+bool decodeLowercaseHash(const char* text, uint8_t output[32]) {
+  if (!text || strlen(text) != 64) return false;
+  for (size_t i = 0; i < 32; ++i) {
+    uint8_t decoded = 0;
+    for (size_t j = 0; j < 2; ++j) {
+      const char c = text[2 * i + j];
+      const int digit = c >= '0' && c <= '9' ? c - '0' :
+                        c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+      if (digit < 0) return false;
+      decoded = static_cast<uint8_t>((decoded << 4) | digit);
+    }
+    output[i] = decoded;
+  }
+  return true;
+}
+bool constantTimeEqual(const uint8_t* a, const uint8_t* b, size_t n) {
+  uint8_t diff = 0;
+  for (size_t i = 0; i < n; ++i) diff |= a[i] ^ b[i];
+  return diff == 0;
+}
+
+bool verifyOtaManifestSignature(uint32_t bytes, const char* sha256hex,
+                                uint32_t version, const char* signatureBase64) {
+  // Strict domain/model separation: a valid signature from another project
+  // or for another image length/version cannot authorize this ESP32 image.
+  if (!signatureBase64 || strlen(signatureBase64) > 112 ||
+      !validBase64(signatureBase64, 112)) return false;
+  uint8_t signature[88] = {};
+  size_t signatureLen = 0;
+  const int decoded = mbedtls_base64_decode(signature, sizeof(signature),
+                          &signatureLen,
+                          reinterpret_cast<const unsigned char*>(signatureBase64),
+                          strlen(signatureBase64));
+  if (decoded || signatureLen < 64 || signatureLen > 80) return false;
+  char canonical[144] = {};
+  const int count = snprintf(canonical, sizeof(canonical),
+      "SME105-OTA-V1\nesp32dev\n%lu\n%s\n%lu\n",
+      static_cast<unsigned long>(bytes), sha256hex,
+      static_cast<unsigned long>(version));
+  if (count <= 0 || count >= static_cast<int>(sizeof(canonical))) return false;
+  uint8_t manifestDigest[32] = {};
+  if (mbedtls_sha256_ret(reinterpret_cast<const unsigned char*>(canonical),
+                         static_cast<size_t>(count), manifestDigest, 0) != 0)
+    return false;
+  mbedtls_pk_context key;
+  mbedtls_pk_init(&key);
+  const int parsed = mbedtls_pk_parse_public_key(&key,
+       reinterpret_cast<const unsigned char*>(kOtaPublisherPublicPEM),
+       sizeof(kOtaPublisherPublicPEM));
+  const bool verified = parsed == 0 && mbedtls_pk_can_do(&key, MBEDTLS_PK_ECDSA) &&
+      mbedtls_pk_verify(&key, MBEDTLS_MD_SHA256,
+                        manifestDigest, sizeof(manifestDigest),
+                        signature, signatureLen) == 0;
+  mbedtls_pk_free(&key);
+  clearSecrets(signature, sizeof(signature));
+  clearSecrets(manifestDigest, sizeof(manifestDigest));
+  return verified;
 }
 void clearSecrets(void* target, size_t size) {
   volatile uint8_t* p = static_cast<volatile uint8_t*>(target);
@@ -237,7 +532,313 @@ bool decodeBase64(const char* input, char* output, size_t cap, size_t& decoded) 
   output[decoded] = 0;
   return memchr(output, 0, decoded) == nullptr;
 }
+
+void otaFailure(const char* reason) {
+  out.print(F("OTA_FAIL reason="));
+  out.println(reason);
+}
+void abortSignedOta(const char* reason) {
+  if (signedOta.phase != OtaPhase::Receiving) return;
+  otaDiagnostic.lastReceived = signedOta.received;
+  otaDiagnostic.lastFailure = reason;
+  otaDiagnostic.operation = "ABORTING";
+  storeOtaRtcTrace(3);
+  if (signedOta.handleOpen) {
+    (void)esp_ota_abort(signedOta.handle);
+    signedOta.handleOpen = false;
+  }
+  if (signedOta.shaInitialized) {
+    mbedtls_sha256_free(&signedOta.digest);
+    signedOta.shaInitialized = false;
+  }
+  signedOta.phase = OtaPhase::Idle;
+  signedOta.target = nullptr;
+  signedOta.received = 0;
+  otaDiagnostic.operation = "ABORTED";
+  otaFailure(reason);
+  out.setOtaTcpPrimary(false);
+}
+
+void beginSignedOta(const char* command) {
+  // OTA is network-only, behind the existing 128-bit AUTH; no ECU session,
+  // no queued ARM, and no physical DE/RMT gate left active at admission.
+  if (commandFromUSB || !tcpAuthenticated) {
+    otaFailure("tcp_only"); return;
+  }
+  if (otaUpdating() || otaFirstBootPending || stage != IDLE || !stopLatched ||
+      slotInFlight || slotArmed || armedVariant < 2 ||
+      !gateReady || !prefsReady || !validHexToken(wifiToken) ||
+      (GPIO.out & (1UL << kDE)) ||
+      GPIO.func_out_sel_cfg[kDE].func_sel != SIG_GPIO_OUT_IDX ||
+      out.freeBytes() < 256) {
+    otaFailure("busy_or_unready"); return;
+  }
+  // OTA_BEGIN2 SP size_decimal lowerhex_sha256 version_decimal DER_signature_b64
+  // Legacy OTA_BEGIN is intentionally rejected. Its unbounded sendall()
+  // could buffer an entire image before the ESP32 flash reader caught up.
+  // Every space and every length is bounded; no partial/implicit arguments.
+  const char* const prefix = "OTA_BEGIN2 ";
+  if (strncmp(command, prefix, strlen(prefix))) {
+    otaFailure("protocol_upgrade_required"); return;
+  }
+  const char* args = command + strlen(prefix);
+  if (strlen(args) >= sizeof(wifiLine)) {
+    otaFailure("invalid_manifest"); return;
+  }
+  char fields[sizeof(wifiLine)] = {};
+  memcpy(fields, args, strlen(args) + 1);
+  char* parts[4] = {};
+  char* cursor = fields;
+  bool formValid = true;
+  for (size_t i = 0; i < 4; ++i) {
+    if (!*cursor || *cursor == ' ') { formValid = false; break; }
+    parts[i] = cursor;
+    char* separator = strchr(cursor, ' ');
+    if (i < 3) {
+      if (!separator || separator[1] == ' ') { formValid = false; break; }
+      *separator = 0;
+      cursor = separator + 1;
+    } else if (separator) { formValid = false; break; }
+  }
+  uint32_t imageBytes = 0, newVersion = 0;
+  uint8_t expectedSha[32] = {};
+  formValid = formValid && parseUnsignedDecimal(parts[0], imageBytes) &&
+      decodeLowercaseHash(parts[1], expectedSha) &&
+      parseUnsignedDecimal(parts[2], newVersion) &&
+      newVersion > otaAcceptedVersion && newVersion > kOtaCurrentVersion &&
+      imageBytes >= 65536 && imageBytes <= kOtaAppSlotMax;
+  if (!formValid) { otaFailure("invalid_manifest"); return; }
+
+  // ECDSA P-256/SHA-256 verification BEFORE erasing/writing even one flash
+  // sector. No private signing material is present on the ESP32.
+  if (!verifyOtaManifestSignature(imageBytes, parts[1], newVersion, parts[3])) {
+    otaFailure("bad_signature"); return;
+  }
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  const esp_partition_t* target = esp_ota_get_next_update_partition(nullptr);
+  if (!running || !target || running == target ||
+      running->type != ESP_PARTITION_TYPE_APP ||
+      target->type != ESP_PARTITION_TYPE_APP ||
+      target->size != kOtaAppSlotMax || imageBytes > target->size ||
+      !(target->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_0 ||
+        target->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_1)) {
+    otaFailure("partition_unavailable"); return;
+  }
+  esp_ota_img_states_t currentState = ESP_OTA_IMG_UNDEFINED;
+  if (esp_ota_get_state_partition(running, &currentState) == ESP_OK &&
+      currentState == ESP_OTA_IMG_PENDING_VERIFY) {
+    otaFailure("unconfirmed_running_image"); return;
+  }
+
+  esp_ota_handle_t handle = 0;
+  if (esp_ota_begin(target, imageBytes, &handle) != ESP_OK) {
+    otaFailure("flash_begin_failed"); return;
+  }
+  signedOta.handle = handle;
+  signedOta.handleOpen = true;
+  signedOta.target = target;
+  signedOta.size = imageBytes;
+  signedOta.received = 0;
+  signedOta.version = newVersion;
+  signedOta.nextWindowEnd = std::min(imageBytes, kOtaWindowSize);
+  signedOta.waitingProgressDrain = false;
+  signedOta.progressQueuedAt = 0;
+  signedOta.otaOkQueuedAt = 0;
+  signedOta.otaOkDrainedAtMs = 0;
+  signedOta.otaOkDrained = false;
+  memcpy(signedOta.expectedHash, expectedSha, sizeof(expectedSha));
+  memcpy(signedOta.hexHash, parts[1], sizeof(signedOta.hexHash));
+  mbedtls_sha256_init(&signedOta.digest);
+  signedOta.shaInitialized = true;
+  if (mbedtls_sha256_starts_ret(&signedOta.digest, 0) != 0) {
+    abortSignedOta("hash_init_failed"); return;
+  }
+  signedOta.beganMs = signedOta.lastDataMs = millis();
+  otaDiagnostic = OtaDiagnostic{};
+  otaDiagnostic.operation = "RECEIVING";
+  signedOta.phase = OtaPhase::Receiving;
+  storeOtaRtcTrace(1);
+  out.setOtaTcpPrimary(true);
+  out.print(F("OTA_READY size=")); out.print(imageBytes);
+  out.println(F(" chunk=8192"));
+}
+
+void finishSignedOta() {
+  if (signedOta.phase != OtaPhase::Receiving ||
+      signedOta.received != signedOta.size) return;
+  storeOtaRtcTrace(4);
+  otaDiagnostic.operation = "FINAL_HASH";
+  uint8_t actualSha[32] = {};
+  const int finalized = mbedtls_sha256_finish_ret(&signedOta.digest, actualSha);
+  mbedtls_sha256_free(&signedOta.digest);
+  signedOta.shaInitialized = false;
+  if (finalized != 0 ||
+      !constantTimeEqual(actualSha, signedOta.expectedHash, sizeof(actualSha))) {
+    abortSignedOta("sha256_mismatch"); return;
+  }
+  otaDiagnostic.operation = "IMAGE_VERIFY";
+  const esp_err_t verified = esp_ota_end(signedOta.handle);
+  signedOta.handleOpen = false; // esp_ota_end owns/frees handle even on error
+  if (verified != ESP_OK) {
+    abortSignedOta("image_invalid"); return;
+  }
+  otaDiagnostic.operation = "NVS_METADATA";
+  // Commit anti-replay version only after the NEW image successfully boots
+  // and runs its health checks. If first boot fails, bootloader rolls back.
+  OtaPendingLedger ledger;
+  ledger.version = signedOta.version;
+  ledger.imageSize = signedOta.size;
+  ledger.targetAddress = signedOta.target->address;
+  ledger.targetSize = signedOta.target->size;
+  ledger.targetSubtype = signedOta.target->subtype;
+  strncpy(ledger.targetLabel, signedOta.target->label,
+          sizeof(ledger.targetLabel) - 1);
+  memcpy(ledger.sha256, signedOta.expectedHash, sizeof(ledger.sha256));
+  if (!prefsReady ||
+      wifiPrefs.putString("ota_p_sha", signedOta.hexHash) != 64 ||
+      wifiPrefs.putUInt("ota_pending", signedOta.version) != sizeof(uint32_t) ||
+      wifiPrefs.putBytes("ota_ledger", &ledger, sizeof(ledger)) != sizeof(ledger)) {
+    clearPendingOtaLedger();
+    abortSignedOta("pending_metadata_failed"); return;
+  }
+  otaDiagnostic.operation = "BOOT_SWITCH";
+  if (esp_ota_set_boot_partition(signedOta.target) != ESP_OK) {
+    clearPendingOtaLedger();
+    abortSignedOta("set_boot_failed"); return;
+  }
+  signedOta.phase = OtaPhase::RebootPending;
+  otaDiagnostic.operation = "REBOOT_PENDING";
+  storeOtaRtcTrace(5);
+  signedOta.restartDeadlineMs = millis() + kOtaRebootMaxDelayMs;
+  out.print(F("OTA_OK version=")); out.print(signedOta.version);
+  out.print(F(" sha256=")); out.print(signedOta.hexHash);
+  out.println(F(" rebooting=1"));
+  signedOta.otaOkQueuedAt = out.queued();
+}
+
+void pollSignedOtaBody() {
+  if (signedOta.phase != OtaPhase::Receiving) return;
+  if (!tcpAuthenticated || !wifiClient.connected()) {
+    abortSignedOta("disconnect"); return;
+  }
+  const uint32_t now = millis();
+  if (static_cast<uint32_t>(now - signedOta.lastDataMs) > kOtaIdleTimeoutMs ||
+      static_cast<uint32_t>(now - signedOta.beganMs) > kOtaTotalTimeoutMs) {
+    abortSignedOta("timeout"); return;
+  }
+  if (signedOta.waitingProgressDrain) {
+    // No next-window data is permitted until the previous ACK has been
+    // enqueued on the TCP socket. The sender must independently wait for
+    // the exact monotonic acknowledgement before releasing more bytes.
+    if (out.tcpCursor() >= signedOta.progressQueuedAt) {
+      // The host may receive an ACK and transmit the next window BEFORE
+      // the ESP32 gets another loop turn. Such already-buffered bytes are
+      // valid and must not be mistaken for a pre-ACK flood.
+      signedOta.waitingProgressDrain = false;
+      signedOta.nextWindowEnd =
+         std::min(signedOta.size, signedOta.received + kOtaWindowSize);
+    } else {
+      // Only data received while the prior ACK is still unsent violates
+      // stop-and-wait framing.
+      if (wifiClient.available() > 0) {
+        abortSignedOta("window_overrun"); return;
+      }
+      return;
+    }
+  }
+  const int waiting = wifiClient.available();
+  if (waiting <= 0) return;
+  const size_t remaining = signedOta.nextWindowEnd - signedOta.received;
+  const size_t chunkSize = std::min(remaining,
+      std::min(static_cast<size_t>(waiting), kOtaChunkSize));
+  uint8_t chunk[kOtaChunkSize];
+  const int received = wifiClient.read(chunk, chunkSize);
+  if (received <= 0) { abortSignedOta("transport_read_failed"); return; }
+  if (signedOta.received == 0 && chunk[0] != 0xE9) {
+    abortSignedOta("not_esp32_image"); return;
+  }
+  otaDiagnostic.operation = "HASH_UPDATE";
+  if (mbedtls_sha256_update_ret(&signedOta.digest, chunk, received) != 0) {
+    abortSignedOta("hash_update_failed"); return;
+  }
+  otaDiagnostic.operation = "FLASH_WRITE";
+  const uint32_t flashStartUs = static_cast<uint32_t>(esp_timer_get_time());
+  const esp_err_t flashResult = esp_ota_write(signedOta.handle, chunk, received);
+  const uint32_t writeUs = static_cast<uint32_t>(esp_timer_get_time()) - flashStartUs;
+  otaDiagnostic.lastWriteUs = writeUs;
+  if (writeUs > otaDiagnostic.longestWriteUs)
+    otaDiagnostic.longestWriteUs = writeUs;
+  ++otaDiagnostic.writes;
+  if (flashResult != ESP_OK) { abortSignedOta("write_failed"); return; }
+  signedOta.received += static_cast<uint32_t>(received);
+  otaDiagnostic.lastReceived = signedOta.received;
+  otaDiagnostic.operation = "RECEIVING";
+  otaDiagnostic.lastProgressMs = millis();
+  signedOta.lastDataMs = millis();
+  if (signedOta.received == signedOta.size) {
+    finishSignedOta();
+  } else if (signedOta.received == signedOta.nextWindowEnd) {
+    // An ACK is only emitted AFTER every byte in this window was safely
+    // accepted by esp_ota_write and included in the incremental SHA.
+    signedOta.waitingProgressDrain = true;
+    storeOtaRtcTrace(2);
+    out.print(F("OTA_PROGRESS received="));
+    out.println(signedOta.received);
+    signedOta.progressQueuedAt = out.queued();
+  }
+}
+
+void serviceSignedOtaTimeout() {
+  if (signedOta.phase != OtaPhase::Receiving) return;
+  const uint32_t now = millis();
+  if (!tcpAuthenticated || !wifiClient.connected()) {
+    abortSignedOta("disconnect"); return;
+  }
+  if (static_cast<uint32_t>(now - signedOta.lastDataMs) > kOtaIdleTimeoutMs ||
+      static_cast<uint32_t>(now - signedOta.beganMs) > kOtaTotalTimeoutMs)
+    abortSignedOta("timeout");
+}
+
+void confirmOtaBootFromNetwork(const char* cmd) {
+  // A mere Wi-Fi STA link says nothing about whether the authenticated OTA
+  // service works. The host must RECONNECT after reboot and prove it knows
+  // the exact signed manifest of the new image via authenticated TCP.
+  if (commandFromUSB || !tcpAuthenticated || !otaFirstBootPending ||
+      !prefsReady || otaUpdating() || stage != IDLE) {
+    out.println(F("OTA_CONFIRM DENIED")); return;
+  }
+  const char* expectedPrefix = "OTA_CONFIRM ";
+  if (strncmp(cmd, expectedPrefix, strlen(expectedPrefix))) {
+    out.println(F("OTA_CONFIRM DENIED")); return;
+  }
+  const char* args = cmd + strlen(expectedPrefix);
+  const char* separator = strchr(args, ' ');
+  uint32_t version = 0;
+  char number[12] = {};
+  const size_t numberLen = separator ? static_cast<size_t>(separator - args) : 0;
+  const bool sizeValid = numberLen >= 1 && numberLen < sizeof(number);
+  if (sizeValid) memcpy(number, args, numberLen);
+  uint8_t candidateHash[32] = {}, savedHash[32] = {};
+  const String trustedSha = wifiPrefs.getString("ota_p_sha", "");
+  const uint32_t trustedVersion = wifiPrefs.getUInt("ota_pending", 0);
+  const bool matched = sizeValid && separator && separator[1] &&
+      !strchr(separator + 1, ' ') &&
+      parseUnsignedDecimal(number, version) &&
+      version == trustedVersion && version > otaAcceptedVersion &&
+      decodeLowercaseHash(separator + 1, candidateHash) &&
+      decodeLowercaseHash(trustedSha.c_str(), savedHash) &&
+      constantTimeEqual(candidateHash, savedHash, sizeof(savedHash));
+  if (!matched) { out.println(F("OTA_CONFIRM DENIED")); return; }
+  otaPendingNetworkConfirmed = true;
+  out.print(F("OTA_CONFIRM OK version=")); out.println(version);
+}
 void dropTcpClient(bool transportLost) {
+  // The inactive partition remains unbootable after an interrupted upload;
+  // abort the write handle rather than ever resuming an untrusted byte stream.
+  if (signedOta.phase == OtaPhase::Receiving)
+    abortSignedOta("disconnect");
+  if (transportLost && otaFirstBootPending)
+    otaPendingNetworkConfirmed = false; // reconnect must confirm again
   if (armedVariant < 2 && !armedFromUSB) armedVariant = 255;
   if (transportLost && tcpAuthenticated) {
     ++transportFaults;
@@ -293,6 +894,146 @@ void initializeWiFi() {
                    pass.length() >= 8 && pass.length() <= 63;
   if (wifiConfigured) startSta();
   else WiFi.mode(WIFI_OFF);
+}
+
+void initializeOtaBootHealth() {
+  otaAcceptedVersion = std::max(kOtaCurrentVersion,
+      prefsReady ? wifiPrefs.getUInt("ota_ver", kOtaCurrentVersion) :
+                   kOtaCurrentVersion);
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  esp_ota_img_states_t imageState = ESP_OTA_IMG_UNDEFINED;
+  const bool stateKnown = running &&
+      esp_ota_get_state_partition(running, &imageState) == ESP_OK;
+  const bool pendingVerify = stateKnown && imageState == ESP_OTA_IMG_PENDING_VERIFY;
+  const bool ledgerPresent = loadPendingOtaLedger(otaTrustedLedger);
+  const bool pendingKeysExist = prefsReady &&
+      (wifiPrefs.isKey("ota_ledger") || wifiPrefs.isKey("ota_pending") ||
+       wifiPrefs.isKey("ota_p_sha"));
+  const bool sameTarget = ledgerPresent &&
+      ledgerTargetsRunningApp(otaTrustedLedger, running);
+
+  if (pendingVerify) {
+    // A first boot from a different app, incomplete NVS record, tampered
+    // manifest, or corrupted flash must always roll back. Legacy v2 keys
+    // alone have no partition/length provenance and confer no authority.
+    otaFirstBootPending = true;
+    const String pendingSha = prefsReady ? wifiPrefs.getString("ota_p_sha", "") : "";
+    uint8_t savedHash[32] = {};
+    otaLedgerTrusted = sameTarget &&
+        otaTrustedLedger.version > otaAcceptedVersion &&
+        wifiPrefs.getUInt("ota_pending", 0) == otaTrustedLedger.version &&
+        decodeLowercaseHash(pendingSha.c_str(), savedHash) &&
+        constantTimeEqual(savedHash, otaTrustedLedger.sha256, sizeof(savedHash)) &&
+        runningAppMatchesSignedHash(otaTrustedLedger, running);
+    otaBootHealthFailed = !otaLedgerTrusted;
+    out.println(F("OTA_BOOT state=PENDING_VERIFY authority=NONE DE=LOW"));
+    return;
+  }
+
+  if (!pendingKeysExist) return;
+  if (sameTarget && stateKnown && imageState == ESP_OTA_IMG_VALID &&
+      otaTrustedLedger.version > otaAcceptedVersion) {
+    // Crash window: IDF made the image VALID, but power failed before
+    // ota_ver was written. Full on-flash SHA + partition identity are
+    // required before recovering that accepted version.
+    otaFirstBootPending = true;
+    otaLedgerAlreadyValid = true;
+    otaLedgerTrusted = runningAppMatchesSignedHash(otaTrustedLedger, running);
+    otaBootHealthFailed = !otaLedgerTrusted;
+    if (otaLedgerTrusted) (void)acceptValidPendingOta();
+    return;
+  }
+  if (sameTarget && otaTrustedLedger.version > otaAcceptedVersion &&
+      (!stateKnown || imageState != ESP_OTA_IMG_VALID)) {
+    // Unknown state on the *target* is never a license to accept/operate.
+    otaFirstBootPending = true;
+    otaBootHealthFailed = true;
+    otaLedgerAlreadyValid = true; // prevent impossible rollback attempts
+    return;
+  }
+  // Running the previous partition after rollback (or already accepted the
+  // current VALID image): stale pending keys cannot advance ota_ver.
+  clearPendingOtaLedger();
+}
+
+void serviceOtaHealthAndRestart() {
+  if (signedOta.phase == OtaPhase::RebootPending) {
+    // drainTCP() advances the cursor when lwIP accepts a write, BEFORE the
+    // remote uploader necessarily receives OTA_OK. Keep the socket alive for
+    // a bounded grace interval after the *entire* OTA_OK frame was queued to
+    // TCP. Even a disconnected/unresponsive peer cannot hold reboot forever.
+    const uint32_t now = millis();
+    if (!signedOta.otaOkDrained && tcpAuthenticated && wifiClient.connected() &&
+        out.tcpCursor() >= signedOta.otaOkQueuedAt) {
+      signedOta.otaOkDrained = true;
+      signedOta.otaOkDrainedAtMs = now;
+    }
+    const bool graceElapsed = signedOta.otaOkDrained &&
+        static_cast<uint32_t>(now - signedOta.otaOkDrainedAtMs) >= kOtaOkDrainGraceMs;
+    const bool deadlineElapsed =
+        static_cast<int32_t>(now - signedOta.restartDeadlineMs) >= 0;
+    if (graceElapsed || deadlineElapsed) {
+      deOff();
+      esp_restart();
+    }
+    return;
+  }
+  if (!otaFirstBootPending || otaRollbackAttempted) return;
+  if (otaLedgerAlreadyValid) {
+    // Once VALID, IDF rollback is impossible. Keep vehicle/OTA commands
+    // blocked until the accepted-version NVS write succeeds; retry in loop
+    // and again at next boot from the durable pending ledger.
+    if (otaLedgerTrusted && !otaBootHealthFailed &&
+        static_cast<int32_t>(millis() - otaLedgerRetryAfterMs) >= 0)
+      (void)acceptValidPendingOta();
+    return;
+  }
+
+  // All reboot validation is intentionally in loop(), AFTER Arduino init.
+  // Pending-verification firmware cannot access ECU, ARM or begin new OTA.
+  const bool hardwareSafe = gateReady && deTimer && slotTimer &&
+       stage == IDLE && stopLatched && !slotInFlight && !slotArmed &&
+       !(GPIO.out & (1UL << kDE)) &&
+       GPIO.func_out_sel_cfg[kDE].func_sel == SIG_GPIO_OUT_IDX;
+  const bool essentialState = prefsReady && wifiConfigured &&
+       validHexToken(wifiToken) && hardwareSafe && !otaBootHealthFailed;
+  // A connected STA alone is not enough for a device that must remain
+  // remotely maintainable. Its authenticated TCP listener must also be up.
+  const bool networkReady = WiFi.status() == WL_CONNECTED &&
+                            wifiServerStarted && static_cast<bool>(wifiServer);
+  // Do not mark an OTA image VALID before its authenticated OTA_CONFIRM OK
+  // reply has actually drained onto the authenticated TCP socket.
+  const bool confirmationDelivered = otaPendingNetworkConfirmed &&
+      tcpAuthenticated && wifiClient.connected() &&
+      out.tcpCursor() == out.queued();
+  if (essentialState && networkReady && confirmationDelivered &&
+      millis() >= kOtaFirstBootCheckMs) {
+    // The irreversible bootloader transition occurs FIRST. Pending NVS
+    // metadata remains durable until ota_ver succeeds, so a power loss
+    // after marking VALID can be reconciled on the next boot.
+    if (!otaLedgerTrusted ||
+        esp_ota_mark_app_valid_cancel_rollback() != ESP_OK) {
+      otaBootHealthFailed = true;
+    } else {
+      otaLedgerAlreadyValid = true;
+      (void)acceptValidPendingOta();
+      return;
+    }
+  }
+  // A dead radio, bad settings, missing DE safety, or failed health check
+  // must not approve the new image. The rollback-enabled bootloader will
+  // select the prior app after we mark this first boot invalid.
+  if (otaBootHealthFailed ||
+      static_cast<uint32_t>(millis()) >= 45000) {
+    otaRollbackAttempted = true;
+    deOff();
+    gateReady = false;
+    out.println(F("OTA_BOOT state=FAILED action=ROLLBACK"));
+    if (esp_ota_mark_app_invalid_rollback_and_reboot() != ESP_OK) {
+      otaBootHealthFailed = true;
+      // Fail inert if the previous app is unavailable. Do NOT mark valid.
+    }
+  }
 }
 void printWiFiStatus() {
   out.print(F("WIFI_STATUS state="));
@@ -421,6 +1162,8 @@ void IRAM_ATTR slotISR() {
       pendingSlot != wordsStarted || wordsVerified != wordsStarted ||
       wordsStarted >= 4 || !gateReady ||
       !nearUs(now, targetUs) || UART2.status.txfifo_cnt != 0 ||
+      UART2.status.rxfifo_cnt != 0 ||
+      UART2.mem_rx_status.rd_addr != UART2.mem_rx_status.wr_addr ||
       !(GPIO.in & (1UL << kRO))) {
     faultISR(CART_TIMER);
     portEXIT_CRITICAL_ISR(&txLock);
@@ -432,8 +1175,8 @@ void IRAM_ATTR slotISR() {
     return;
   }
   UART2.int_clr.val = 0xFFFFFFFF;
-  UART2.conf0.rxfifo_rst = 1;
-  UART2.conf0.rxfifo_rst = 0;
+  // ESP32 UART LL documents rxfifo_rst as ineffective. Check for a drained
+  // PAD FIFO above; never discard unread pad bytes with that broken bit.
   UART2.int_ena.tx_done = 1;
   slotArmed = false;
   slotInFlight = true;
@@ -702,8 +1445,23 @@ bool openNative() {
   UART1.int_ena.val = 0; UART2.int_ena.val = 0;
   UART1.int_clr.val = 0xFFFFFFFF; UART2.int_clr.val = 0xFFFFFFFF;
   UART1.conf0.rxfifo_rst = 1; UART1.conf0.rxfifo_rst = 0;
-  UART2.conf0.rxfifo_rst = 1; UART2.conf0.rxfifo_rst = 0;
-  UART2.conf0.txfifo_rst = 1; UART2.conf0.txfifo_rst = 0;
+  // uart_ll_rxfifo_rst() for classic ESP32 drains APB RX FIFO because the
+  // rxfifo_rst register bit does NOT reliably reset it. Bound that drain
+  // here, before ISR activation, to avoid hanging if GPIO17 is noisy.
+  bool padRxEmpty = false;
+  for (uint16_t n = 0; n < 128; ++n) {
+    if (UART2.status.rxfifo_cnt == 0 &&
+        UART2.mem_rx_status.rd_addr == UART2.mem_rx_status.wr_addr) {
+      padRxEmpty = true; break;
+    }
+    (void)READ_PERI_REG(UART_FIFO_REG(2));
+  }
+  if (!padRxEmpty) return false;
+  // Classic ESP32 uart_ll_txfifo_rst() deliberately avoids UART1/2's
+  // coupled TX FIFO reset hardware. Never reset UART2 memory after the
+  // 2400-baud handshake; require its FIFO and shifter to be truly idle.
+  if (UART2.status.txfifo_cnt != 0 || UART2.status.st_utx_out != 0)
+    return false;
   UART1.conf1.rxfifo_full_thrhd = 1;
   if (esp_intr_alloc(ETS_UART1_INTR_SOURCE, ESP_INTR_FLAG_IRAM,
                      &uart1ISR, nullptr, &uart1Handle) != ESP_OK) return false;
@@ -718,7 +1476,315 @@ bool openNative() {
   UART1.int_ena.parity_err = 1;
   return true;
 }
+// Decode a completed input-only RMT1 pad waveform using 9600/8N1 bit centers.
+// The only accepted start is the FIRST low run: no phase-search that could
+// accidentally find matching source data inside an unrelated waveform.
+bool decodeFirstTx2RmtPair(const rmt_item32_t* wave, size_t items, CmdWord expected) {
+  if (!wave || items == 0 || items > 48) return false;
+  uint32_t ends[96] = {};
+  uint8_t levels[96] = {};
+  size_t runs = 0;
+  uint32_t until = 0;
+  for (size_t i = 0; i < items; ++i) {
+    for (uint8_t j = 0; j < 2; ++j) {
+      const uint8_t level = j == 0 ? wave[i].level0 : wave[i].level1;
+      uint32_t duration = j == 0 ? wave[i].duration0 : wave[i].duration1;
+      if (duration == 0) {
+        // RMT's terminal RX_END sometimes encodes the last steady HIGH
+        // period as 0. A completed packet with 1500us idle timeout proves
+        // that stable final HIGH, but only at the LAST packet half-item.
+        if (i != items - 1 || j != 1 || level != 1) return false;
+        duration = 1500;
+      }
+      if (duration > 5000 || until + duration > 5000 ||
+          (runs && levels[runs - 1] == level)) return false;
+      until += duration;
+      levels[runs] = level;
+      ends[runs++] = until;
+    }
+  }
+  if (runs < 2) return false;
+  size_t firstLow = 0;
+  if (levels[0] == 1) {
+    if (ends[0] > 300) return false; // no long unmeasured idle prefix
+    firstLow = 1;
+  }
+  if (firstLow >= runs || levels[firstLow] != 0) return false;
+  const uint32_t start = firstLow == 0 ? 0 : ends[firstLow - 1];
+  // TX starts with 01 (LSB first), thus its start bit must be one
+  // approximately 104us LOW run, not a mid-frame low burst.
+  const uint32_t firstLowLength = ends[firstLow] - start;
+  if (firstLowLength < 80 || firstLowLength > 130) return false;
+  for (uint8_t frame = 0; frame < 2; ++frame) {
+    const uint8_t expectedByte = frame == 0 ? expected.first : expected.second;
+    for (uint8_t bit = 0; bit < 10; ++bit) {
+      // ESP32 RMT div80 = 1us, UART 9600 = 1250/12 us per bit.
+      const uint32_t sample = start +
+          (static_cast<uint32_t>(2 * (frame * 10 + bit) + 1) * 1250) / 24;
+      uint8_t observed = 2;
+      for (size_t i = 0; i < runs; ++i) {
+        if (sample < ends[i]) { observed = levels[i]; break; }
+      }
+      const uint8_t wanted = bit == 0 ? 0 :
+                             bit == 9 ? 1 :
+                             (expectedByte >> (bit - 1)) & 1;
+      if (observed != wanted) return false;
+    }
+  }
+  return true;
+}
+// Bench the native TX2 -> physical GPIO17 -> native RX2 path without ever
+// enabling MAX487 DE. Operator must ensure the bus is physically disconnected.
+// The received bytes come from the GPIO input matrix, not the TX FIFO source.
+void tx2PadBench() {
+  // TCP requires the same explicit one-shot command on an authenticated
+  // connection; no Wi-Fi/USB reconnect or OTA upgrade triggers this routine.
+  if (!commandFromUSB && !tcpAuthenticated) {
+    out.println(F("DENIED tx2_bench_auth_required")); return;
+  }
+  if (tx2BenchUsed || stage != IDLE || !stopLatched || slotArmed ||
+      slotInFlight || nativeReady || refReady || transmitConsumed ||
+      observeConsumed || !gateReady || !deTimer || !slotTimer ||
+      // Budget the entire bounded RMT edge report before producing any TX.
+      otaUpdating() || otaFirstBootPending || out.freeBytes() < 8192) {
+    out.println(F("DENIED tx2_bench_used_or_busy")); return;
+  }
+  tx2BenchUsed = true; // Consume even if UART initialization fails.
+  tx2BenchPassed = false;
+  armedVariant = 255; // An old ARM is never preserved across this test.
+  disableSlotTimer();
+  disableDeTimer();
+  deOff();
+  // GPIO18 input sensing reads the actual DE pad while its output remains LOW.
+  if (gpio_set_direction(GPIO_NUM_18, GPIO_MODE_INPUT_OUTPUT) != ESP_OK) {
+    deOff();
+    transmitConsumed = observeConsumed = true;
+    out.println(F("TX2_BENCH_END result=FAIL de_input_init=0")); return;
+  }
+  deOff();
+  delayMicroseconds(10);
+  const auto deLowOnPad = []() -> bool {
+    return GPIO.func_out_sel_cfg[kDE].func_sel == SIG_GPIO_OUT_IDX &&
+           (GPIO.in & (1UL << kDE)) == 0 &&
+           (GPIO.out & (1UL << kDE)) == 0;
+  };
+  if (!deLowOnPad()) {
+    deOff();
+    transmitConsumed = observeConsumed = true;
+    out.println(F("TX2_BENCH_END result=FAIL de_pad_not_low=1")); return;
+  }
+  // Reproduce the 2400 HardwareSerial -> native 9600 transition, including
+  // the two exact 11-byte reference FIFO writes. This is NOT an ECU handshake:
+  // no ACK is sought and DE is held LOW throughout the USB-only pad bench.
+  if (!openReference()) {
+    deOff(); closeReference();
+    transmitConsumed = observeConsumed = true;
+    out.println(F("TX2_BENCH_END result=FAIL reference_init=0")); return;
+  }
+  bool referenceOk = true;
+  for (uint8_t frame = 0; frame < 2; ++frame) {
+    if (!deLowOnPad() || UART2.status.txfifo_cnt || UART2.status.st_utx_out) {
+      referenceOk = false; break;
+    }
+    const uint32_t refStarted = static_cast<uint32_t>(esp_timer_get_time());
+    const uint8_t* fixed = frame == 0 ? kEchoId : kGoCart;
+    if (referenceBus.write(fixed, sizeof(kEchoId)) != sizeof(kEchoId)) {
+      referenceOk = false; break;
+    }
+    bool referenceDone = false;
+    while (static_cast<uint32_t>(esp_timer_get_time()) - refStarted < 65000) {
+      if (!deLowOnPad()) { referenceOk = false; break; }
+      const uint32_t elapsed = static_cast<uint32_t>(esp_timer_get_time()) - refStarted;
+      if (elapsed >= 48000 && UART2.status.txfifo_cnt == 0 &&
+          UART2.status.st_utx_out == 0) {
+        referenceDone = true; break;
+      }
+      delayMicroseconds(50);
+    }
+    if (!referenceDone || !referenceOk || !deLowOnPad()) {
+      referenceOk = false; break;
+    }
+    out.print(F("TX2_BENCH_REF frame=")); out.print(frame);
+    out.println(F(" bytes=11 uart_baud=2400 de_low=1 external_bus_disabled=1"));
+    delay(5);
+  }
+  if (!referenceOk || !deLowOnPad()) {
+    deOff(); closeReference();
+    transmitConsumed = observeConsumed = true;
+    out.println(F("TX2_BENCH_END result=FAIL reference_tx_or_de=1")); return;
+  }
+  if (!openNative() || !deLowOnPad()) {
+    deOff(); closeNative();
+    transmitConsumed = observeConsumed = true;
+    out.println(F("TX2_BENCH_END result=FAIL native_init=0")); return;
+  }
+  // RMT1 is a SECOND, input-only physical GPIO17 witness. Unlike reading
+  // UART2 RXFIFO twice, a completed RMT packet observes pad level/duration
+  // transitions and cannot be mistaken for repeated APB FIFO data. No DE
+  // channel is configured or started by this bench.
+  rmt_config_t diag = {};
+  diag.rmt_mode = RMT_MODE_RX;
+  diag.channel = RMT_CHANNEL_1;
+  diag.gpio_num = GPIO_NUM_17;
+  diag.clk_div = 80; // each RMT run length is 1us
+  diag.mem_block_num = 1;
+  diag.rx_config.filter_en = false;
+  diag.rx_config.idle_threshold = 1500; // 2-byte 9600 frame plus idle ends in 3.6ms
+  RingbufHandle_t diagRing = nullptr;
+  bool diagInstalled = false;
+  if (rmt_config(&diag) == ESP_OK &&
+      rmt_driver_install(RMT_CHANNEL_1, 2048, 0) == ESP_OK) {
+    diagInstalled = true;
+    if (rmt_get_ringbuf_handle(RMT_CHANNEL_1, &diagRing) != ESP_OK)
+      diagRing = nullptr;
+  }
+  // rmt_config() changes the GPIO17 direction. Restore UART2 TX + UART2
+  // RX and enable the independent RMT1 input on that very same physical pad.
+  gpio_set_direction(GPIO_NUM_17, GPIO_MODE_INPUT_OUTPUT);
+  gpio_matrix_out(GPIO_NUM_17, U2TXD_OUT_IDX, false, false);
+  gpio_matrix_in(GPIO_NUM_17, U2RXD_IN_IDX, false);
+  gpio_matrix_in(GPIO_NUM_17, RMT_SIG_IN1_IDX, false);
+  if (!diagRing || !deLowOnPad() ||
+      GPIO.func_in_sel_cfg[RMT_SIG_IN1_IDX].func_sel != kDI ||
+      GPIO.func_in_sel_cfg[RMT_SIG_IN1_IDX].sig_in_sel != 1 ||
+      GPIO.func_out_sel_cfg[kDI].func_sel != U2TXD_OUT_IDX) {
+    deOff();
+    if (diagInstalled) (void)rmt_driver_uninstall(RMT_CHANNEL_1);
+    closeNative();
+    transmitConsumed = observeConsumed = true;
+    out.println(F("TX2_BENCH_END result=FAIL independent_pad_witness_init=0")); return;
+  }
+  const uint32_t clockDiv = UART2.clk_div.val;
+  const uint32_t uartConf = UART2.conf0.val;
+  out.print(F("TX2_BENCH_BEGIN gpio17_pad_rx=1 de18=LOW reference_2400_frames=2 config_9600=1 source=AHB_FIFO clk_div=0x"));
+  out.print(clockDiv, HEX);
+  out.print(F(" uart_conf0=0x")); out.println(uartConf, HEX);
+  bool passed = true;
+  uint8_t completed = 0;
+  bool rmtFirstStarted = false;
+  bool rmtFirstExact = false;
+  for (uint8_t index = 0; index < 4 && passed; ++index) {
+    const CmdWord expected = word(0, index); // Fixed A4 candidate pair, no USB input bytes.
+    if (!deLowOnPad() || UART2.status.txfifo_cnt != 0 ||
+        UART2.status.rxfifo_cnt != 0 || UART2.status.st_utx_out != 0 ||
+        GPIO.func_out_sel_cfg[kDI].func_sel != U2TXD_OUT_IDX ||
+        GPIO.func_in_sel_cfg[U2RXD_IN_IDX].func_sel != kDI ||
+        GPIO.func_in_sel_cfg[U2RXD_IN_IDX].sig_in_sel != 1) {
+      passed = false;
+      out.print(F("TX2_BENCH_DENIED slot=")); out.print(index);
+      out.println(F(" reason=pad_or_uart_not_idle"));
+      break;
+    }
+    if (index == 0) {
+      if (rmt_rx_start(RMT_CHANNEL_1, true) != ESP_OK) {
+        passed = false;
+        out.println(F("TX2_BENCH_DENIED slot=0 reason=independent_rmt_start"));
+        break;
+      }
+      rmtFirstStarted = true;
+    }
+    UART2.int_clr.val = 0xFFFFFFFF;
+    const uint32_t started = static_cast<uint32_t>(esp_timer_get_time());
+    WRITE_PERI_REG(UART_FIFO_AHB_REG(2), expected.first);
+    WRITE_PERI_REG(UART_FIFO_AHB_REG(2), expected.second);
+    bool done = false;
+    bool deStayedLow = true;
+    while (static_cast<uint32_t>(esp_timer_get_time()) - started < 3200) {
+      if (!deLowOnPad()) { deStayedLow = false; break; }
+      if (UART2.int_raw.tx_done) { done = true; break; }
+      delayMicroseconds(20);
+    }
+    const uint32_t elapsed = static_cast<uint32_t>(esp_timer_get_time()) - started;
+    const uint32_t rxFlags = UART2.int_raw.val;
+    const uint32_t count = UART2.status.rxfifo_cnt;
+    const uint32_t rxMemBefore = UART2.mem_rx_status.val;
+    const uint8_t observed0 = count > 0 ?
+        static_cast<uint8_t>(READ_PERI_REG(UART_FIFO_REG(2))) : 0;
+    // Snapshot after the first APB FIFO read: if read pointer/count did not
+    // move, a duplicate 01/01 may be an RX FIFO access error, not TX pad.
+    const uint32_t rxMemMid = UART2.mem_rx_status.val;
+    const uint32_t rxCountMid = UART2.status.rxfifo_cnt;
+    __asm__ __volatile__("nop" ::: "memory"); // ESP32 uart_ll HAL precaution
+    const uint8_t observed1 = count > 1 ?
+        static_cast<uint8_t>(READ_PERI_REG(UART_FIFO_REG(2))) : 0;
+    const uint32_t rxMemAfter = UART2.mem_rx_status.val;
+    const uint32_t rxCountAfter = UART2.status.rxfifo_cnt;
+    const bool exact = done && deStayedLow && deLowOnPad() && count == 2 &&
+        !(rxFlags & ((1UL << 2) | (1UL << 3) | (1UL << 4))) &&
+        elapsed >= 1800 && elapsed <= 3200 &&
+        observed0 == expected.first && observed1 == expected.second;
+    out.print(F("TX2_BENCH_WORD slot=")); out.print(index);
+    out.print(F(" expected=")); outputHex(expected.first); outputHex(expected.second);
+    out.print(F(" observed=")); outputHex(observed0); outputHex(observed1);
+    out.print(F(" rx_count=")); out.print(count);
+    out.print(F(" rx_count_mid=")); out.print(rxCountMid);
+    out.print(F(" rx_count_after=")); out.print(rxCountAfter);
+    out.print(F(" rx_mem_before=0x")); out.print(rxMemBefore, HEX);
+    out.print(F(" rx_mem_mid=0x")); out.print(rxMemMid, HEX);
+    out.print(F(" rx_mem_after=0x")); out.print(rxMemAfter, HEX);
+    out.print(F(" raw_flags=0x")); out.print(rxFlags, HEX);
+    out.print(F(" done=")); out.print(done ? 1 : 0);
+    out.print(F(" elapsed_us=")); out.print(elapsed);
+    out.print(F(" de_low=")); out.print(deStayedLow && deLowOnPad() ? 1 : 0);
+    out.print(F(" match=")); out.println(exact ? 1 : 0);
+    if (!exact) { passed = false; break; }
+    ++completed;
+    delay(8); // Approximately the normal 10ms between CART word starts.
+  }
+  // No unverified RMTMEM fallback: only publish a complete RX_END packet.
+  // First word only is sufficient to distinguish 01B0 from a repeated 0101.
+  if (rmtFirstStarted) {
+    const uint32_t settleStart = static_cast<uint32_t>(esp_timer_get_time());
+    while (static_cast<uint32_t>(esp_timer_get_time()) - settleStart < 5000) {
+      if (!deLowOnPad()) { passed = false; break; }
+      delayMicroseconds(50);
+    }
+    (void)rmt_rx_stop(RMT_CHANNEL_1);
+    size_t packetBytes = 0;
+    void* const packet = xRingbufferReceive(diagRing, &packetBytes, 0);
+    const size_t items = packet ? packetBytes / sizeof(rmt_item32_t) : 0;
+    const bool complete = packet && packetBytes != 0 &&
+                          packetBytes % sizeof(rmt_item32_t) == 0 &&
+                          items <= 48;
+    out.print(F("TX2_BENCH_RMT scope=GPIO17 source="));
+    out.print(complete ? F("RMT_COMPLETE_PACKET") : F("NONE_OR_OVERFLOW"));
+    out.print(F(" items=")); out.println(items);
+    if (complete) {
+      const auto* const wave = static_cast<const rmt_item32_t*>(packet);
+      rmtFirstExact = decodeFirstTx2RmtPair(wave, items, word(0, 0));
+      out.print(F("TX2_BENCH_RMT_DECODE expected=01B0 match="));
+      out.println(rmtFirstExact ? 1 : 0);
+      for (size_t i = 0; i < items; ++i) {
+        const rmt_item32_t& edge = wave[i];
+        out.print(F("TX2_BENCH_RMT_EDGE i=")); out.print(i);
+        out.print(F(" l0=")); out.print(edge.level0);
+        out.print(F(" d0_us=")); out.print(edge.duration0);
+        out.print(F(" l1=")); out.print(edge.level1);
+        out.print(F(" d1_us=")); out.println(edge.duration1);
+      }
+    }
+    if (packet) vRingbufferReturnItem(diagRing, packet);
+    // The independent pad waveform is a REQUIRED proof for this boot.
+    // A correct UART2 FIFO readback alone cannot authorize CART_READ.
+    if (!complete || !rmtFirstExact) passed = false;
+  }
+  if (diagInstalled) (void)rmt_driver_uninstall(RMT_CHANNEL_1);
+  deOff();
+  closeNative();
+  deOff();
+  // Only all four exact, electrically sampled DE-LOW pad words grant a
+  // volatile source-readback latch. No USB/TCP acknowledgement, TX_DONE,
+  // UART TX FIFO write, or partial bench may grant CART_READ authority.
+  tx2BenchPassed = passed && completed == 4 && deLowOnPad();
+  if (!tx2BenchPassed) transmitConsumed = observeConsumed = true;
+  out.print(F("TX2_BENCH_END result=")); out.print(tx2BenchPassed ? F("PASS_LOCAL_PAD") : F("FAIL"));
+  out.print(F(" completed=")); out.print(completed);
+  out.println(F(" DE=LOW no_rmt_start=1 ecu_tx=0 no_auto_retry=1"));
+}
 void beginSession(Stage target, uint8_t kind) {
+  if (target == CART_READ && !tx2BenchPassed) {
+    out.println(F("DENIED tx2_pad_bench_required")); return;
+  }
   if (stage != IDLE || !gateReady || deTimer == nullptr || slotTimer == nullptr) {
     out.println(F("DENIED busy_or_unready")); return;
   }
@@ -889,6 +1955,8 @@ void printStatus() {
   out.print(transmitting ? F(" DE=ACTIVE_GUARDED") : F(" DE=LOW"));
   out.print(F(" auto_tx=0 gate4=")); out.print(gateReady ? 1 : 0);
   out.print(F(" pad_rx=")); out.print(nativeReady ? 1 : 0);
+  out.print(F(" tx2_bench_used=")); out.print(tx2BenchUsed ? 1 : 0);
+  out.print(F(" tx2_bench_pass=")); out.print(tx2BenchPassed ? 1 : 0);
   out.print(F(" read_used=")); out.print(transmitConsumed ? 1 : 0);
   out.print(F(" observe_used=")); out.print(observeConsumed ? 1 : 0);
   out.print(F(" transport_lost=")); out.print(transportFaults);
@@ -903,9 +1971,94 @@ void printStatus() {
 void printPins() {
   out.println(F("PINS ro16=GPIO16_UART1 de18=GPIO18_RMT2..5 di17=GPIO17_UART2_TX+PAD_RX no_arbitrary_tx=1"));
 }
+void printOtaStatus() {
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  const esp_partition_t* boot = esp_ota_get_boot_partition();
+  esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+  if (running) (void)esp_ota_get_state_partition(running, &state);
+  const char* const health =
+      state == ESP_OTA_IMG_PENDING_VERIFY ? "PENDING_VERIFY" :
+      state == ESP_OTA_IMG_VALID ? "VALID" :
+      state == ESP_OTA_IMG_NEW ? "NEW" :
+      state == ESP_OTA_IMG_ABORTED ? "ABORTED" :
+      state == ESP_OTA_IMG_INVALID ? "INVALID" : "UNDEFINED";
+  out.print(F("OTA_STATUS state="));
+  out.print(signedOta.phase == OtaPhase::Receiving ? F("RECEIVING") :
+            signedOta.phase == OtaPhase::RebootPending ? F("REBOOT_PENDING") :
+                                                      F("IDLE"));
+  out.print(F(" received=")); out.print(signedOta.received);
+  out.print(F(" size=")); out.print(signedOta.size);
+  out.print(F(" running=")); out.print(running ? running->label : "NONE");
+  out.print(F(" boot=")); out.print(boot ? boot->label : "NONE");
+  out.print(F(" accepted_version=")); out.print(otaAcceptedVersion);
+  out.print(F(" boot_health=")); out.print(health);
+  out.print(F(" confirm_required=")); out.print(otaFirstBootPending ? 1 : 0);
+  out.println(F(" rollback=1"));
+}
+void printOtaDebugUsbOnly() {
+  // Deliberately bypass BridgeOutput: injecting OTA_DEBUG through the fanout
+  // would corrupt the uploader's strict OTA_READY -> OTA_OK response stream.
+  // No key, token, SSID, SHA, or firmware bytes are displayed here.
+  if (!commandFromUSB) { out.println(F("DENIED usb_only")); return; }
+  if (Serial.availableForWrite() < 64) return;
+  const uint32_t now = millis();
+  const char* const state =
+    signedOta.phase == OtaPhase::Receiving ? "RECEIVING" :
+    signedOta.phase == OtaPhase::RebootPending ? "REBOOT_PENDING" : "IDLE";
+  char line[272];
+  const int n = snprintf(line, sizeof(line),
+    "OTA_DEBUG state=%s received=%lu size=%lu last_received=%lu "
+    "writes=%lu max_write_us=%lu last_write_us=%lu "
+    "idle_ms=%lu elapsed_ms=%lu operation=%s last_failure=%s\n",
+    state, static_cast<unsigned long>(signedOta.received),
+    static_cast<unsigned long>(signedOta.size),
+    static_cast<unsigned long>(otaDiagnostic.lastReceived),
+    static_cast<unsigned long>(otaDiagnostic.writes),
+    static_cast<unsigned long>(otaDiagnostic.longestWriteUs),
+    static_cast<unsigned long>(otaDiagnostic.lastWriteUs),
+    static_cast<unsigned long>(now - otaDiagnostic.lastProgressMs),
+    static_cast<unsigned long>(signedOta.phase == OtaPhase::Receiving ?
+      now - signedOta.beganMs : 0),
+    otaDiagnostic.operation, otaDiagnostic.lastFailure);
+  if (n > 0 && static_cast<size_t>(n) < sizeof(line))
+    (void)Serial.write(reinterpret_cast<const uint8_t*>(line), static_cast<size_t>(n));
+}
+void printOtaDiag() {
+  // Safe post-failure diagnostic over authenticated TCP even if USB was
+  // never opened. A USB caller bypasses the shared stream during OTA, so
+  // it cannot introduce an unexpected line into OTA_PROGRESS / OTA_OK.
+  const bool rtcValid = otaRtcTraceValid();
+  const char* state =
+      signedOta.phase == OtaPhase::Receiving ? "RECEIVING" :
+      signedOta.phase == OtaPhase::RebootPending ? "REBOOT_PENDING" : "IDLE";
+  char line[256] = {};
+  const int count = snprintf(line, sizeof(line),
+      "OTA_DIAG state=%s received=%lu size=%lu last=%lu writes=%lu "
+      "max_us=%lu op=%s fail=%s reset=%u rtc=%lu/%lu rtc_phase=%lu "
+      "usb_skipped=%lu\n",
+      state, static_cast<unsigned long>(signedOta.received),
+      static_cast<unsigned long>(signedOta.size),
+      static_cast<unsigned long>(otaDiagnostic.lastReceived),
+      static_cast<unsigned long>(otaDiagnostic.writes),
+      static_cast<unsigned long>(otaDiagnostic.longestWriteUs),
+      otaDiagnostic.operation, otaDiagnostic.lastFailure,
+      static_cast<unsigned>(esp_reset_reason()),
+      static_cast<unsigned long>(rtcValid ? otaRtcTrace.acceptedBytes : 0),
+      static_cast<unsigned long>(rtcValid ? otaRtcTrace.imageBytes : 0),
+      static_cast<unsigned long>(rtcValid ? otaRtcTrace.phase : 0),
+      static_cast<unsigned long>(out.usbSkipped()));
+  if (count <= 0 || count >= static_cast<int>(sizeof(line))) return;
+  if (commandFromUSB) {
+    if (Serial.availableForWrite() >= count)
+      (void)Serial.write(reinterpret_cast<const uint8_t*>(line), count);
+  } else {
+    out.write(reinterpret_cast<const uint8_t*>(line), count);
+  }
+}
 void processTcpLine(char* line) {
   if (!tcpAuthenticated) {
-    if (stage != IDLE || strncmp(line, "AUTH ", 5) || !tokenMatches(line + 5)) {
+    if (stage != IDLE || otaUpdating() ||
+        strncmp(line, "AUTH ", 5) || !tokenMatches(line + 5)) {
       // Never return session output or device data to an unauthenticated peer.
       const char deny[] = "DENIED auth\n";
       if (wifiClient.fd() >= 0)
@@ -924,8 +2077,12 @@ void processTcpLine(char* line) {
   commandFromUSB = true;
 }
 void pollWiFi() {
-  if (!wifiConfigured || !prefsReady) return;
+  if (!wifiConfigured || !prefsReady) {
+    if (signedOta.phase == OtaPhase::Receiving) abortSignedOta("wifi_unavailable");
+    return;
+  }
   if (WiFi.status() != WL_CONNECTED) {
+    if (signedOta.phase == OtaPhase::Receiving) abortSignedOta("wifi_disconnected");
     if (wifiClient.connected() || tcpAuthenticated) dropTcpClient(true);
     if (wifiServerStarted) { wifiServer.end(); wifiServerStarted = false; }
     if (mdnsStarted) { MDNS.end(); mdnsStarted = false; }
@@ -953,7 +2110,8 @@ void pollWiFi() {
   if (tcpAuthenticated && !wifiClient.connected()) dropTcpClient(true);
   WiFiClient incoming = wifiServer.accept();
   if (incoming) {
-    if (wifiClient.connected() || busSessionActive() || stage == FINISHING)
+    if (wifiClient.connected() || busSessionActive() || stage == FINISHING ||
+        otaUpdating())
       incoming.stop(); // at most one; no connection takeover of live UART
     else {
       dropTcpClient(false);
@@ -965,12 +2123,26 @@ void pollWiFi() {
     }
   }
   if (!wifiClient.connected()) {
+    if (signedOta.phase == OtaPhase::Receiving) abortSignedOta("disconnect");
     if (tcpAuthenticated) dropTcpClient(true);
     return;
   }
   if (!tcpAuthenticated &&
       static_cast<uint32_t>(millis() - wifiAuthStartedMs) > kAuthDeadlineMs) {
     dropTcpClient(false);
+    return;
+  }
+  if (signedOta.phase == OtaPhase::Receiving) {
+    pollSignedOtaBody();
+    // Never reinterpret firmware binary octets as ASCII commands, even if
+    // the last firmware chunk and a rogue line share one TCP packet.
+    if (tcpAuthenticated) out.drainTCP(wifiClient);
+    if (out.tcpSendFailed()) dropTcpClient(true);
+    return;
+  }
+  if (signedOta.phase == OtaPhase::RebootPending) {
+    if (tcpAuthenticated) out.drainTCP(wifiClient);
+    if (out.tcpSendFailed()) dropTcpClient(true);
     return;
   }
   // Bounded input per loop: a noisy WiFi peer must never monopolize CART ISR.
@@ -986,6 +2158,10 @@ void pollWiFi() {
         clearSecrets(wifiLine, sizeof wifiLine);
         wifiLineUsed = 0;
         if (!wifiClient.connected()) return;
+        if (signedOta.phase == OtaPhase::Receiving) {
+          pollSignedOtaBody();
+          return;
+        }
       }
     } else if (ch < 32 || ch > 126 || wifiLineUsed >= sizeof(wifiLine) - 1) {
       // Do not permit an unlimited line or fragmented parser state.
@@ -1000,6 +2176,41 @@ void pollWiFi() {
   if (out.tcpSendFailed()) dropTcpClient(true);
 }
 void runCommand(const char* cmd) {
+  if (!strcmp(cmd, "OTA_DIAG")) {
+    printOtaDiag();
+    return;
+  }
+  if (!strcmp(cmd, "OTA_DEBUG")) {
+    printOtaDebugUsbOnly();
+    return;
+  }
+  if (!strcmp(cmd, "OTA_STATUS")) {
+    printOtaStatus();
+    return;
+  }
+  if (!strncmp(cmd, "OTA_CONFIRM", sizeof("OTA_CONFIRM") - 1)) {
+    confirmOtaBootFromNetwork(cmd);
+    return;
+  }
+  if (otaUpdating()) {
+    if (signedOta.phase == OtaPhase::Receiving && !strcmp(cmd, "STOP")) {
+      abortSignedOta("host_stop");
+      out.println(F("EVENT ota_stopped=1 DE=LOW"));
+    } else out.println(F("DENIED ota_busy"));
+    return;
+  }
+  if (!strncmp(cmd, "OTA_BEGIN", sizeof("OTA_BEGIN") - 1)) {
+    beginSignedOta(cmd);
+    return;
+  }
+  if (otaFirstBootPending &&
+      (!strcmp(cmd, "OBSERVE") || !strcmp(cmd, "READ_A4") ||
+       !strcmp(cmd, "READ_0E") || !strcmp(cmd, "LISTEN_9600") ||
+       !strcmp(cmd, "TX2_BENCH") ||
+       !strcmp(cmd, "ARM_A4") || !strcmp(cmd, "ARM_0E"))) {
+    out.println(F("DENIED boot_health_pending"));
+    return;
+  }
   if (!strncmp(cmd, "WIFI_CONFIG ", sizeof("WIFI_CONFIG ") - 1)) {
     processWiFiProvision(cmd); return;
   }
@@ -1038,13 +2249,15 @@ void runCommand(const char* cmd) {
   }
   if (!strcmp(cmd, "HELLO")) { out.println(F("HELLO SME105_USB_BRIDGE_V1 protocol=1 usb_baud=115200 no_auto_tx=1")); return; }
   if (!strcmp(cmd, "HELP")) {
-    out.println(F("COMMANDS HELLO HELP STATUS PINS LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E STOP RESET_IDLE"));
-    out.println(F("READ_* only after matching ARM_* within 15s; one diagnostic attempt per boot; no clear/actuate/raw write"));
+    out.println(F("COMMANDS HELLO HELP STATUS PINS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E STOP RESET_IDLE"));
+    out.println(F("READ_* requires exact 4/4 TX2_BENCH pad pass this boot plus matching ARM_* within 15s; no automatic TX"));
     out.println(F("WIFI USB_ONLY: WIFI_CONFIG <SSID_BASE64> <PASSWORD_BASE64> | WIFI_TOKEN | WIFI_FORGET; WIFI_STATUS read-only"));
+    out.println(F("OTA authenticated TCP: OTA_STATUS OTA_DIAG OTA_BEGIN2 <size> <sha256_lowerhex> <version> <P256_signature_DER_base64>; then 8192-byte windows plus OTA_PROGRESS received=<n>; final OTA_OK; OTA_CONFIRM after reboot"));
     return;
   }
   if (!strcmp(cmd, "STATUS")) { printStatus(); return; }
   if (!strcmp(cmd, "PINS")) { printPins(); return; }
+  if (!strcmp(cmd, "TX2_BENCH")) { tx2PadBench(); return; }
   if (!strcmp(cmd, "RESET_IDLE")) {
     if (stage != IDLE || slotInFlight || !stopLatched) out.println(F("DENIED busy"));
     else { failure = NO_FAULT; armedVariant = 255; out.println(F("EVENT idle_reset no_read_rearm=1")); }
@@ -1110,8 +2323,11 @@ void setup() {
   out.println(F("BOOT SME105_USB_BRIDGE_V1 no_auto_tx=1 DE=LOW source_commands_unverified=1"));
   if (!gateReady || !deTimer || !slotTimer) out.println(F("FAULT reason=HARDWARE_INIT no_transmit=1"));
   initializeWiFi(); // STA credentials + token from NVS; NEVER starts ECU TX
+  initializeOtaBootHealth();
 }
 void loop() {
+  serviceSignedOtaTimeout(); // works even when Wi-Fi socket polling exits early
+  serviceOtaHealthAndRestart();
   pollUsb();
   pollWiFi();
   if (stage == QUIET || stage == ECHO_TX || stage == ACK_WAIT || stage == GO_TX) pollHandshake();
