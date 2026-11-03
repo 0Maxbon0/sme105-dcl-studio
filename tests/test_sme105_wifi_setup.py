@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import socket
 import stat
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -149,6 +152,22 @@ class FakeSetupPort(FakePort):
 
 
 class CredentialsAndStorageTests(unittest.TestCase):
+    def test_documented_direct_script_entrypoint_imports_bridge(self):
+        # Regression: `PYTHONPATH=src python scripts/sme105_wifi_setup.py`
+        # used to fail before displaying help with ModuleNotFoundError: scripts.
+        root = Path(__file__).resolve().parents[1]
+        result = subprocess.run(
+            [sys.executable, str(root / "scripts" / "sme105_wifi_setup.py"), "--help"],
+            cwd=root,
+            env={**os.environ, "PYTHONPATH": "src"},
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--port", result.stdout)
+
     def test_ssid_wpa_bounds_and_valid_b64(self):
         name, password = setup.validate_credentials("Lab WiFi", "password with spaces")
         wire = setup.wifi_config_command(name, password)

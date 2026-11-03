@@ -20,6 +20,12 @@ from pathlib import Path
 
 import serial
 
+# Direct execution (`python scripts/sme105_wifi_setup.py`) puts scripts/ rather
+# than the repository root on sys.path. Allow both that documented command and
+# `python -m scripts.sme105_wifi_setup` without requiring a custom PYTHONPATH.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from scripts.sme105_usb_bridge import (
     BAUD,
     DEFAULT_TOKEN_FILE,
