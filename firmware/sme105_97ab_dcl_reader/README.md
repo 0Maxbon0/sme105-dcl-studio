@@ -41,6 +41,51 @@ and `*-raw-a4.bin`, prints both hashes, and does not interpret DTC codes.
 An incomplete word sequence is still saved as evidence. No USB command
 triggers a vehicle attempt unless the operator types the exact token.
 
+## V4 actual vehicle capture — raw evidence, not ECU response
+
+Actual file: `20261103T161832567760Z-raw-a4.txt` SHA256
+`5476da95cc511bf1679ab722b57dd4f5f1e97b03edcfa2f7b605d87f4d08f387`.
+Its `.bin` SHA256:
+`b1d3aea06622a635872e8347630e5e0fa89eb1c71716962d6b0bf513f5d42d86`.
+The 3993 binary bytes exactly equal all 3993 UART1 `CART_EVT` records.
+There are exactly 996 correct cyclic four-byte ID headers
+(`00 00 00 parity/ID`), eight additional bytes during the four TX slots
+and a final truncated ID sync `00`. No data slots appear anywhere else.
+The 996 ID frame intervals are 9999..10000µs.
+
+| Our UART2 word | RO bytes in the same slot | TX_DONE delay |
+| --- | --- | --- |
+| `01 B0` | `6D CC` | 2088µs |
+| `FF 5F` | `21 E9` | 2088µs |
+| `26 A4` | `6C 3C` | 2088µs |
+| `00 A0` | `98 47` | 2088µs |
+
+All eight RO bytes are at the expected serial byte completion phase
+(+994/+2035..2036µs after slot start) but **none equals the intended TX
+byte**. The four received pairs also fail CART vertical parity. Four
+UART2 TX_DONE events do not validate GPIO17 DI, MAX487 DE/A-B, ECU acceptance,
+or a DTC. All remaining ~9.7 seconds are only cyclic ID headers. The
+first `6D` also appeared in V1/V3, so the V4 AHB FIFO change did not fix it.
+
+## V5 field-only source witness
+
+The next firmware retains exactly the same RAW `A4` bytes and their
+bounded four TX slots. It additionally starts *input-only* RMT1 on existing
+GPIO17 before the first slot and captures a single completed waveform
+packet covering the four words. A 15ms temporary RMT idle threshold spans
+the 10ms between slots but ends after the last word; no unverified RAM
+fallback is allowed. During the first RX stop bit of each word it also
+records a GPIO18 DE pad sample and the GPIO17/18 output matrix routes.
+GPIO18 input sensing is re-enabled **after** RMT output configuration.
+These are local pad witnesses, not differential A/B evidence. The original
+`.txt` and `.bin` raw UART1 saves remain unchanged. No new wiring, no
+additional ECU commands, no DESK run.
+
+Use the exact same `--action raw-a4 --vehicle-confirmed` command shown
+above and manually confirm `RAW_A4_ONCE` only after checking the device
+reports `SME105_97AB_READER_V5`; **do not reuse the old V4 capture as if it
+contained these new DI/DE measurements**.
+
 The user goal is deliberately small: **stored codes first, sensor values
 second**. The ESP32 Arduino 2.0.17 image reuses the **existing**
 ESP32 + MAX487 + BSS138 wiring, with **no other GPIO jumper or XY-K485**.

@@ -24,9 +24,10 @@ else:
 
 ROOT = Path(__file__).resolve().parents[1]
 STATUS = re.compile(
-    rb"^STATUS SME105_97AB_READER_V([1234]) ecu=97AB-12A650-KA DE=LOW "
+    rb"^STATUS SME105_97AB_READER_V([12345]) ecu=97AB-12A650-KA DE=LOW "
     rb"auto_tx=0 attempt_used=([01]) timers=2 gate4=1"
-    rb"( ro_scope=1)?( di_scope=1 first_probe=1)?( raw_a4=1)?\r?\n$"
+    rb"( ro_scope=1)?( di_scope=1 first_probe=1)?"
+    rb"( raw_a4=1(?: di_packet=1 de_pad=1)?)?\r?\n$"
 )
 PINS = re.compile(
     rb"^PINS ro16=1 de18=0 gate4=1( ro_scope=1)?( di_scope=1)? "
@@ -102,7 +103,7 @@ def read_record(port: serial.Serial, seconds: float, *, end: bytes | None = None
     return bytes(output)
 
 
-def quiet_status(port: serial.Serial, *, require_v4: bool = False) -> bool:
+def quiet_status(port: serial.Serial, *, require_v5: bool = False) -> bool:
     for _ in range(5):  # Read-only retries; NEVER retry an active command.
         port.reset_input_buffer()
         port.write(COMMANDS["status"])
@@ -111,6 +112,9 @@ def quiet_status(port: serial.Serial, *, require_v4: bool = False) -> bool:
         match = STATUS.fullmatch(raw)
         if match:
             print(raw.decode("ascii").strip())
+            is_v5 = (match[1] == b"5" and match[3] == b" ro_scope=1" and
+                     match[4] == b" di_scope=1 first_probe=1" and
+                     match[5] == b" raw_a4=1 di_packet=1 de_pad=1")
             is_v4 = (match[1] == b"4" and match[3] == b" ro_scope=1" and
                      match[4] == b" di_scope=1 first_probe=1" and
                      match[5] == b" raw_a4=1")
@@ -121,11 +125,11 @@ def quiet_status(port: serial.Serial, *, require_v4: bool = False) -> bool:
                      match[4] is None and match[5] is None)
             is_old_v1 = (match[1] == b"1" and match[3] is None and
                          match[4] is None and match[5] is None)
-            if not (is_v4 or is_v3 or is_v2 or is_old_v1):
+            if not (is_v5 or is_v4 or is_v3 or is_v2 or is_old_v1):
                 raise RuntimeError("version/scope identity mismatch; no command sent")
-            if require_v4 and not is_v4:
+            if require_v5 and not is_v5:
                 raise RuntimeError(
-                    "V4 RAW firmware not installed; flash the current firmware "
+                    "V5 RAW DI/DE firmware not installed; flash the current firmware "
                     "before diagnostic test"
                 )
             return match[2] == b"0"
@@ -194,7 +198,7 @@ def main() -> int:
             port.rts = False
             time.sleep(1.5)
             port.reset_input_buffer()
-            unused = quiet_status(port, require_v4=action in EXPLICIT)
+            unused = quiet_status(port, require_v5=action in EXPLICIT)
             if action == "status":
                 return 0
             if action in EXPLICIT and not unused:
@@ -220,7 +224,7 @@ def main() -> int:
                         return 2
                 else:
                     print(f"Sending ONE isolated DESK command: {expected}")
-                if not quiet_status(port, require_v4=True):
+                if not quiet_status(port, require_v5=True):
                     raise RuntimeError("status changed before one-shot dispatch")
             port.reset_input_buffer()
             port.write(COMMANDS[action])
@@ -264,11 +268,40 @@ def main() -> int:
                     rb"cutoff=([01]) ecu_verified=0 dtc_verified=0\r?$",
                     raw, re.MULTILINE,
                 )
+                di_wave = re.search(
+                    rb"^CART_RAW_DI_RMT scope=GPIO17 items=(\d+) "
+                    rb"complete_packet=([01]) overflow=([01]) start_failed=([01]) "
+                    rb"idle_us=15000 source=(RMT_PACKET|NONE_NO_COMPLETE_PACKET)\r?$",
+                    raw, re.MULTILINE,
+                )
+                pads = re.findall(
+                    rb"^CART_RAW_PAD frame=([0-3]) first_rx_us=(\d+) "
+                    rb"de_gpio18_high=([01]) di_gpio17_high=([01]) "
+                    rb"de_route=(\d+) di_route=(\d+)\r?$", raw, re.MULTILINE,
+                )
                 print("UART1 RO bytes saved without any DTC interpretation.")
                 print("Possible local transmit echo is INCLUDED in the raw stream.")
                 if state:
                     print(f"Fixed A4 words: {state[2].decode()}/4 TX_DONE; "
                           f"fault={state[5].decode()}")
+                if di_wave:
+                    print(f"GPIO17 input waveform: {di_wave[1].decode()} RMT items, "
+                          f"completed={di_wave[2].decode()}, "
+                          f"overflow={di_wave[3].decode()}")
+                pad_witness = (
+                    len(pads) == 4 and all(
+                        int(frame) == i and int(at) > 0 and
+                        de == b"1" and di == b"1" and
+                        int(route_de) == 89 + i and route_di == b"198"
+                        for i, (frame, at, de, di, route_de, route_di)
+                        in enumerate(pads)
+                    )
+                )
+                waveform_witness = (
+                    di_wave is not None and int(di_wave[1]) > 0 and
+                    di_wave[2] == b"1" and di_wave[3] == b"0" and
+                    di_wave[4] == b"0" and di_wave[5] == b"RMT_PACKET"
+                )
                 valid_capture = (
                     raw_capture is not None and raw_end is not None and
                     raw_capture[1] == raw_end[1] and
@@ -280,9 +313,11 @@ def main() -> int:
                 )
                 if (ENDING.search(raw) is None or state is None or
                         raw_ro is None or not valid_capture or
+                        not waveform_witness or not pad_witness or
                         state[1] != b"4" or state[2] != b"4" or
                         state[3] != b"4" or state[5] != b"0"):
-                    print("RAW capture / TX may be incomplete. Files retained; no retry.")
+                    print("RAW / GPIO pad waveform evidence incomplete or inconsistent; "
+                          "files retained, no retry.")
                     return 3
                 return 0
             if ENDING.search(raw) is None:

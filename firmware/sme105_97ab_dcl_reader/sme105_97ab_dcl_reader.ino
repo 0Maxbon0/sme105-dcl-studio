@@ -34,6 +34,10 @@ constexpr uint64_t kHandshakeCutoffUs = 100000;
 constexpr uint32_t kSlotCutoffUs = 2250;  // <2.3ms, <2500us slot
 constexpr uint32_t kMinSlotLeadUs = 180;
 constexpr uint32_t kMaxSlotLeadUs = 1250;
+// The first raw DI slot begins ~10.4ms after the final baseline ID15
+// header. The four 2-byte slots are 10ms apart; a 15ms idle threshold
+// collects all four as ONE hardware-completed GPIO17 input packet.
+constexpr uint16_t kRawDiIdleUs = 15000;
 // Retain the whole bounded 10s four-slot response locally; printing to USB
 // from the UART ISR would disturb CART's microsecond slot schedule.
 constexpr size_t kMaxEvents = 16384;
@@ -91,6 +95,7 @@ RingbufHandle_t diWaveRing = nullptr;
 bool diWaveReady = false;
 bool diWaveStarted = false;
 bool diWaveStartFailed = false;
+volatile bool rawDiWitnessArmed = false;
 bool diWaveFromCompletedPacket = false;
 rmt_item32_t diWave[kRoWaveLimit] = {};
 uint8_t diWaveCount = 0;
@@ -123,6 +128,11 @@ volatile uint32_t rawLastSyncUs = 0;
 volatile uint32_t rawSlotTargetUs = 0;
 volatile uint32_t rawStartUs[4] = {};
 volatile uint32_t rawDoneUs[4] = {};
+volatile uint32_t rawFirstRxUs[4] = {};
+volatile uint8_t rawDePadHigh[4] = {};
+volatile uint8_t rawDiPadHigh[4] = {};
+volatile uint8_t rawDeRoute[4] = {};
+volatile uint8_t rawDiRoute[4] = {};
 struct RawOctet { uint32_t timeUs; uint8_t byte; };
 RawOctet rawLastFour[4] = {};
 volatile uint8_t rawLastFourCount = 0;
@@ -242,7 +252,8 @@ void IRAM_ATTR slotISR() {
     const uint32_t now = static_cast<uint32_t>(esp_timer_get_time());
     const int32_t timing = static_cast<int32_t>(now - rawSlotTargetUs);
     if (!rawStarted || !requestMode || request.stage == cart_candidate::Stage::Failed ||
-        !rawSlotArmed || rawWordsStarted >= 4 || slotInFlight ||
+        !rawSlotArmed || !rawDiWitnessArmed ||
+        rawWordsStarted >= 4 || slotInFlight ||
         rawFault || rmtChannelsReady != 4 || timing < -175 || timing > 175 ||
         UART2.status.txfifo_cnt != 0 || !(GPIO.in & (1UL << 16))) {
       rawFault = 3;
@@ -345,6 +356,20 @@ void IRAM_ATTR uartISR(void*) {
   for (uint32_t i = 0; i < count; ++i) {
     const uint8_t octet = static_cast<uint8_t>(UART1.fifo.rw_byte);
     const uint32_t atUs = static_cast<uint32_t>(esp_timer_get_time());
+    if (rawBMode && slotInFlight && rawWordsStarted > 0 &&
+        rawWordsStarted <= 4) {
+      const uint8_t wordIndex = rawWordsStarted - 1;
+      const uint32_t age = atUs - rawStartUs[wordIndex];
+      if (!rawFirstRxUs[wordIndex] && age >= 700 && age <= 1400) {
+        // Samples of the actual ESP32 pads during byte 1's stop bit.
+        // These do NOT prove differential A/B or ECU ownership.
+        rawFirstRxUs[wordIndex] = atUs;
+        rawDePadHigh[wordIndex] = (GPIO.in >> 18) & 1;
+        rawDiPadHigh[wordIndex] = (GPIO.in >> 17) & 1;
+        rawDeRoute[wordIndex] = GPIO.func_out_sel_cfg[18].func_sel;
+        rawDiRoute[wordIndex] = GPIO.func_out_sel_cfg[17].func_sel;
+      }
+    }
     const uint32_t pos = rxCount;
     if (pos < kMaxEvents) {
       observations[pos].completeUs = atUs;
@@ -715,6 +740,7 @@ void stopDiWave() {
   if (!diWaveStarted) return;
   (void)rmt_rx_stop(RMT_CHANNEL_1);
   diWaveStarted = false;
+  rawDiWitnessArmed = false;
   size_t bytes = 0;
   void* packet = nullptr;
   while ((packet = xRingbufferReceive(diWaveRing, &bytes, 0))) {
@@ -726,15 +752,8 @@ void stopDiWave() {
     }
     vRingbufferReturnItem(diWaveRing, packet);
   }
-  if (!diWaveFromCompletedPacket) {
-    for (uint8_t i = 0; i < kRoWaveLimit; ++i) {
-      const uint32_t value = RMTMEM.chan[1].data32[i].val;
-      if ((value & 0x7FFF) == 0) break;
-      rmt_item32_t item = {};
-      item.val = value;
-      diWave[diWaveCount++] = item;
-    }
-  }
+  // Do NOT use V3's stopped-RMTMEM fallback: it included stale data
+  // interpreted as edges. Only a real RMT RX_END packet is trustworthy.
 }
 
 bool hostStopRequested() {
@@ -767,8 +786,29 @@ void dumpReport() {
       Serial.print(F(" word=")); printHex(word.first); printHex(word.second);
       Serial.print(F(" start_us=")); Serial.print(rawStartUs[i]);
       Serial.print(F(" tx_done_us=")); Serial.println(rawDoneUs[i]);
+      Serial.print(F("CART_RAW_PAD frame=")); Serial.print(i);
+      Serial.print(F(" first_rx_us=")); Serial.print(rawFirstRxUs[i]);
+      Serial.print(F(" de_gpio18_high=")); Serial.print(rawDePadHigh[i]);
+      Serial.print(F(" di_gpio17_high=")); Serial.print(rawDiPadHigh[i]);
+      Serial.print(F(" de_route=")); Serial.print(rawDeRoute[i]);
+      Serial.print(F(" di_route=")); Serial.println(rawDiRoute[i]);
     }
     Serial.println(F("CART_RAW_RO note=ALL_RX_BYTES_INCLUDING_POSSIBLE_SELF_ECHO"));
+    Serial.print(F("CART_RAW_DI_RMT scope=GPIO17 items=")); Serial.print(diWaveCount);
+    Serial.print(F(" complete_packet=")); Serial.print(diWaveFromCompletedPacket ? 1 : 0);
+    Serial.print(F(" overflow=")); Serial.print(diWaveOverflow ? 1 : 0);
+    Serial.print(F(" start_failed=")); Serial.print(diWaveStartFailed ? 1 : 0);
+    Serial.print(F(" idle_us=")); Serial.print(kRawDiIdleUs);
+    Serial.println(diWaveFromCompletedPacket ?
+        F(" source=RMT_PACKET") : F(" source=NONE_NO_COMPLETE_PACKET"));
+    for (uint8_t i = 0; i < diWaveCount; ++i) {
+      const rmt_item32_t& edge = diWave[i];
+      Serial.print(F("CART_RAW_DI_EDGE item=")); Serial.print(i);
+      Serial.print(F(" level0=")); Serial.print(edge.level0);
+      Serial.print(F(" dur0_us=")); Serial.print(edge.duration0);
+      Serial.print(F(" level1=")); Serial.print(edge.level1);
+      Serial.print(F(" dur1_us=")); Serial.println(edge.duration1);
+    }
   } else if (requestMode) {
     Serial.print(F("CART_B_STATE stage=")); Serial.print(static_cast<unsigned>(request.stage));
     Serial.print(F(" reason=")); Serial.print(static_cast<unsigned>(request.fault));
@@ -871,6 +911,9 @@ void attempt(cart_candidate::Variant variant, bool sendB, bool firstWordOnly = f
   rawLastFourCount = 0;
   for (int i = 0; i < 4; ++i) {
     rawStartUs[i] = rawDoneUs[i] = 0;
+    rawFirstRxUs[i] = 0;
+    rawDePadHigh[i] = rawDiPadHigh[i] = 0;
+    rawDeRoute[i] = rawDiRoute[i] = 0;
     rawLastFour[i] = {0, 0};
   }
   probeFirstOnly = firstWordOnly;
@@ -926,6 +969,21 @@ void attempt(cart_candidate::Variant variant, bool sendB, bool firstWordOnly = f
   }
   const uint32_t begun = millis();
   while (millis() - begun < kObserveMs) {
+    if (rawBMode && request.stage == cart_candidate::Stage::Request &&
+        !rawStarted && !diWaveStarted && !diWaveStartFailed) {
+      // Start from task context after the validated 16-ID baseline, before
+      // ID0's first word. RMT1 is INPUT-ONLY on the existing GPIO17;
+      // no new wiring, no extra UART/DE TX, and no DESK action.
+      if (rmt_set_rx_idle_thresh(RMT_CHANNEL_1, kRawDiIdleUs) == ESP_OK &&
+          rmt_rx_start(RMT_CHANNEL_1, true) == ESP_OK) {
+        diWaveStarted = true;
+        rawDiWitnessArmed = true; // release first TX only after RMT1 starts
+      } else {
+        diWaveStartFailed = true;
+        rawFault = 7;
+        stopActiveRequest();
+      }
+    }
     // The last validated baseline ID15 completes ~6.5ms before the next
     // ID0. Start parallel GPIO16 RMT sampling here in task context rather
     // than calling the non-ISR-safe RMT driver from the native UART ISR.
@@ -1141,13 +1199,13 @@ void deskMaxOnce() {
 void command() {
   if (!std::strcmp(commandLine, "STATUS")) {
     driverOff();
-    Serial.print(F("STATUS SME105_97AB_READER_V4 ecu=97AB-12A650-KA DE=LOW auto_tx=0 attempt_used="));
+    Serial.print(F("STATUS SME105_97AB_READER_V5 ecu=97AB-12A650-KA DE=LOW auto_tx=0 attempt_used="));
     Serial.print(oneShotConsumed ? 1 : 0);
     Serial.print(F(" timers=")); Serial.print(watchdog && slotTimer ? 2 : 0);
     Serial.print(F(" gate4=")); Serial.print(rmtChannelsReady == 4 ? 1 : 0);
     Serial.print(F(" ro_scope=")); Serial.print(roWaveReady ? 1 : 0);
     Serial.print(F(" di_scope=")); Serial.print(diWaveReady ? 1 : 0);
-    Serial.println(F(" first_probe=1 raw_a4=1"));
+    Serial.println(F(" first_probe=1 raw_a4=1 di_packet=1 de_pad=1"));
   } else if (!std::strcmp(commandLine, "HELP")) help();
   else if (!std::strcmp(commandLine, "PREVIEW_B_A4") ||
            !std::strcmp(commandLine, "PREVIEW_B_0E")) {
@@ -1217,8 +1275,12 @@ void setup() {
   if (!roWaveReady) Serial.println(F("FATAL RMT_RO_SCOPE_INIT_FAILED: B TX denied"));
   diWaveReady = setupDiWave();
   if (!diWaveReady) Serial.println(F("FATAL RMT_DI_SCOPE_INIT_FAILED: B TX denied"));
+  // RMT configuration may reset GPIO18 to output-only; re-enable local
+  // input observation AFTER all four DE RMT outputs are configured.
+  gpio_set_direction(kDe, GPIO_MODE_INPUT_OUTPUT);
+  driverOff();
   delay(250);
-  Serial.println(F("SME105_97AB_READER_V4 NO_AUTO_TX RAW_REFERENCE_A4"));
+  Serial.println(F("SME105_97AB_READER_V5 NO_AUTO_TX RAW_REFERENCE_A4_DI_DE"));
   help();
 }
 

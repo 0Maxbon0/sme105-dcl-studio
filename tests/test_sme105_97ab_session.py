@@ -17,9 +17,10 @@ SOURCE = (ROOT / "firmware" / "sme105_97ab_dcl_reader" /
 
 class HostAndSourceTests(unittest.TestCase):
     def test_status_requires_one_exact_clean_complete_line(self):
-        good = (b"STATUS SME105_97AB_READER_V4 ecu=97AB-12A650-KA DE=LOW "
+        good = (b"STATUS SME105_97AB_READER_V5 ecu=97AB-12A650-KA DE=LOW "
                 b"auto_tx=0 attempt_used=0 timers=2 gate4=1 "
-                b"ro_scope=1 di_scope=1 first_probe=1 raw_a4=1\r\n")
+                b"ro_scope=1 di_scope=1 first_probe=1 raw_a4=1 "
+                b"di_packet=1 de_pad=1\r\n")
         self.assertEqual(reader.STATUS.fullmatch(good)[2], b"0")
         for bad in (
             good[:-2], b"noise" + good, good + good,
@@ -28,11 +29,13 @@ class HostAndSourceTests(unittest.TestCase):
             good.replace(b"auto_tx=0", b"auto_tx=1"),
             good.replace(b"attempt_used=0", b"attempt_used=3"),
             good.replace(b"raw_a4=1", b"raw_a4=0"),
+            good.replace(b"di_packet=1", b"di_packet=0"),
+            good.replace(b"de_pad=1", b"de_pad=0"),
         ):
             with self.subTest(bad=bad[:25]):
                 self.assertIsNone(reader.STATUS.fullmatch(bad))
 
-    def test_v1_v2_v3_readable_but_only_raw_v4_can_issue_new_traffic(self):
+    def test_old_versions_readable_but_only_raw_v5_can_issue_new_traffic(self):
         original = (b"STATUS SME105_97AB_READER_V1 ecu=97AB-12A650-KA DE=LOW "
                     b"auto_tx=0 attempt_used=0 timers=2 gate4=1\r\n")
         v2 = original.replace(b"READER_V1", b"READER_V2").replace(
@@ -43,6 +46,9 @@ class HostAndSourceTests(unittest.TestCase):
         )
         v4 = v3.replace(b"READER_V3", b"READER_V4").replace(
             b"first_probe=1", b"first_probe=1 raw_a4=1"
+        )
+        v5 = v4.replace(b"READER_V4", b"READER_V5").replace(
+            b"raw_a4=1", b"raw_a4=1 di_packet=1 de_pad=1"
         )
 
         class DummyPort:
@@ -61,19 +67,23 @@ class HostAndSourceTests(unittest.TestCase):
         with patch.object(reader, "read_record", return_value=original):
             port = DummyPort()
             self.assertTrue(reader.quiet_status(port))
-            with self.assertRaisesRegex(RuntimeError, "V4 RAW firmware not installed"):
-                reader.quiet_status(port, require_v4=True)
+            with self.assertRaisesRegex(RuntimeError, "V5 RAW DI/DE firmware not installed"):
+                reader.quiet_status(port, require_v5=True)
             self.assertTrue(all(data == b"STATUS\n" for data in port.written))
         with patch.object(reader, "read_record", return_value=v2):
             self.assertTrue(reader.quiet_status(DummyPort()))
-            with self.assertRaisesRegex(RuntimeError, "V4 RAW firmware not installed"):
-                reader.quiet_status(DummyPort(), require_v4=True)
+            with self.assertRaisesRegex(RuntimeError, "V5 RAW DI/DE firmware not installed"):
+                reader.quiet_status(DummyPort(), require_v5=True)
         with patch.object(reader, "read_record", return_value=v3):
             self.assertTrue(reader.quiet_status(DummyPort()))
-            with self.assertRaisesRegex(RuntimeError, "V4 RAW firmware not installed"):
-                reader.quiet_status(DummyPort(), require_v4=True)
+            with self.assertRaisesRegex(RuntimeError, "V5 RAW DI/DE firmware not installed"):
+                reader.quiet_status(DummyPort(), require_v5=True)
         with patch.object(reader, "read_record", return_value=v4):
-            self.assertTrue(reader.quiet_status(DummyPort(), require_v4=True))
+            self.assertTrue(reader.quiet_status(DummyPort()))
+            with self.assertRaisesRegex(RuntimeError, "V5 RAW DI/DE firmware not installed"):
+                reader.quiet_status(DummyPort(), require_v5=True)
+        with patch.object(reader, "read_record", return_value=v5):
+            self.assertTrue(reader.quiet_status(DummyPort(), require_v5=True))
 
     def test_timed_ack_for_new_uart1_releases_provisional_codes_only(self):
         raw = active_candidate_transcript()
@@ -161,6 +171,12 @@ class HostAndSourceTests(unittest.TestCase):
         self.assertIn("WRITE_PERI_REG(UART_FIFO_AHB_REG(2), next.first)", code)
         self.assertIn("WRITE_PERI_REG(UART_FIFO_AHB_REG(2), next.second)", code)
         self.assertIn("rawObserveHeader(octet, atUs)", code)
+        self.assertIn("rmt_rx_start(RMT_CHANNEL_1, true)", code)
+        self.assertIn("rmt_set_rx_idle_thresh(RMT_CHANNEL_1, kRawDiIdleUs)", code)
+        self.assertIn("gpio_set_direction(kDe, GPIO_MODE_INPUT_OUTPUT)", code)
+        self.assertIn("CART_RAW_PAD frame=", code)
+        self.assertIn("CART_RAW_DI_RMT scope=GPIO17", code)
+        self.assertIn("!rawSlotArmed || !rawDiWitnessArmed", code)
         self.assertIn("if (probeFirstOnly)", code)
         self.assertIn("gpio_set_direction(GPIO_NUM_17, GPIO_MODE_INPUT_OUTPUT)", code)
         self.assertIn("gpio_matrix_in(GPIO_NUM_17, RMT_SIG_IN1_IDX, false)", code)
