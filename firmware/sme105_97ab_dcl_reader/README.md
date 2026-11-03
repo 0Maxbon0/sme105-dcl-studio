@@ -86,6 +86,54 @@ above and manually confirm `RAW_A4_ONCE` only after checking the device
 reports `SME105_97AB_READER_V5`; **do not reuse the old V4 capture as if it
 contained these new DI/DE measurements**.
 
+## V5 actual vehicle evidence — unexpected bytes proven at GPIO17
+
+Immutable field log `captures/SME105_97AB/20261103T163230191091Z-raw-a4.txt`:
+
+- Transcript SHA256:
+  `80a103f770226616ab069a8d9c3b9ef7ad87ccc24906df526cdedc249cd3ff7c`
+- Exact raw RO `.bin` (3993 bytes) SHA256:
+  `f1aeeae089ab155b579b135f3e309b29d915553bd925ee5556905ffefe4f0b63`
+- `CART_RAW_DI_RMT items=23 complete_packet=1 overflow=0`.
+  The independently captured input-level RMT wave on physical GPIO17
+  spans 31,978µs, covers all four TX opportunities starting at relative
+  0/10000/19999/29999µs, and decodes the following actual data bits at
+  9600/8N1 timing:
+
+| Fixed intended UART2 word | GPIO17 DI bytes from real completed RMT packet | GPIO16 RO bytes |
+| --- | --- | --- |
+| `01 B0` | `6D CC` | `6D CC` |
+| `FF 5F` | `29 E9` | `29 E9` |
+| `26 A4` | `6C 3C` | `6C 3C` |
+| `00 A0` | `98 47` | `98 47` |
+
+For the final `47`, all eight data bits are present, but the last
+stop-high duration is not measured in RMT (`item=22 dur1_us=0`).
+UART1 independently recorded the byte without framing errors.
+`CART_RAW_PAD` recorded GPIO18 DE HIGH at +994..995µs after each
+slot start, GPIO18 output mux 89/90/91/92, and GPIO17 output mux198
+(`U2TXD_OUT_IDX`). These are instantaneous local pad samples, **not**
+full-width DE gate or differential bus measurements.
+
+All 3993 UART1 events consist of exactly 996 sequential correct
+`00 00 00 parity(ID)` headers (62 full 16-ID cycles plus four IDs),
+eight observed slot bytes in the table and one trailing partial `00`.
+There is **no other ECU-origin data payload and no authenticated DTC**.
+All four `TX_DONE` delays are 2088µs; they do not prove correct source
+bytes. The installed ESP32 HAL already uses the same
+`WRITE_PERI_REG(UART_FIFO_AHB_REG(2), byte)` TX FIFO method as V5,
+so changing APB bitfields to AHB stores did **not** fix the repeated
+`6D` first byte.
+
+**Engineering disposition:** V5 has now localized the actual unexpected
+word waveform to the GPIO17 pad itself, not merely the MAX487 RO/UART1
+receive chain. The underlying cause is **not yet proven**: UART2 FIFO
+source/other writer, GPIO pad electrical contention or harness coupling
+remain possible. Do not change to speculative `0E`, interpret the
+anomalous pairs as fault codes, or call `4/4 TX_DONE` success. Avoid
+another live-car A4 command until the GPIO17 source discrepancy has a
+supported corrective action. The requested raw bytes have been saved.
+
 The user goal is deliberately small: **stored codes first, sensor values
 second**. The ESP32 Arduino 2.0.17 image reuses the **existing**
 ESP32 + MAX487 + BSS138 wiring, with **no other GPIO jumper or XY-K485**.
