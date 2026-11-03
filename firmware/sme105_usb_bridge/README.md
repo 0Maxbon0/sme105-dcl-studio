@@ -41,7 +41,15 @@ The ESP32 uses **2.4 GHz Wi-Fi STA only** (your existing home/router or phone
 hotspot); it never creates an unsecured access point. The SSID and WPA2
 passphrase are saved to ESP32 Preferences/NVS (`sme105wifi` namespace), and
 the bridge automatically attempts to reconnect after ordinary power cycles or
-coverage loss. The router/hotspot must be running and the laptop or phone
+coverage loss. The v7 recovery logic keeps modem sleep disabled, retries STA
+association at bounded 10-second intervals when offline, and reinitializes
+the station from the existing NVS credentials after 60 seconds of continuous
+outage (at most once every 60 seconds). It never erases NVS to reconnect.
+After an IP renewal, it discards the old TCP authentication, restarts the
+listener, and retries any failed TCP bind/listen at 3-second intervals. mDNS
+registration retries independently every 10 seconds while connected. All of
+these operations are suppressed during an active vehicle session. The
+router/hotspot must be running and the laptop or phone
 must be on the same local Wi-Fi network. **No ECU command is sent at boot,
 reconnect, authentication or power-on.** There is no need to flash different
 images for USB versus Wi-Fi operations.
@@ -81,6 +89,17 @@ authentication token; it **does not reset** the once-per-boot diagnostic or
 OBSERVE attempt counters. Use `WIFI_STATUS` to see the current IPv4 address;
 `sme105-bridge.local` is an mDNS convenience name and may not resolve on all
 phones/hotspots, so prefer the IP address when necessary.
+
+`WIFI_DIAG` is a read-only USB or authenticated-TCP command that reports
+`disconnects`, the numeric ESP-IDF `last_reason`, `got_ip`, `reconnects`,
+`reinitializations`, `listener_failures`, `listener_restarts`, `listener`,
+`mdns`, `offline_ms`, and `rssi` (dBm while connected, 0 when offline). These
+counters reset at power-up and do **not** reveal credentials or tokens. A
+disconnect reason helps distinguish router/auth/beacon failures, but cannot
+alone establish weak RF, a brownout, or wiring defects. A connected client
+can request it after returning to coverage. A 5–10m distance and one wall do
+not guarantee a reliable 2.4GHz link: power stability, antenna placement,
+router isolation, channel interference and the actual RSSI still matter.
 
 ### Authenticated TCP console (PC or smartphone)
 
@@ -148,6 +167,20 @@ is needed; changing the table could erase credentials or prevent rollback.
 Only upload the **PlatformIO application `firmware.bin`**, not a merged flash,
 bootloader, or partition image. The first USB firmware upload is owned by the
 Prime operator; all subsequent signed *application* updates can use Wi-Fi.
+
+**Supervised USB maintenance from a previously OTA-updated device:** the
+operator must first verify the real running partition, its `VALID` OTA state,
+chip identity and hardware disconnection from the ECU, and back up NVS and
+otadata privately. With boot running `app0` at `0x10000`, write *only* the
+application image at that address; do not run the normal PlatformIO combined
+USB uploader, which may rewrite OTA metadata, partition table and bootloader.
+For this v7 build, a boot already marked `VALID`, with no pending signed OTA
+ledger, durably adopts baseline version 7 in NVS after a physical USB flash.
+Signed OTA `PENDING_VERIFY` still uses the old accepted version and the
+original signed ledger, so it cannot bypass `OTA_CONFIRM` or rollback checks.
+This is **not** Secure Boot: physical flash access remains privileged and can
+replace code. A direct USB flash does not receive normal signed OTA automatic
+first-boot rollback and must be verified independently before use in a car.
 
 ### Publisher key and signature contract
 

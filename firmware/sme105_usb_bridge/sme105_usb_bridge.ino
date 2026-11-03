@@ -58,6 +58,9 @@ constexpr uint16_t kWiFiPort = 8765;
 constexpr size_t kWireQueueSize = 16384; // bounded, no allocation/IO in ISR
 constexpr uint32_t kAuthDeadlineMs = 5000;
 constexpr uint32_t kStaRetryMs = 10000;
+constexpr uint32_t kStaReinitMs = 60000; // escaped/failed reconnect: reapply NVS STA config
+constexpr uint32_t kListenerRetryMs = 3000;
+constexpr uint32_t kMdnsRetryMs = 10000;
 constexpr size_t kOtaChunkSize = 512;
 // OTA v2 application-layer flow control: no more than 8 KiB accepted
 // before the authenticated uploader observes a monotonic progress ACK.
@@ -70,6 +73,12 @@ constexpr uint32_t kOtaFirstBootCheckMs = 8000;
 constexpr uint32_t kOtaOkDrainGraceMs = 1500;
 constexpr uint32_t kOtaRebootMaxDelayMs = 4500;
 constexpr uint32_t kOtaCurrentVersion = 1;
+// Physical USB application-only maintenance baseline for this build. This is
+// NOT used as the pre-verification OTA minimum: signed OTA version 7 must
+// still be able to boot PENDING_VERIFY from accepted version 5 and prove its
+// manifest before promoting ota_ver. On a known VALID app with NO pending
+// ledger, a supervised physical USB flash may adopt this build baseline.
+constexpr uint32_t kUsbInstalledBuildVersion = 7;
 constexpr size_t kOtaAppSlotMax = 0x140000; // default 4MB ESP32 OTA partition table
 constexpr char kOtaPublisherPublicPEM[] =
   "-----BEGIN PUBLIC KEY-----\n"
@@ -252,6 +261,16 @@ uint8_t wifiLineUsed = 0;
 bool wifiLineDiscard = false;
 uint32_t wifiAuthStartedMs = 0, wifiLastRetryMs = 0;
 uint32_t transportFaults = 0;
+// Wi-Fi event callbacks execute on Arduino's event task. They only record
+// fixed-width diagnostics, never touch UART/DE, NVS, sockets or Wi-Fi APIs.
+volatile uint32_t wifiDisconnectEvents = 0, wifiGotIpEvents = 0;
+volatile uint8_t wifiLastDisconnectReason = 0;
+uint32_t wifiLastHandledIpEvent = 0, wifiOfflineSinceMs = 0;
+uint32_t wifiLastStaReinitMs = 0;
+uint32_t wifiLastServerAttemptMs = 0, wifiLastMdnsAttemptMs = 0;
+uint32_t wifiRetryAttempts = 0, wifiStaReinitializations = 0;
+uint32_t wifiListenerFailures = 0, wifiListenerRestarts = 0;
+bool wifiWasOffline = false;
 
 enum class OtaPhase : uint8_t { Idle, Receiving, RebootPending };
 struct SignedOtaState {
@@ -873,6 +892,32 @@ bool tokenMatches(const char* supplied) {
   }
   return diff == 0;
 }
+void onStaDisconnect(WiFiEvent_t, WiFiEventInfo_t info) {
+  wifiLastDisconnectReason = info.wifi_sta_disconnected.reason;
+  ++wifiDisconnectEvents;
+}
+void onStaGotIp(WiFiEvent_t, WiFiEventInfo_t) {
+  ++wifiGotIpEvents;
+}
+// Integral action result avoids Arduino's generated forward declarations
+// depending on a locally declared enum before it is defined.
+constexpr int kWiFiRecoveryNone = 0, kWiFiRecoveryReconnect = 1;
+constexpr int kWiFiRecoveryReinitialize = 2;
+int chooseWiFiRecovery(uint32_t now, uint32_t offlineSince,
+                                     uint32_t lastRetry, uint32_t lastReinit,
+                                     bool vehicleActive) {
+  if (vehicleActive) return kWiFiRecoveryNone;
+  if (static_cast<uint32_t>(now - offlineSince) >= kStaReinitMs &&
+      static_cast<uint32_t>(now - lastReinit) >= kStaReinitMs)
+    return kWiFiRecoveryReinitialize;
+  if (static_cast<uint32_t>(now - lastRetry) >= kStaRetryMs)
+    return kWiFiRecoveryReconnect;
+  return kWiFiRecoveryNone;
+}
+bool listenerRetryDue(uint32_t now, uint32_t lastAttempt) {
+  return lastAttempt == 0 ||
+      static_cast<uint32_t>(now - lastAttempt) >= kListenerRetryMs;
+}
 void startSta() {
   if (!wifiConfigured || !prefsReady || busSessionActive()) return;
   const String ssid = wifiPrefs.getString("ssid", "");
@@ -885,11 +930,17 @@ void startSta() {
   WiFi.mode(WIFI_STA); // NEVER enable an access point
   WiFi.persistent(false);
   WiFi.setHostname("sme105-bridge");
+  // Disable modem sleep for a low-latency always-on STA bridge. This uses
+  // more power; insufficient vehicle supply/antenna coverage cannot be
+  // cured by firmware and remains a separate physical diagnostic.
+  WiFi.setSleep(false);
   WiFi.setAutoReconnect(true);
   WiFi.begin(ssid.c_str(), pass.c_str()); // asynchronous; no waiting or retry TX
   wifiLastRetryMs = millis();
 }
 void initializeWiFi() {
+  WiFi.onEvent(onStaDisconnect, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+  WiFi.onEvent(onStaGotIp, ARDUINO_EVENT_WIFI_STA_GOT_IP);
   prefsReady = wifiPrefs.begin("sme105wifi", false);
   if (!prefsReady) { WiFi.mode(WIFI_OFF); return; }
   const String savedToken = wifiPrefs.getString("token", "");
@@ -942,7 +993,24 @@ void initializeOtaBootHealth() {
     return;
   }
 
-  if (!pendingKeysExist) return;
+  if (!pendingKeysExist) {
+    if (stateKnown && imageState == ESP_OTA_IMG_VALID &&
+        kUsbInstalledBuildVersion > otaAcceptedVersion) {
+      // Trusted physical USB flash preserves otadata and NVS. Never make a
+      // lower signed version acceptable merely because this version was
+      // installed directly into the already-VALID running app partition.
+      // PENDING_VERIFY images can reach this branch only AFTER their signed
+      // ledger was accepted and cleared through the normal OTA pathway.
+      if (prefsReady && wifiPrefs.putUInt("ota_ver", kUsbInstalledBuildVersion) == sizeof(uint32_t))
+        otaAcceptedVersion = kUsbInstalledBuildVersion;
+      else {
+        otaFirstBootPending = true;
+        otaBootHealthFailed = true;
+        otaLedgerAlreadyValid = true; // fail inert until durable authority exists
+      }
+    }
+    return;
+  }
   if (sameTarget && stateKnown && imageState == ESP_OTA_IMG_VALID &&
       otaTrustedLedger.version > otaAcceptedVersion) {
     // Crash window: IDF made the image VALID, but power failed before
@@ -1060,6 +1128,21 @@ void printWiFiStatus() {
   // Canonical host label is stable; callers must use IP until CONNECTED.
   // Actual mDNS resolution is opportunistic, never a safety authority.
   out.println(F(" host=sme105-bridge.local"));
+}
+void printWiFiDiag() {
+  // Diagnostic fields are intentionally numeric and secret-free. Reason is
+  // the native ESP-IDF Wi-Fi disconnect code, NOT a proven physical cause.
+  out.print(F("WIFI_DIAG disconnects=")); out.print(wifiDisconnectEvents);
+  out.print(F(" last_reason=")); out.print(wifiLastDisconnectReason);
+  out.print(F(" got_ip=")); out.print(wifiGotIpEvents);
+  out.print(F(" reconnects=")); out.print(wifiRetryAttempts);
+  out.print(F(" reinitializations=")); out.print(wifiStaReinitializations);
+  out.print(F(" listener_failures=")); out.print(wifiListenerFailures);
+  out.print(F(" listener_restarts=")); out.print(wifiListenerRestarts);
+  out.print(F(" listener=")); out.print(wifiServerStarted && static_cast<bool>(wifiServer) ? 1 : 0);
+  out.print(F(" mdns=")); out.print(mdnsStarted ? 1 : 0);
+  out.print(F(" offline_ms=")); out.print(wifiWasOffline ? millis() - wifiOfflineSinceMs : 0);
+  out.print(F(" rssi=")); out.println(WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0);
 }
 void processWiFiProvision(const char* command) {
   if (!commandFromUSB) { out.println(F("DENIED usb_only")); return; }
@@ -2096,26 +2179,69 @@ void pollWiFi() {
   }
   if (WiFi.status() != WL_CONNECTED) {
     if (signedOta.phase == OtaPhase::Receiving) abortSignedOta("wifi_disconnected");
-    if (wifiClient.connected() || tcpAuthenticated) dropTcpClient(true);
+    if (wifiClient.fd() >= 0 || tcpAuthenticated) dropTcpClient(tcpAuthenticated);
     if (wifiServerStarted) { wifiServer.end(); wifiServerStarted = false; }
     if (mdnsStarted) { MDNS.end(); mdnsStarted = false; }
-    if (!busSessionActive() &&
-        static_cast<uint32_t>(millis() - wifiLastRetryMs) >= kStaRetryMs) {
-      wifiLastRetryMs = millis();
-      WiFi.reconnect(); // STA-only retry; NEVER a vehicle command
+    const uint32_t now = millis();
+    if (!wifiWasOffline) { wifiWasOffline = true; wifiOfflineSinceMs = now; }
+    // Arduino's auto-reconnect is reason-dependent. Explicit bounded retries
+    // also cover NO_AP_FOUND and failed authentication/reassociation.
+    // Never reconfigure STA or touch NVS during active vehicle timing.
+    switch (chooseWiFiRecovery(now, wifiOfflineSinceMs, wifiLastRetryMs,
+                               wifiLastStaReinitMs, busSessionActive())) {
+      case kWiFiRecoveryReinitialize:
+        wifiLastStaReinitMs = now;
+        ++wifiStaReinitializations;
+        WiFi.disconnect(false, false); // keep NVS settings and radio enabled
+        startSta(); // reload saved credentials, no AP and no vehicle TX
+        break;
+      case kWiFiRecoveryReconnect:
+        wifiLastRetryMs = now;
+        ++wifiRetryAttempts;
+        (void)WiFi.reconnect(); // fail closed if STA has gone away
+        break;
+      case kWiFiRecoveryNone: break;
     }
     return;
+  }
+  wifiWasOffline = false;
+  // IP renewal while still associated can invalidate every existing socket.
+  // Never preserve a previous controller's authentication across a lease.
+  const uint32_t ipGeneration = wifiGotIpEvents;
+  if (ipGeneration != wifiLastHandledIpEvent) {
+    wifiLastHandledIpEvent = ipGeneration;
+    if (wifiClient.fd() >= 0 || tcpAuthenticated) dropTcpClient(tcpAuthenticated);
+    if (wifiServerStarted) { wifiServer.end(); wifiServerStarted = false; }
+    if (mdnsStarted) { MDNS.end(); mdnsStarted = false; }
   }
   if (!wifiServerStarted) {
     // mDNS and socket initialization are task-level potentially costly;
     // never start them during the phase-critical live CART sequence.
     if (busSessionActive()) return;
-    wifiServer.begin();
-    wifiServerStarted = true;
-    if (!mdnsStarted && MDNS.begin("sme105-bridge")) {
+    const uint32_t now = millis();
+    if (listenerRetryDue(now, wifiLastServerAttemptMs)) {
+      wifiLastServerAttemptMs = now;
+      wifiServer.begin();
+      wifiServerStarted = static_cast<bool>(wifiServer);
+      if (!wifiServerStarted) {
+        // Arduino-ESP32 WiFiServer::begin() returns void and leaves a socket
+        // open on bind()/listen() failure. end() reclaims it before retry.
+        wifiServer.end();
+        ++wifiListenerFailures;
+      } else {
+        ++wifiListenerRestarts;
+      }
+    }
+    if (!wifiServerStarted) return;
+  }
+  if (!mdnsStarted && !busSessionActive() &&
+      (wifiLastMdnsAttemptMs == 0 ||
+       static_cast<uint32_t>(millis() - wifiLastMdnsAttemptMs) >= kMdnsRetryMs)) {
+    wifiLastMdnsAttemptMs = millis();
+    if (MDNS.begin("sme105-bridge")) {
       mdnsStarted = true;
       MDNS.addService("sme105", "tcp", kWiFiPort);
-    }
+    } else MDNS.end();
   }
   // An authenticated controller can disappear just as a new connection
   // arrives. Revoke its ongoing vehicle session BEFORE considering anyone
@@ -2228,6 +2354,7 @@ void runCommand(const char* cmd) {
     processWiFiProvision(cmd); return;
   }
   if (!strcmp(cmd, "WIFI_STATUS")) { printWiFiStatus(); return; }
+  if (!strcmp(cmd, "WIFI_DIAG")) { printWiFiDiag(); return; }
   if (!strcmp(cmd, "WIFI_TOKEN")) {
     if (!commandFromUSB) { out.println(F("DENIED usb_only")); return; }
     if (busSessionActive() || !prefsReady || !validHexToken(wifiToken)) {
@@ -2264,7 +2391,7 @@ void runCommand(const char* cmd) {
   if (!strcmp(cmd, "HELP")) {
     out.println(F("COMMANDS HELLO HELP STATUS PINS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E STOP RESET_IDLE"));
     out.println(F("READ_* requires exact 4/4 TX2_BENCH pad pass this boot plus matching ARM_* within 15s; no automatic TX"));
-    out.println(F("WIFI USB_ONLY: WIFI_CONFIG <SSID_BASE64> <PASSWORD_BASE64> | WIFI_TOKEN | WIFI_FORGET; WIFI_STATUS read-only"));
+    out.println(F("WIFI USB_ONLY: WIFI_CONFIG <SSID_BASE64> <PASSWORD_BASE64> | WIFI_TOKEN | WIFI_FORGET; WIFI_STATUS WIFI_DIAG read-only"));
     out.println(F("OTA authenticated TCP: OTA_STATUS OTA_DIAG OTA_BEGIN2 <size> <sha256_lowerhex> <version> <P256_signature_DER_base64>; then 8192-byte windows plus OTA_PROGRESS received=<n>; final OTA_OK; OTA_CONFIRM after reboot"));
     return;
   }
