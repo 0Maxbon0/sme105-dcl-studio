@@ -34,7 +34,14 @@ def run(*args: str, allow_fail: bool = False, timeout: int = 15) -> str:
         args, capture_output=True, text=True, timeout=timeout, check=False,
     )
     if result.returncode and not allow_fail:
-        raise SetupError(f"Command failed: {args[0]} {args[1] if len(args)>1 else ''}")
+        # None of this helper's commands accepts passwords, Wi-Fi tokens or
+        # private key file contents as argv. Surface the actual safe OS/NM
+        # error instead of hiding EUNIQ as just "nmcli connection".
+        detail = (result.stderr or result.stdout).strip()[:350]
+        raise SetupError(
+            f"Command failed (exit={result.returncode}): "
+            f"{args[0]} {args[1] if len(args) > 1 else ''}: {detail}"
+        )
     return result.stdout.strip()
 
 
@@ -46,6 +53,22 @@ def verify_main_connected() -> None:
     link = run("iwconfig", MAIN)
     if not re.search(r"Frequency:2\.447 GHz", link):
         raise SetupError("Venom must currently use channel 8 (2447 MHz)")
+
+
+def distinct_ap_mac(main_mac: str) -> str:
+    """Stable, locally administered unicast MAC unlike the STA interface."""
+    parts = main_mac.strip().split(":")
+    if len(parts) != 6 or any(not re.fullmatch(r"[0-9a-fA-F]{2}", x) for x in parts):
+        raise SetupError("Built-in Wi-Fi MAC is invalid")
+    octets = [int(x, 16) for x in parts]
+    if octets[0] & 1:
+        raise SetupError("Built-in Wi-Fi MAC unexpectedly multicast")
+    octets[0] = (octets[0] | 2) & 0xFE
+    octets[5] ^= 1
+    candidate = ":".join(f"{x:02x}" for x in octets)
+    if candidate.lower() == main_mac.strip().lower():
+        raise SetupError("Virtual AP MAC matches the primary STA MAC")
+    return candidate
 
 
 def load_secret(create: bool) -> str:
@@ -136,12 +159,18 @@ def prepare() -> None:
 
 
 def ensure_virtual() -> bool:
+    primary_mac = Path("/sys/class/net/" + MAIN + "/address").read_text().strip()
+    ap_mac = distinct_ap_mac(primary_mac)
     if os.path.exists("/sys/class/net/" + VIRTUAL):
         info = run("iw", "dev", VIRTUAL, "info")
         if "type AP" not in info:
             raise SetupError("Existing interface name is not an AP")
+        existing_mac = Path("/sys/class/net/" + VIRTUAL + "/address").read_text().strip()
+        if existing_mac.lower() != ap_mac:
+            raise SetupError("Existing virtual AP has an unexpected MAC; refusing takeover")
         return False
-    run("iw", "phy", "phy0", "interface", "add", VIRTUAL, "type", "__ap")
+    run("iw", "phy", "phy0", "interface", "add", VIRTUAL,
+        "type", "__ap", "addr", ap_mac)
     return True
 
 
@@ -165,6 +194,12 @@ def activate() -> None:
     success = False
     try:
         new_interface = ensure_virtual()
+        # Fail fast on kernel/driver inability to bring up concurrent STA+AP;
+        # previously the kernel returned EUNIQ (76, Name not unique on
+        # network) and NM misleadingly reported "device unavailable".
+        # This only touches the *new virtual AP*, never the primary STA.
+        run("ip", "link", "set", "dev", VIRTUAL, "up")
+        verify_main_connected()
         # NetworkManager may need a moment to enumerate a virtual radio.
         for _ in range(12):
             info = run("nmcli", "-t", "-f", "DEVICE,TYPE", "device", "status")
