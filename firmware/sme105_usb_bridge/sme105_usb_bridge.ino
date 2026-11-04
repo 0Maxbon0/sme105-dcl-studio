@@ -89,7 +89,7 @@ constexpr uint32_t kOtaCurrentVersion = 1;
 // still be able to boot PENDING_VERIFY from an older accepted version and
 // prove their manifest before promoting ota_ver. On a VALID app with NO pending
 // ledger, a supervised physical USB flash may adopt this build baseline.
-constexpr uint32_t kUsbInstalledBuildVersion = 12;
+constexpr uint32_t kUsbInstalledBuildVersion = 13;
 constexpr size_t kOtaAppSlotMax = 0x140000; // default 4MB ESP32 OTA partition table
 constexpr char kOtaPublisherPublicPEM[] =
   "-----BEGIN PUBLIC KEY-----\n"
@@ -106,7 +106,7 @@ enum Fault : uint8_t { NO_FAULT, BAD_IDLE, HSK_TX, HSK_TIMEOUT, HSK_ACK,
                        CART_INIT, CART_ERR, CART_HEADER, CART_PHASE,
                        CART_CADENCE, CART_TIMER, PAD_MISMATCH, PAD_FRAMING,
                        DE_TIMEOUT, RX_OVERFLOW, HOST_STOP, CAPTURE_TIMEOUT,
-                       TRANSPORT_BACKPRESSURE };
+                       TRANSPORT_BACKPRESSURE, DE_MISSING };
 struct RxEvent { uint32_t at; uint8_t value; };
 struct HeaderByte { uint32_t at; uint8_t value; };
 struct CmdWord { uint8_t first; uint8_t second; };
@@ -1412,6 +1412,22 @@ void IRAM_ATTR deOff() {
   GPIO.out_w1tc = 1UL << kDE;
   GPIO.func_out_sel_cfg[kDE].func_sel = SIG_GPIO_OUT_IDX;
 }
+// One RMT item: 2180us DE HIGH then 80us LOW, followed by an end marker.
+constexpr uint32_t kGateItem = 2180u | (1u << 15) | (80u << 16);
+// Re-arm the whole one-shot gate on every use: in the 2026-11-04 KOEO run
+// channels 2/3 no longer asserted DE on reuse while their UART word still
+// reached the pad. Never rely on state left by a previous pulse.
+void IRAM_ATTR startDeGate(uint8_t index) {
+  const uint8_t channel = static_cast<uint8_t>(2 + index);
+  RMT.conf_ch[channel].conf1.tx_start = 0;
+  RMT.conf_ch[channel].conf1.mem_owner = 0;
+  RMTMEM.chan[channel].data32[0].val = kGateItem;
+  RMTMEM.chan[channel].data32[1].val = 0;
+  RMT.conf_ch[channel].conf1.mem_rd_rst = 1;
+  RMT.conf_ch[channel].conf1.mem_rd_rst = 0;
+  GPIO.func_out_sel_cfg[kDE].func_sel = RMT_SIG_OUT2_IDX + index;
+  RMT.conf_ch[channel].conf1.tx_start = 1;
+}
 void IRAM_ATTR disableSlotTimer() { TIMERG0.hw_timer[1].config.alarm_en = 0; }
 void IRAM_ATTR disableDeTimer() { TIMERG0.hw_timer[0].config.alarm_en = 0; }
 void IRAM_ATTR faultISR(Fault why) {
@@ -1493,11 +1509,7 @@ void IRAM_ATTR slotISR() {
   const uint8_t index = wordsStarted++;
   txStartUs[index] = now;
   // RMT autonomous single-shot gate: 2180us HIGH then 80us LOW.
-  const uint8_t channel = static_cast<uint8_t>(2 + index);
-  GPIO.func_out_sel_cfg[kDE].func_sel = RMT_SIG_OUT2_IDX + index;
-  RMT.conf_ch[channel].conf1.mem_rd_rst = 1;
-  RMT.conf_ch[channel].conf1.mem_rd_rst = 0;
-  RMT.conf_ch[channel].conf1.tx_start = 1;
+  startDeGate(index);
   const CmdWord selected = word(variant, index);
   // Native UART2 TX AHB FIFO writes, not the APB RX register bitfield.
   WRITE_PERI_REG(UART_FIFO_AHB_REG(2), selected.first);
@@ -1508,6 +1520,8 @@ void IRAM_ATTR slotISR() {
 void IRAM_ATTR uart2ISR(void*) {
   const uint32_t pending = UART2.int_st.val;
   if (pending & (1UL << 14)) { // TX_DONE shifted final 8N1 stop bit
+    // The gate is still HIGH for ~90us after the stop bit: witness the pad.
+    const bool deWasHigh = (GPIO.in & (1UL << kDE)) != 0;
     deOff();
     disableDeTimer();
     UART2.int_ena.tx_done = 0;
@@ -1542,7 +1556,9 @@ void IRAM_ATTR uart2ISR(void*) {
       const CmdWord expected = word(variant, index);
       // RXFIFO_TOUT (bit 8) indicates inactivity, not a UART frame error.
       // Parity, framing and overflow (bits 2..4) invalidate the pad witness.
-      if (count != 2 || countMid != 1 || countAfter != 0 ||
+      if (!deWasHigh) {
+        faultISR(DE_MISSING);
+      } else if (count != 2 || countMid != 1 || countAfter != 0 ||
           (flags & ((1UL << 2) | (1UL << 3) | (1UL << 4)))) {
         faultISR(PAD_FRAMING);
       } else if (b0 != expected.first || b1 != expected.second) {
@@ -1784,6 +1800,8 @@ bool setupGate() {
   handshakeGate[1].level0 = 0;
   if (rmt_fill_tx_items(RMT_CHANNEL_6, handshakeGate, 2, 0) != ESP_OK) return false;
   deOff();
+  gpio_set_direction(GPIO_NUM_18, GPIO_MODE_INPUT_OUTPUT); // DE pad readable
+  deOff();
   gateReady = (gateChannels == 4);
   return gateReady;
 }
@@ -1929,6 +1947,54 @@ bool decodeFirstTx2RmtPair(const rmt_item32_t* wave, size_t items, CmdWord expec
 // Bench the native TX2 -> physical GPIO17 -> native RX2 path without ever
 // enabling MAX487 DE. Operator must ensure the bus is physically disconnected.
 // The received bytes come from the GPIO input matrix, not the TX FIFO source.
+void dumpGateRmt() {
+  for (uint8_t ch = 2; ch <= 6; ++ch) {
+    out.print(F("DE_BENCH_RMT ch=")); out.print(ch);
+    out.print(F(" item0=0x")); out.print(RMTMEM.chan[ch].data32[0].val, HEX);
+    out.print(F(" item1=0x")); out.print(RMTMEM.chan[ch].data32[1].val, HEX);
+    out.print(F(" tx_start=")); out.print(RMT.conf_ch[ch].conf1.tx_start);
+    out.print(F(" mem_owner=")); out.println(RMT.conf_ch[ch].conf1.mem_owner);
+  }
+}
+// Exercise every DE gate channel three times with DI held at the idle MARK
+// level, so an attached bus only ever sees idle. Dumps RMT state first.
+void deGateBench() {
+  if (!commandFromUSB) { out.println(F("DENIED usb_only")); return; }
+  if (stage != IDLE || !stopLatched || slotArmed || slotInFlight || nativeReady ||
+      refReady || !gateReady || otaUpdating() || out.freeBytes() < 4096) {
+    out.println(F("DENIED de_bench_busy")); return;
+  }
+  dumpGateRmt();
+  pinMode(kDI, OUTPUT);
+  digitalWrite(kDI, HIGH);
+  bool passed = true;
+  for (uint8_t round = 0; round < 3; ++round) {
+    for (uint8_t index = 0; index < 4; ++index) {
+      deOff();
+      delayMicroseconds(200);
+      const bool lowBefore = (GPIO.in & (1UL << kDE)) == 0;
+      portENTER_CRITICAL(&txLock);
+      startDeGate(index);
+      portEXIT_CRITICAL(&txLock);
+      delayMicroseconds(1000);
+      const bool highMid = (GPIO.in & (1UL << kDE)) != 0;
+      delayMicroseconds(1500);
+      const bool lowAfter = (GPIO.in & (1UL << kDE)) == 0;
+      deOff();
+      const bool ok = lowBefore && highMid && lowAfter;
+      passed = passed && ok;
+      out.print(F("DE_BENCH_PULSE round=")); out.print(round);
+      out.print(F(" ch=")); out.print(2 + index);
+      out.print(F(" low_before=")); out.print(lowBefore ? 1 : 0);
+      out.print(F(" high_mid=")); out.print(highMid ? 1 : 0);
+      out.print(F(" low_after=")); out.println(lowAfter ? 1 : 0);
+    }
+  }
+  deOff();
+  pinMode(kDI, INPUT);
+  out.print(F("DE_BENCH_END result=")); out.print(passed ? F("PASS") : F("FAIL"));
+  out.println(F(" di=MARK DE=LOW"));
+}
 void tx2PadBench() {
   // TCP requires the same explicit one-shot command on an authenticated
   // connection; no Wi-Fi/USB reconnect or OTA upgrade triggers this routine.
@@ -2697,7 +2763,7 @@ void runCommand(const char* cmd) {
       (!strcmp(cmd, "OBSERVE") || !strcmp(cmd, "READ_A4") ||
        !strcmp(cmd, "READ_0E") || !strcmp(cmd, "LISTEN_9600") ||
        !strcmp(cmd, "READ_KOEO") || !strcmp(cmd, "READ_OFF") ||
-       !strcmp(cmd, "TX2_BENCH") ||
+       !strcmp(cmd, "TX2_BENCH") || !strcmp(cmd, "DE_BENCH") ||
        !strcmp(cmd, "ARM_A4") || !strcmp(cmd, "ARM_0E") ||
        !strcmp(cmd, "ARM_KOEO") || !strcmp(cmd, "ARM_OFF"))) {
     out.println(F("DENIED boot_health_pending"));
@@ -2755,7 +2821,7 @@ void runCommand(const char* cmd) {
   }
   if (!strcmp(cmd, "HELLO")) { out.println(F("HELLO SME105_USB_BRIDGE_V1 protocol=1 usb_baud=115200 no_auto_tx=1")); return; }
   if (!strcmp(cmd, "HELP")) {
-    out.println(F("COMMANDS HELLO HELP STATUS PINS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E ARM_KOEO READ_KOEO ARM_OFF READ_OFF STOP RESET_IDLE"));
+    out.println(F("COMMANDS HELLO HELP STATUS PINS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E ARM_KOEO READ_KOEO ARM_OFF READ_OFF DE_BENCH RMT_DUMP STOP RESET_IDLE"));
     out.println(F("READ_* requires exact 4/4 TX2_BENCH pad pass this boot plus matching ARM_* within 15s; no automatic TX"));
     out.println(F("WIFI USB_ONLY: WIFI_CONFIG <SSID_B64> <PASS_B64> | WIFI_AP_CONFIG <SSID_B64> <PASS_B64> | WIFI_STA_MODE WIFI_AP_MODE | WIFI_TOKEN | WIFI_FORGET"));
     out.println(F("WIFI read-only: WIFI_STATUS WIFI_DIAG WIFI_AP_STATUS; AP-only 10.77.13.1/24 WPA2 and authenticated TCP/8765"));
@@ -2765,6 +2831,8 @@ void runCommand(const char* cmd) {
   if (!strcmp(cmd, "STATUS")) { printStatus(); return; }
   if (!strcmp(cmd, "PINS")) { printPins(); return; }
   if (!strcmp(cmd, "TX2_BENCH")) { tx2PadBench(); return; }
+  if (!strcmp(cmd, "DE_BENCH")) { deGateBench(); return; }
+  if (!strcmp(cmd, "RMT_DUMP")) { dumpGateRmt(); return; }
   if (!strcmp(cmd, "RESET_IDLE")) {
     if (stage != IDLE || slotInFlight || !stopLatched) out.println(F("DENIED busy"));
     else { failure = NO_FAULT; armedVariant = 255; out.println(F("EVENT idle_reset no_read_rearm=1")); }

@@ -381,3 +381,29 @@ v12 fix: removed the TX FIFO reset; `openNative()` now performs
 `periph_module_reset(PERIPH_UART2_MODULE)` before configuring UART2. Regression
 test added; 247 tests PASS. Image SHA-256
 `c1dc0ce3bc35d8d6c3391e1d12dc7d9a30b5fd87be992dc9573a3d5ab1550762` (not yet flashed).
+
+## Test 1 rerun (v12): go-offline PASS
+
+`captures/SME105_97AB/20261104T152920262127Z-usb-bridge.*`: OBSERVE 3984 B,
+post-session LISTEN 4000 B (stream persists), `READ_OFF` joined and sent
+`01B0 FF5F 80CE 7F20` all pad-verified; the ECU's last bytes were the next
+block's frame-0 sync+ID (+159.6 ms) then silence: `offline_quiet_us=7613810`,
+final LISTEN `ro_bytes=0`. No key cycle.
+
+## KOEO attempt (v12): ECU entered 25H, our repeat blocks lost DE on ch2/3
+
+`captures/SME105_97AB/20261104T153152909078Z-usb-bridge.*`. Block A (10 ms):
+all four `01B0 FF5F 253E 00A0` echoed on RO. Next block was 42.5 ms with
+status `25D0 25D0` (current/next DIAGMODE 25H), DCL flags `1F40 BCD0`, ROM
+`ADD0 3810`. In every repeated block the frame 0/1 words reached the GPIO17
+pad (TX_PAD match) but **not** the bus (no RO echo); frames 2/3 did. The ECU
+then saw incomplete DPS (badDiagParameterSlot set), reverted to 10 ms, and
+went silent after the third block; OFFLINE_JOIN and LISTEN then saw 0 bytes.
+No self-test codes were received.
+
+v13: `startDeGate()` clears tx_start, rewrites the RMT gate item + end marker
+and resets the read pointer on every slot; TX_DONE ISR now witnesses the DE
+pad high before `deOff()` and faults `DE_MISSING` (18) otherwise. New
+`RMT_DUMP` (read-only) and `DE_BENCH` (DI held at idle MARK; quiet bus only).
+248 tests PASS. Image SHA-256
+`4a0aa283ccdc9fa24e695d355e6ee2cd131ee856ae6ca1aefe8c1f8072023dd7` (not yet flashed).

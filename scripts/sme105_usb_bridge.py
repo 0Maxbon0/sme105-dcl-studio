@@ -29,11 +29,11 @@ TCP_PORT = 8765
 DEFAULT_TOKEN_FILE = Path("~/.config/sme105/bridge-token").expanduser()
 TOKEN_HEX = re.compile(rb"^[0-9a-fA-F]{32}$")
 COMMANDS = ("STATUS", "TX2_BENCH", "LISTEN", "HELLO", "REQUEST_A4", "REQUEST_0E",
-            "REQUEST_KOEO", "REQUEST_OFF", "STOP", "EXIT")
+            "REQUEST_KOEO", "REQUEST_OFF", "RMT_DUMP", "DE_BENCH", "STOP", "EXIT")
 CAR_TRANSMIT = frozenset(("HELLO", "REQUEST_A4", "REQUEST_0E", "REQUEST_KOEO", "REQUEST_OFF"))
 WIRE_COMMANDS = frozenset(("HELLO", "PINS", "STATUS", "TX2_BENCH", "LISTEN_9600", "OBSERVE", "ARM_A4",
                            "READ_A4", "ARM_0E", "READ_0E", "ARM_KOEO", "READ_KOEO",
-                           "ARM_OFF", "READ_OFF", "STOP"))
+                           "ARM_OFF", "READ_OFF", "RMT_DUMP", "DE_BENCH", "STOP"))
 # LHBH1 ch.13 DPS: module select 001, offline map FFF, DIAGMODE + frame length, qualifier.
 REQUEST_WORDS = {
     "A4": ("01B0", "FF5F", "26A4", "00A0"),
@@ -769,6 +769,16 @@ class BridgeClient:
             return
         if command == "TX2_BENCH":
             self._run_tx2_bench()
+            return
+        if command == "RMT_DUMP":
+            self._send("RMT_DUMP")
+            return
+        if command == "DE_BENCH":
+            # Drives DE with DI at idle MARK: only on a silent bus.
+            if not authorize(command):
+                self.display("Cancelled; no DE pulses.")
+                return
+            self._send("DE_BENCH")
             return
         if command == "HELLO" and self._hello_sent:
             raise BridgeError("HELLO already attempted this host session")

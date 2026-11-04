@@ -108,6 +108,22 @@ class Tx2SourceTests(unittest.TestCase):
         self.assertLess(native.index("uart_param_config(UART_NUM_2, &conf) != ESP_OK) return false"),
                         reset)
 
+    def test_de_gate_rearmed_every_slot_and_witnessed_at_tx_done(self) -> None:
+        """Regression: 2026-11-04 KOEO repeat blocks lost DE on channels 2/3."""
+        gate = self.source.split("void IRAM_ATTR startDeGate(uint8_t index) {", 1)[1].split("\n}\n", 1)[0]
+        order = [gate.index(s) for s in (
+            "conf1.tx_start = 0", "data32[0].val = kGateItem", "data32[1].val = 0",
+            "mem_rd_rst = 1", "func_sel = RMT_SIG_OUT2_IDX + index", "conf1.tx_start = 1")]
+        self.assertEqual(order, sorted(order))
+        slot = self.source.split("void IRAM_ATTR slotISR() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("startDeGate(index);", slot)
+        self.assertNotIn("tx_start = 1", slot)
+        done = self.source.split("void IRAM_ATTR uart2ISR(void*) {", 1)[1].split("\n}\n", 1)[0]
+        self.assertLess(done.index("deWasHigh = (GPIO.in & (1UL << kDE))"), done.index("deOff();"))
+        self.assertIn("faultISR(DE_MISSING)", done)
+        # 2180us HIGH, level 1; 80us LOW, level 0.
+        self.assertIn("kGateItem = 2180u | (1u << 15) | (80u << 16)", self.source)
+
     def test_cpp_rmt_decoder_positive_and_captured_v5_negative(self) -> None:
         if not shutil.which("g++"):
             self.skipTest("g++ not available for portable pure decoder harness")
