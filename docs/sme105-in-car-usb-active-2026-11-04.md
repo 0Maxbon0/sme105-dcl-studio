@@ -407,3 +407,20 @@ pad high before `deOff()` and faults `DE_MISSING` (18) otherwise. New
 `RMT_DUMP` (read-only) and `DE_BENCH` (DI held at idle MARK; quiet bus only).
 248 tests PASS. Image SHA-256
 `4a0aa283ccdc9fa24e695d355e6ee2cd131ee856ae6ca1aefe8c1f8072023dd7` (not yet flashed).
+
+## v13 verification (2026-11-04 ~17:43–17:48)
+
+- Boot-time `RMT_DUMP`: channels 2–5 item0 `0x508884` (gate pulse) but item1
+  random (`0x446B14E4`, `0x929FB412`, …) — **no end marker**. After each DE
+  pulse the RMT kept playing random items (output already detached from the
+  pad by `deOff()`), so a reused channel could still be busy and ignore
+  `tx_start`: root cause of the lost frame-0/1 DE in the KOEO repeat blocks.
+  Channel 6 (handshake) had a proper end marker (`item1=0x50`).
+- `DE_BENCH` (DI idle MARK, silent bus): 12/12 pulses low→high→low; afterwards
+  item1 = 0 and mem_owner = 0 on channels 2–5.
+- First `READ_0E` after the 17:43 key-on received no Echo ID ACK (`END
+  reason=4`, nothing further transmitted). At 17:47, after the owner's key
+  cycle (fuel pump primed and stopped normally), `HELLO` got the `01` ACK and
+  3984 CART bytes byte-identical (SHA-256 `ed478fcf…`) to the 13:54 capture.
+- `READ_OFF` with the TX_DONE DE witness: `01B0 FF5F 80CE 7F20` pad-verified,
+  no `DE_MISSING`, `offline_quiet_us=7601768`, following LISTEN 0 bytes.
