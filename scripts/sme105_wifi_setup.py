@@ -98,8 +98,10 @@ class UsbSetupClient:
         # encoded credential line; no generic arbitrary UART write interface.
         allowed = (
             command in (b"HELLO\n", b"STATUS\n", b"PINS\n",
-                        b"WIFI_STATUS\n", b"WIFI_TOKEN\n") or
-            bool(re.fullmatch(rb"WIFI_CONFIG [A-Za-z0-9+/=]+ [A-Za-z0-9+/=]+\n", command))
+                        b"WIFI_STATUS\n", b"WIFI_TOKEN\n",
+                        b"WIFI_AP_STATUS\n", b"WIFI_STA_MODE\n",
+                        b"WIFI_AP_MODE\n") or
+            bool(re.fullmatch(rb"WIFI_(?:AP_)?CONFIG [A-Za-z0-9+/=]+ [A-Za-z0-9+/=]+\n", command))
         )
         if not allowed:
             raise ProvisioningError("Non-provisioning USB command blocked")

@@ -1,6 +1,8 @@
 # SME105 Ford EEC-IV — AI Agent Engineering Handoff
 > Updated: 2026-11-04. Primary language with owner: Egyptian Arabic. This is a historical evidence-led handoff, NOT proof of a functional ECU DTC reader. Source: committed docs, raw captures, prior real device commands and current git inspection.
 
+> **2026-11-04 later update (supersedes the historical v7 installed status below):** Firmware **v9** was safely flashed USB application-only on the same ESP32 and confirmed **VALID**, accepted_version=9. A dedicated **WPA2 direct AP** now runs as SME105-DIRECT-2BF8 / **10.77.13.1:8765**; the laptop USB RT5370 at **10.77.13.2** authenticated TCP STATUS successfully while the internal Wi-Fi stayed on **Venom** for internet. Direct AP automatically rejoined after supervised desktop ESP32 reset. **This was a desk test; there has NOT yet been a v9 in-car range test or ECU DTC validation.** Read the full signed hashes, successes, failures, network adapter profile, safe setup/recovery and next-car checklist in **docs/sme105-direct-ap-v9-2026-11-04.md**. Later v9 results replace older lines below that explicitly describe the *previous* v7 hardware state; older event history remains valid.
+
 ## 1. Decision and status
 
 **LIMITED GO**: The ESP32 can return to the car for staged, protected **Wi-Fi stability, read-only STATUS, and if separately authorized, passive RX** testing. **NO-GO** for direct diagnostic A4/0E read, ECU actuation, or a promise to extract DTCs.

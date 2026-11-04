@@ -61,6 +61,11 @@ constexpr uint32_t kStaRetryMs = 10000;
 constexpr uint32_t kStaReinitMs = 60000; // escaped/failed reconnect: reapply NVS STA config
 constexpr uint32_t kListenerRetryMs = 3000;
 constexpr uint32_t kMdnsRetryMs = 10000;
+constexpr uint32_t kApRetryMs = 10000;
+// Dedicated USB Wi-Fi adapter uses 10.77.13.2/24 with no gateway or DNS.
+// Do not use a 192.168.x subnet: the host has multiple Docker bridges.
+const IPAddress kDirectApIp(10, 77, 13, 1);
+const IPAddress kDirectApMask(255, 255, 255, 0);
 constexpr size_t kOtaChunkSize = 512;
 // OTA v2 application-layer flow control: no more than 8 KiB accepted
 // before the authenticated uploader observes a monotonic progress ACK.
@@ -74,11 +79,11 @@ constexpr uint32_t kOtaOkDrainGraceMs = 1500;
 constexpr uint32_t kOtaRebootMaxDelayMs = 4500;
 constexpr uint32_t kOtaCurrentVersion = 1;
 // Physical USB application-only maintenance baseline for this build. This is
-// NOT used as the pre-verification OTA minimum: signed OTA version 7 must
-// still be able to boot PENDING_VERIFY from accepted version 5 and prove its
-// manifest before promoting ota_ver. On a known VALID app with NO pending
+// NOT used as the pre-verification OTA minimum: signed OTA installs must
+// still be able to boot PENDING_VERIFY from an older accepted version and
+// prove their manifest before promoting ota_ver. On a VALID app with NO pending
 // ledger, a supervised physical USB flash may adopt this build baseline.
-constexpr uint32_t kUsbInstalledBuildVersion = 7;
+constexpr uint32_t kUsbInstalledBuildVersion = 9;
 constexpr size_t kOtaAppSlotMax = 0x140000; // default 4MB ESP32 OTA partition table
 constexpr char kOtaPublisherPublicPEM[] =
   "-----BEGIN PUBLIC KEY-----\n"
@@ -252,6 +257,7 @@ Preferences wifiPrefs;
 WiFiServer wifiServer(kWiFiPort);
 WiFiClient wifiClient;
 bool wifiConfigured = false, tcpAuthenticated = false;
+bool wifiApMode = false, wifiApReady = false;
 bool tcpHadActiveSession = false;
 bool wifiServerStarted = false;
 bool prefsReady = false, mdnsStarted = false, commandFromUSB = true;
@@ -264,8 +270,10 @@ uint32_t transportFaults = 0;
 // Wi-Fi event callbacks execute on Arduino's event task. They only record
 // fixed-width diagnostics, never touch UART/DE, NVS, sockets or Wi-Fi APIs.
 volatile uint32_t wifiDisconnectEvents = 0, wifiGotIpEvents = 0;
+volatile uint32_t wifiApStopEvents = 0;
 volatile uint8_t wifiLastDisconnectReason = 0;
 uint32_t wifiLastHandledIpEvent = 0, wifiOfflineSinceMs = 0;
+uint32_t wifiLastHandledApStopEvent = 0, wifiLastApAttemptMs = 0;
 uint32_t wifiLastStaReinitMs = 0;
 uint32_t wifiLastServerAttemptMs = 0, wifiLastMdnsAttemptMs = 0;
 uint32_t wifiRetryAttempts = 0, wifiStaReinitializations = 0;
@@ -899,6 +907,10 @@ void onStaDisconnect(WiFiEvent_t, WiFiEventInfo_t info) {
 void onStaGotIp(WiFiEvent_t, WiFiEventInfo_t) {
   ++wifiGotIpEvents;
 }
+void onApStop(WiFiEvent_t, WiFiEventInfo_t) {
+  // Event task: counters only. Never touch sockets, NVS, ISR or vehicle bus.
+  ++wifiApStopEvents;
+}
 // Integral action result avoids Arduino's generated forward declarations
 // depending on a locally declared enum before it is defined.
 constexpr int kWiFiRecoveryNone = 0, kWiFiRecoveryReconnect = 1;
@@ -918,8 +930,12 @@ bool listenerRetryDue(uint32_t now, uint32_t lastAttempt) {
   return lastAttempt == 0 ||
       static_cast<uint32_t>(now - lastAttempt) >= kListenerRetryMs;
 }
+bool directApRetryDue(uint32_t now, uint32_t lastAttempt, bool vehicleActive) {
+  return !vehicleActive && (lastAttempt == 0 ||
+      static_cast<uint32_t>(now - lastAttempt) >= kApRetryMs);
+}
 void startSta() {
-  if (!wifiConfigured || !prefsReady || busSessionActive()) return;
+  if (wifiApMode || !wifiConfigured || !prefsReady || busSessionActive()) return;
   const String ssid = wifiPrefs.getString("ssid", "");
   const String pass = wifiPrefs.getString("pass", "");
   if (ssid.length() < 1 || ssid.length() > 32 ||
@@ -927,7 +943,7 @@ void startSta() {
     wifiConfigured = false;
     return;
   }
-  WiFi.mode(WIFI_STA); // NEVER enable an access point
+  WiFi.mode(WIFI_STA); // A station is enabled only when USB chose STA mode
   WiFi.persistent(false);
   WiFi.setHostname("sme105-bridge");
   // Disable modem sleep for a low-latency always-on STA bridge. This uses
@@ -938,9 +954,34 @@ void startSta() {
   WiFi.begin(ssid.c_str(), pass.c_str()); // asynchronous; no waiting or retry TX
   wifiLastRetryMs = millis();
 }
+void startDirectAp() {
+  if (!wifiApMode || !wifiConfigured || !prefsReady || busSessionActive()) return;
+  const String ssid = wifiPrefs.getString("ap_ssid", "");
+  const String pass = wifiPrefs.getString("ap_pass", "");
+  if (ssid.length() < 1 || ssid.length() > 32 ||
+      pass.length() < 16 || pass.length() > 63) {
+    wifiApReady = false;
+    return;
+  }
+  wifiLastApAttemptMs = millis();
+  // AP-only avoids association/reinitialization with the distant home router
+  // interrupting field collection. Strong WPA2 PSK is USB provisioned in NVS.
+  WiFi.mode(WIFI_AP);
+  WiFi.persistent(false);
+  const bool configured = WiFi.softAPConfig(kDirectApIp, kDirectApIp, kDirectApMask);
+  const bool started = configured && WiFi.softAP(ssid.c_str(), pass.c_str(), 6, 0, 1);
+  wifiApReady = started && WiFi.softAPIP() == kDirectApIp;
+  if (!wifiApReady) WiFi.softAPdisconnect(true);
+}
+bool networkOnline() {
+  return wifiApMode ? wifiApReady && WiFi.getMode() == WIFI_AP &&
+                        WiFi.softAPIP() == kDirectApIp :
+                      WiFi.status() == WL_CONNECTED;
+}
 void initializeWiFi() {
   WiFi.onEvent(onStaDisconnect, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
   WiFi.onEvent(onStaGotIp, ARDUINO_EVENT_WIFI_STA_GOT_IP);
+  WiFi.onEvent(onApStop, ARDUINO_EVENT_WIFI_AP_STOP);
   prefsReady = wifiPrefs.begin("sme105wifi", false);
   if (!prefsReady) { WiFi.mode(WIFI_OFF); return; }
   const String savedToken = wifiPrefs.getString("token", "");
@@ -953,9 +994,18 @@ void initializeWiFi() {
   }
   const String ssid = wifiPrefs.getString("ssid", "");
   const String pass = wifiPrefs.getString("pass", "");
-  wifiConfigured = ssid.length() >= 1 && ssid.length() <= 32 &&
-                   pass.length() >= 8 && pass.length() <= 63;
-  if (wifiConfigured) startSta();
+  wifiApMode = wifiPrefs.getBool("ap_mode", false);
+  if (wifiApMode) {
+    const String apSsid = wifiPrefs.getString("ap_ssid", "");
+    const String apPass = wifiPrefs.getString("ap_pass", "");
+    wifiConfigured = apSsid.length() >= 1 && apSsid.length() <= 32 &&
+                     apPass.length() >= 16 && apPass.length() <= 63;
+  } else {
+    wifiConfigured = ssid.length() >= 1 && ssid.length() <= 32 &&
+                     pass.length() >= 8 && pass.length() <= 63;
+  }
+  if (wifiConfigured && wifiApMode) startDirectAp();
+  else if (wifiConfigured) startSta();
   else WiFi.mode(WIFI_OFF);
 }
 
@@ -1079,7 +1129,7 @@ void serviceOtaHealthAndRestart() {
        validHexToken(wifiToken) && hardwareSafe && !otaBootHealthFailed;
   // A connected STA alone is not enough for a device that must remain
   // remotely maintainable. Its authenticated TCP listener must also be up.
-  const bool networkReady = WiFi.status() == WL_CONNECTED &&
+  const bool networkReady = networkOnline() &&
                             wifiServerStarted && static_cast<bool>(wifiServer);
   // Do not mark an OTA image VALID before its authenticated OTA_CONFIRM OK
   // reply has actually drained onto the authenticated TCP socket.
@@ -1118,10 +1168,10 @@ void serviceOtaHealthAndRestart() {
 void printWiFiStatus() {
   out.print(F("WIFI_STATUS state="));
   if (!wifiConfigured) out.print(F("DISABLED"));
-  else if (WiFi.status() == WL_CONNECTED) out.print(F("CONNECTED"));
+  else if (networkOnline()) out.print(F("CONNECTED"));
   else out.print(F("CONNECTING"));
   out.print(F(" ip="));
-  if (wifiConfigured && WiFi.status() == WL_CONNECTED) out.print(WiFi.localIP());
+  if (networkOnline()) out.print(wifiApMode ? WiFi.softAPIP() : WiFi.localIP());
   else out.print(F("0.0.0.0"));
   out.print(F(" port=")); out.print(kWiFiPort);
   out.print(F(" clients=")); out.print(tcpAuthenticated ? 1 : 0);
@@ -1142,42 +1192,67 @@ void printWiFiDiag() {
   out.print(F(" listener=")); out.print(wifiServerStarted && static_cast<bool>(wifiServer) ? 1 : 0);
   out.print(F(" mdns=")); out.print(mdnsStarted ? 1 : 0);
   out.print(F(" offline_ms=")); out.print(wifiWasOffline ? millis() - wifiOfflineSinceMs : 0);
-  out.print(F(" rssi=")); out.println(WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0);
+  out.print(F(" rssi=")); out.print(!wifiApMode && networkOnline() ? WiFi.RSSI() : 0);
+  out.print(F(" mode=")); out.print(wifiApMode ? F("AP") : F("STA"));
+  out.print(F(" ap_clients=")); out.print(wifiApMode && networkOnline() ? WiFi.softAPgetStationNum() : 0);
+  out.print(F(" ap_stops=")); out.println(wifiApStopEvents);
 }
-void processWiFiProvision(const char* command) {
-  if (!commandFromUSB) { out.println(F("DENIED usb_only")); return; }
-  if (busSessionActive() || stage == FINISHING) {
-    out.println(F("DENIED wifi_busy")); return;
-  }
-  constexpr size_t prefix = sizeof("WIFI_CONFIG ") - 1;
-  const char* left = command + prefix;
+void printWiFiApStatus() {
+  // AP SSID is a public radio name; PSK and control token never leave NVS.
+  out.print(F("WIFI_AP_STATUS mode=")); out.print(wifiApMode ? F("AP") : F("STA"));
+  out.print(F(" state=")); out.print(wifiApMode && networkOnline() ? F("ACTIVE") : F("INACTIVE"));
+  out.print(F(" ip=")); out.print(wifiApMode && networkOnline() ? WiFi.softAPIP() : IPAddress(0,0,0,0));
+  out.print(F(" stations=")); out.print(wifiApMode && networkOnline() ? WiFi.softAPgetStationNum() : 0);
+  out.println(F(" channel=6 port=8765 wpa2=1"));
+}
+bool decodeWiFiCredentials(const char* command, size_t prefixLen,
+                            char (&ssid)[33], char (&password)[64],
+                            size_t &sn, size_t &pn, size_t minPassword) {
+  const char* left = command + prefixLen;
   const char* space = strchr(left, ' ');
-  if (!space || strchr(space + 1, ' ') || !prefsReady || !validHexToken(wifiToken)) {
-    out.println(F("DENIED wifi_config_invalid")); return;
-  }
+  if (!space || strchr(space + 1, ' ')) return false;
   char encSSID[48] = {};
-  char ssid[33] = {}, password[64] = {};
   const size_t firstLen = static_cast<size_t>(space - left);
-  size_t sn = 0, pn = 0;
+  sn = 0; pn = 0;
   bool okay = firstLen > 0 && firstLen < sizeof encSSID;
   if (okay) { memcpy(encSSID, left, firstLen); encSSID[firstLen] = 0; }
   okay = okay && validBase64(encSSID, 44) && validBase64(space + 1, 84) &&
          decodeBase64(encSSID, ssid, sizeof ssid, sn) &&
          decodeBase64(space + 1, password, sizeof password, pn) &&
-         sn >= 1 && sn <= 32 && pn >= 8 && pn <= 63;
+         sn >= 1 && sn <= 32 && pn >= minPassword && pn <= 63;
   for (size_t i = 0; okay && i < sn; ++i)
-    if (static_cast<uint8_t>(ssid[i]) < 32) okay = false;
+    if (static_cast<uint8_t>(ssid[i]) < 32 ||
+        static_cast<uint8_t>(ssid[i]) == 127) okay = false;
   for (size_t i = 0; okay && i < pn; ++i)
     if (static_cast<uint8_t>(password[i]) < 32 ||
         static_cast<uint8_t>(password[i]) > 126) okay = false;
+  clearSecrets(encSSID, sizeof(encSSID));
+  return okay;
+}
+void processWiFiProvision(const char* command) {
+  if (!commandFromUSB) { out.println(F("DENIED usb_only")); return; }
+  if (busSessionActive() || stage == FINISHING ||
+      otaUpdating() || otaFirstBootPending) {
+    out.println(F("DENIED wifi_busy")); return;
+  }
+  constexpr size_t prefix = sizeof("WIFI_CONFIG ") - 1;
+  if (!prefsReady || !validHexToken(wifiToken)) {
+    out.println(F("DENIED wifi_config_invalid")); return;
+  }
+  char ssid[33] = {}, password[64] = {};
+  size_t sn = 0, pn = 0;
+  bool okay = decodeWiFiCredentials(command, prefix, ssid, password, sn, pn, 8);
   if (okay) {
     dropTcpClient(false);
     if (wifiServerStarted) { wifiServer.end(); wifiServerStarted = false; }
     if (mdnsStarted) { MDNS.end(); mdnsStarted = false; }
+    if (wifiApMode) { WiFi.softAPdisconnect(true); wifiApReady = false; }
     WiFi.disconnect(true, false);
     const bool saved = wifiPrefs.putString("ssid", ssid) == sn &&
-                       wifiPrefs.putString("pass", password) == pn;
+                       wifiPrefs.putString("pass", password) == pn &&
+                       wifiPrefs.putBool("ap_mode", false) == 1;
     if (saved) {
+      wifiApMode = false;
       wifiConfigured = true;
       startSta();
       out.println(F("WIFI_CONFIG OK saved=1 reconnecting=1"));
@@ -1190,7 +1265,121 @@ void processWiFiProvision(const char* command) {
   } else out.println(F("DENIED wifi_config_invalid"));
   clearSecrets(password, sizeof(password));
   clearSecrets(ssid, sizeof(ssid));
-  clearSecrets(encSSID, sizeof(encSSID));
+}
+void processDirectApProvision(const char* command) {
+  if (!commandFromUSB) { out.println(F("DENIED usb_only")); return; }
+  if (busSessionActive() || stage == FINISHING ||
+      otaUpdating() || otaFirstBootPending || !prefsReady ||
+      !validHexToken(wifiToken)) {
+    out.println(F("DENIED wifi_ap_busy")); return;
+  }
+  // Refuse in-place AP PSK rewrites. NVS contains two individual strings;
+  // a partial write could otherwise destroy an already working direct link.
+  // The existing credentials are reusable via WIFI_AP_MODE.
+  const bool hadApSsid = wifiPrefs.isKey("ap_ssid");
+  const bool hadApPass = wifiPrefs.isKey("ap_pass");
+  if (wifiApMode || (hadApSsid && hadApPass)) {
+    out.println(F("DENIED wifi_ap_config_exists")); return;
+  }
+  char ssid[33] = {}, password[64] = {};
+  size_t sn = 0, pn = 0;
+  const bool valid = decodeWiFiCredentials(
+      command, sizeof("WIFI_AP_CONFIG ") - 1, ssid, password, sn, pn, 16);
+  if (!valid) {
+    clearSecrets(password, sizeof(password));
+    clearSecrets(ssid, sizeof(ssid));
+    out.println(F("DENIED wifi_ap_invalid"));
+    return;
+  }
+  // Interrupted first-time provisioning may have committed only one of the
+  // two NVS keys. Remove precisely that incomplete half, then retry with the
+  // same USB-supplied credentials. NEVER overwrite a complete AP pair.
+  if (hadApSsid != hadApPass &&
+      ((hadApSsid && !wifiPrefs.remove("ap_ssid")) ||
+       (hadApPass && !wifiPrefs.remove("ap_pass")))) {
+    clearSecrets(password, sizeof(password));
+    clearSecrets(ssid, sizeof(ssid));
+    out.println(F("DENIED wifi_ap_nvs_failed"));
+    return;
+  }
+  // NVS stores AP secrets privately; AP isn't activated until the commit flag.
+  // On failed writes, fail closed rather than silently selecting an open AP.
+  const bool saved = wifiPrefs.putString("ap_ssid", ssid) == sn &&
+                     wifiPrefs.putString("ap_pass", password) == pn &&
+                     wifiPrefs.putBool("ap_mode", true) == 1;
+  clearSecrets(password, sizeof(password));
+  clearSecrets(ssid, sizeof(ssid));
+  if (!saved) {
+    wifiPrefs.remove("ap_mode");
+    wifiPrefs.remove("ap_ssid");
+    wifiPrefs.remove("ap_pass");
+    out.println(F("DENIED wifi_ap_nvs_failed"));
+    return;
+  }
+  dropTcpClient(false);
+  if (wifiServerStarted) { wifiServer.end(); wifiServerStarted = false; }
+  if (mdnsStarted) { MDNS.end(); mdnsStarted = false; }
+  WiFi.disconnect(true, false);
+  wifiApMode = true;
+  wifiApReady = false;
+  wifiConfigured = true;
+  startDirectAp();
+  out.println(F("WIFI_AP_CONFIG OK saved=1 starting=1"));
+}
+void selectStaMode() {
+  if (!commandFromUSB) { out.println(F("DENIED usb_only")); return; }
+  if (busSessionActive() || stage == FINISHING || otaUpdating() ||
+      otaFirstBootPending || !prefsReady) {
+    out.println(F("DENIED wifi_busy")); return;
+  }
+  const String ssid = wifiPrefs.getString("ssid", "");
+  const String pass = wifiPrefs.getString("pass", "");
+  if (ssid.length() < 1 || ssid.length() > 32 ||
+      pass.length() < 8 || pass.length() > 63 ||
+      wifiPrefs.putBool("ap_mode", false) != 1) {
+    out.println(F("DENIED wifi_sta_unavailable")); return;
+  }
+  dropTcpClient(false);
+  if (wifiServerStarted) { wifiServer.end(); wifiServerStarted = false; }
+  if (mdnsStarted) { MDNS.end(); mdnsStarted = false; }
+  if (wifiApMode) WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_OFF);
+  wifiApMode = false;
+  wifiApReady = false;
+  wifiConfigured = true;
+  startSta();
+  out.println(F("WIFI_STA_MODE OK reconnecting=1"));
+}
+void selectApMode() {
+  if (!commandFromUSB) { out.println(F("DENIED usb_only")); return; }
+  if (busSessionActive() || stage == FINISHING || otaUpdating() ||
+      otaFirstBootPending || !prefsReady || !validHexToken(wifiToken)) {
+    out.println(F("DENIED wifi_busy")); return;
+  }
+  const String ssid = wifiPrefs.getString("ap_ssid", "");
+  const String pass = wifiPrefs.getString("ap_pass", "");
+  if (ssid.length() < 1 || ssid.length() > 32 ||
+      pass.length() < 16 || pass.length() > 63) {
+    out.println(F("DENIED wifi_ap_unavailable")); return;
+  }
+  if (wifiApMode) {
+    // Explicit USB recovery must not acknowledge "starting" while waiting
+    // for the automatic 10-second retry window after a stopped AP.
+    if (!networkOnline()) startDirectAp();
+    out.println(F("WIFI_AP_MODE OK starting=1")); return;
+  }
+  if (wifiPrefs.putBool("ap_mode", true) != 1) {
+    out.println(F("DENIED wifi_ap_nvs_failed")); return;
+  }
+  dropTcpClient(false);
+  if (wifiServerStarted) { wifiServer.end(); wifiServerStarted = false; }
+  if (mdnsStarted) { MDNS.end(); mdnsStarted = false; }
+  WiFi.disconnect(true, false);
+  wifiApMode = true;
+  wifiApReady = false;
+  wifiConfigured = true;
+  startDirectAp();
+  out.println(F("WIFI_AP_MODE OK starting=1"));
 }
 
 void IRAM_ATTR deOff() {
@@ -2177,13 +2366,28 @@ void pollWiFi() {
     if (signedOta.phase == OtaPhase::Receiving) abortSignedOta("wifi_unavailable");
     return;
   }
-  if (WiFi.status() != WL_CONNECTED) {
+  if (wifiApMode && wifiApStopEvents != wifiLastHandledApStopEvent) {
+    wifiLastHandledApStopEvent = wifiApStopEvents;
+    // A delayed AP_STOP from an earlier intentional STA/AP mode switch must
+    // not tear down a newly live AP. Cross-check actual current radio mode/IP
+    // before revoking a controller. Genuine loss is also checked below.
+    if (!networkOnline()) wifiApReady = false;
+  }
+  if (!networkOnline()) {
     if (signedOta.phase == OtaPhase::Receiving) abortSignedOta("wifi_disconnected");
     if (wifiClient.fd() >= 0 || tcpAuthenticated) dropTcpClient(tcpAuthenticated);
     if (wifiServerStarted) { wifiServer.end(); wifiServerStarted = false; }
     if (mdnsStarted) { MDNS.end(); mdnsStarted = false; }
     const uint32_t now = millis();
     if (!wifiWasOffline) { wifiWasOffline = true; wifiOfflineSinceMs = now; }
+    if (wifiApMode) {
+      // Never scan/reassociate with the distant router while in direct mode.
+      // Restart a stopped AP only from the normal task loop, never inside
+      // the event callback or while an ECU timing session is active.
+      if (directApRetryDue(now, wifiLastApAttemptMs, busSessionActive()))
+        startDirectAp();
+      return;
+    }
     // Arduino's auto-reconnect is reason-dependent. Explicit bounded retries
     // also cover NO_AP_FOUND and failed authentication/reassociation.
     // Never reconfigure STA or touch NVS during active vehicle timing.
@@ -2207,9 +2411,8 @@ void pollWiFi() {
   wifiWasOffline = false;
   // IP renewal while still associated can invalidate every existing socket.
   // Never preserve a previous controller's authentication across a lease.
-  const uint32_t ipGeneration = wifiGotIpEvents;
-  if (ipGeneration != wifiLastHandledIpEvent) {
-    wifiLastHandledIpEvent = ipGeneration;
+  if (!wifiApMode && wifiGotIpEvents != wifiLastHandledIpEvent) {
+    wifiLastHandledIpEvent = wifiGotIpEvents;
     if (wifiClient.fd() >= 0 || tcpAuthenticated) dropTcpClient(tcpAuthenticated);
     if (wifiServerStarted) { wifiServer.end(); wifiServerStarted = false; }
     if (mdnsStarted) { MDNS.end(); mdnsStarted = false; }
@@ -2353,8 +2556,14 @@ void runCommand(const char* cmd) {
   if (!strncmp(cmd, "WIFI_CONFIG ", sizeof("WIFI_CONFIG ") - 1)) {
     processWiFiProvision(cmd); return;
   }
+  if (!strncmp(cmd, "WIFI_AP_CONFIG ", sizeof("WIFI_AP_CONFIG ") - 1)) {
+    processDirectApProvision(cmd); return;
+  }
+  if (!strcmp(cmd, "WIFI_STA_MODE")) { selectStaMode(); return; }
+  if (!strcmp(cmd, "WIFI_AP_MODE")) { selectApMode(); return; }
   if (!strcmp(cmd, "WIFI_STATUS")) { printWiFiStatus(); return; }
   if (!strcmp(cmd, "WIFI_DIAG")) { printWiFiDiag(); return; }
+  if (!strcmp(cmd, "WIFI_AP_STATUS")) { printWiFiApStatus(); return; }
   if (!strcmp(cmd, "WIFI_TOKEN")) {
     if (!commandFromUSB) { out.println(F("DENIED usb_only")); return; }
     if (busSessionActive() || !prefsReady || !validHexToken(wifiToken)) {
@@ -2366,7 +2575,8 @@ void runCommand(const char* cmd) {
   }
   if (!strcmp(cmd, "WIFI_FORGET")) {
     if (!commandFromUSB) { out.println(F("DENIED usb_only")); return; }
-    if (busSessionActive() || stage == FINISHING || !prefsReady) {
+    if (busSessionActive() || stage == FINISHING || !prefsReady ||
+        otaUpdating() || otaFirstBootPending) {
       out.println(F("DENIED wifi_busy")); return;
     }
     dropTcpClient(false);
@@ -2375,6 +2585,12 @@ void runCommand(const char* cmd) {
     wifiConfigured = false;
     wifiPrefs.remove("ssid");
     wifiPrefs.remove("pass");
+    wifiPrefs.remove("ap_ssid");
+    wifiPrefs.remove("ap_pass");
+    wifiPrefs.remove("ap_mode");
+    if (wifiApMode) WiFi.softAPdisconnect(true);
+    wifiApMode = false;
+    wifiApReady = false;
     WiFi.disconnect(true, true);
     WiFi.mode(WIFI_OFF);
     if (!generateToken()) out.println(F("DENIED wifi_unready"));
@@ -2391,7 +2607,8 @@ void runCommand(const char* cmd) {
   if (!strcmp(cmd, "HELP")) {
     out.println(F("COMMANDS HELLO HELP STATUS PINS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E STOP RESET_IDLE"));
     out.println(F("READ_* requires exact 4/4 TX2_BENCH pad pass this boot plus matching ARM_* within 15s; no automatic TX"));
-    out.println(F("WIFI USB_ONLY: WIFI_CONFIG <SSID_BASE64> <PASSWORD_BASE64> | WIFI_TOKEN | WIFI_FORGET; WIFI_STATUS WIFI_DIAG read-only"));
+    out.println(F("WIFI USB_ONLY: WIFI_CONFIG <SSID_B64> <PASS_B64> | WIFI_AP_CONFIG <SSID_B64> <PASS_B64> | WIFI_STA_MODE WIFI_AP_MODE | WIFI_TOKEN | WIFI_FORGET"));
+    out.println(F("WIFI read-only: WIFI_STATUS WIFI_DIAG WIFI_AP_STATUS; AP-only 10.77.13.1/24 WPA2 and authenticated TCP/8765"));
     out.println(F("OTA authenticated TCP: OTA_STATUS OTA_DIAG OTA_BEGIN2 <size> <sha256_lowerhex> <version> <P256_signature_DER_base64>; then 8192-byte windows plus OTA_PROGRESS received=<n>; final OTA_OK; OTA_CONFIRM after reboot"));
     return;
   }
@@ -2462,7 +2679,7 @@ void setup() {
   stopLatched = true;
   out.println(F("BOOT SME105_USB_BRIDGE_V1 no_auto_tx=1 DE=LOW source_commands_unverified=1"));
   if (!gateReady || !deTimer || !slotTimer) out.println(F("FAULT reason=HARDWARE_INIT no_transmit=1"));
-  initializeWiFi(); // STA credentials + token from NVS; NEVER starts ECU TX
+  initializeWiFi(); // selected STA/AP credentials + token from NVS; NEVER starts ECU TX
   initializeOtaBootHealth();
 }
 void loop() {

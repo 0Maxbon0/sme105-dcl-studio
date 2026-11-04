@@ -35,10 +35,12 @@ This is a local pad witness, **not** independent A/B or ECU-ownership proof.
 - No automatic ECU transmission at boot, no arbitrary hexadecimal writes,
   no error clearing, self-test, actuator control or unsupported opcodes.
 
-## Persistent Wi-Fi STA: provision over USB once, use Wi-Fi after every reboot
+## Persistent Wi-Fi: normal station or optional direct WPA2 AP
 
-The ESP32 uses **2.4 GHz Wi-Fi STA only** (your existing home/router or phone
-hotspot); it never creates an unsecured access point. The SSID and WPA2
+In normal **STA mode** the ESP32 uses an existing 2.4 GHz router or hotspot.
+In explicitly **USB-provisioned direct AP-only mode** (v8), it broadcasts
+one private WPA2 network to the laptop's separate USB Wi-Fi adapter, with no
+home-router dependency. It never creates an *open* hotspot. The STA SSID and WPA2
 passphrase are saved to ESP32 Preferences/NVS (`sme105wifi` namespace), and
 the bridge automatically attempts to reconnect after ordinary power cycles or
 coverage loss. The v7 recovery logic keeps modem sleep disabled, retries STA
@@ -48,9 +50,10 @@ outage (at most once every 60 seconds). It never erases NVS to reconnect.
 After an IP renewal, it discards the old TCP authentication, restarts the
 listener, and retries any failed TCP bind/listen at 3-second intervals. mDNS
 registration retries independently every 10 seconds while connected. All of
-these operations are suppressed during an active vehicle session. The
-router/hotspot must be running and the laptop or phone
-must be on the same local Wi-Fi network. **No ECU command is sent at boot,
+these operations are suppressed during an active vehicle session. In STA
+mode the router/hotspot must be running and the laptop or phone must be on
+that LAN. In direct AP mode the laptop's separate USB Wi-Fi adapter connects
+to the ESP32 instead. **No ECU command is sent at boot,
 reconnect, authentication or power-on.** There is no need to flash different
 images for USB versus Wi-Fi operations.
 
@@ -84,7 +87,7 @@ WIFI_TOKEN <32-lowercase-hex-characters>
 only**, never through TCP or the mirrored RAW output stream. The token is
 generated with ESP32 hardware entropy and persists in NVS across power
 cycles. Keep it secret and do not put it in log files. `WIFI_FORGET` (USB
-only, idle) removes Wi-Fi credentials, disconnects STA, and rotates the
+only, idle) removes *both STA and AP* Wi-Fi credentials, stops Wi-Fi and rotates the
 authentication token; it **does not reset** the once-per-boot diagnostic or
 OBSERVE attempt counters. Use `WIFI_STATUS` to see the current IPv4 address;
 `sme105-bridge.local` is an mDNS convenience name and may not resolve on all
@@ -100,6 +103,62 @@ alone establish weak RF, a brownout, or wiring defects. A connected client
 can request it after returning to coverage. A 5–10m distance and one wall do
 not guarantee a reliable 2.4GHz link: power stability, antenna placement,
 router isolation, channel interference and the actual RSSI still matter.
+On v9 it additionally reports `mode=STA/AP`, `ap_clients` and `ap_stops`.
+In AP mode `rssi=0` indicates no STA RSSI measurement, **not 0 dBm**.
+
+### Dedicated direct link: ESP32 AP to RT5370 USB adapter
+
+The owner has one internal laptop Wi-Fi interface `wlp9s0` for `Venom`
+internet and an independent USB RT5370 (`wlx1cbfce64dd94`) for the
+ESP32. **The ESP32 acts as AP; the laptop USB adapter as client.** AP-only
+is chosen because distant-home STA reconnection must not interrupt a live
+in-car field capture.
+
+- ESP32 WPA2 SSID: `SME105-DIRECT-2BF8`. Private 32-character random
+  passphrase is generated and saved under
+  `~/.config/sme105/direct-ap-pass` (owner-only mode 0600), **not in Git**.
+- Fixed ESP32 IP: **10.77.13.1/24**, authenticated TCP **8765**, one
+  associated client. Laptop USB static IP: **10.77.13.2/24**.
+- No default gateway, DNS or internet on the USB Wi-Fi profile. Internet stays
+  on the internal `wlp9s0` / `Venom` interface. This avoids the many
+  host Docker bridges in `192.168.x` ranges.
+- AP mode and WPA2 secret are saved in NVS and restart after power loss;
+  no phone/router is needed. The previous STA SSID/password stay saved for
+  reversal by USB command `WIFI_STA_MODE`.
+- On unexpected AP stop the firmware revokes TCP authority and retries AP
+  startup after 10s when no vehicle session is in progress. AP status is
+  available over physical USB or authenticated TCP:
+  `WIFI_AP_STATUS mode=AP state=ACTIVE ip=10.77.13.1 stations=1 channel=6 port=8765 wpa2=1`.
+
+After supervised **application-only v9 flashing** on an isolated desk and
+positive USB STATUS/OTA_STATUS validation, the provisioning helper does the
+USB-only PSK setup and laptop's NetworkManager profile automatically:
+
+```bash
+./.venv/bin/python scripts/sme105_direct_ap_setup.py
+```
+
+It verifies exact device identity, safe IDLE/DE status and GPIO topology,
+generates a random PSK, sends `WIFI_AP_CONFIG <SSID_BASE64> <PSK_BASE64>`
+only on USB, waits for AP ACTIVE, creates a USB-interface-specific
+NetworkManager connection and supplies the PSK through the restricted system
+Python D-Bus helper `scripts/sme105_nm_usb_secret.py`, without putting it in
+process arguments. The helper requires `python3-dbus` and an existing valid
+private TCP authorization token `~/.config/sme105/bridge-token`. It verifies
+that `ip route get 10.77.13.1` selects the USB adapter
+and `ip route get 1.1.1.1` still selects the internal `wlp9s0` internet.
+
+When using the bridge remotely:
+
+```bash
+PYTHONPATH=src ./.venv/bin/python scripts/sme105_usb_bridge.py --host 10.77.13.1 --command STATUS
+```
+
+**Never use the host CLI's `--command HELLO` to check connectivity**: that
+host alias maps to *active OBSERVE* (vehicle Echo-ID/Go-CART transmit).
+Authentication still uses the same previously provisioned TCP token. AP
+enabling, Wi-Fi reconnection, authentication and host network setup do not
+send any ECU commands. This desk result does not prove vehicle power/RF range.
 
 ### Authenticated TCP console (PC or smartphone)
 
@@ -127,7 +186,8 @@ behind, stale USB bytes are discarded with a monotonically counted
 `usb_skipped` field in `STATUS` (also shown in `OTA_DIAG`). USB-only sessions
 still require USB delivery and fail closed on bounded output backpressure.
 
-`WIFI_CONFIG`, `WIFI_TOKEN` and `WIFI_FORGET` **cannot** be invoked from
+`WIFI_CONFIG`, `WIFI_AP_CONFIG`, `WIFI_STA_MODE`, `WIFI_AP_MODE`,
+`WIFI_TOKEN` and `WIFI_FORGET` **cannot** be invoked from
 Wi-Fi, even after authentication. A pending `ARM_A4` or `ARM_0E` can only be
 used for `READ_*` by **the same originating transport** (USB-to-USB or
 authenticated-TCP-to-that-TCP). Wi-Fi disconnection revokes pending Wi-Fi

@@ -23,7 +23,7 @@ class WiFiRecoveryTests(unittest.TestCase):
         code = self.code
         section = code.split("// Integral action result", 1)[1].split("void startSta()", 1)[0]
         values: list[str] = []
-        for name in ("kStaRetryMs", "kStaReinitMs", "kListenerRetryMs"):
+        for name in ("kStaRetryMs", "kStaReinitMs", "kListenerRetryMs", "kApRetryMs"):
             match = re.search(r"constexpr uint32_t " + name + r" = (\d+);", code)
             self.assertIsNotNone(match)
             values.append(f"constexpr uint32_t {name} = {match.group(1)};")
@@ -45,6 +45,11 @@ int main() {{
   assert(!listenerRetryDue(5999,3000));
   assert(listenerRetryDue(6000,3000));
   assert(listenerRetryDue(0x100,0xfffff000));
+  assert(directApRetryDue(10000,0,false));
+  assert(!directApRetryDue(10000,5000,false));
+  assert(directApRetryDue(15000,5000,false));
+  assert(!directApRetryDue(15000,5000,true));
+  assert(directApRetryDue(0x100,0xffffd000,false));
 }}
 """
         with tempfile.TemporaryDirectory() as folder:
@@ -87,7 +92,7 @@ int main() {{
         self.assertIn("otaFirstBootPending = true", boot)
         self.assertIn("otaBootHealthFailed = true", boot)
         self.assertIn("constexpr uint32_t kOtaCurrentVersion = 1", code)
-        self.assertIn("constexpr uint32_t kUsbInstalledBuildVersion = 7", code)
+        self.assertIn("constexpr uint32_t kUsbInstalledBuildVersion = 9", code)
 
 
 if __name__ == "__main__":
