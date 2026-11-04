@@ -92,7 +92,7 @@ int main() {{
         self.assertIn("otaFirstBootPending = true", boot)
         self.assertIn("otaBootHealthFailed = true", boot)
         self.assertIn("constexpr uint32_t kOtaCurrentVersion = 1", code)
-        self.assertIn("constexpr uint32_t kUsbInstalledBuildVersion = 15", code)
+        self.assertIn("constexpr uint32_t kUsbInstalledBuildVersion = 16", code)
 
 
 if __name__ == "__main__":

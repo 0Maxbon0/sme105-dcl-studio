@@ -92,7 +92,7 @@ constexpr uint32_t kOtaCurrentVersion = 1;
 // still be able to boot PENDING_VERIFY from an older accepted version and
 // prove their manifest before promoting ota_ver. On a VALID app with NO pending
 // ledger, a supervised physical USB flash may adopt this build baseline.
-constexpr uint32_t kUsbInstalledBuildVersion = 15;
+constexpr uint32_t kUsbInstalledBuildVersion = 16;
 constexpr size_t kOtaAppSlotMax = 0x140000; // default 4MB ESP32 OTA partition table
 constexpr char kOtaPublisherPublicPEM[] =
   "-----BEGIN PUBLIC KEY-----\n"
@@ -284,6 +284,17 @@ class BridgeOutput : public Print {
                  std::min(static_cast<size_t>(256), kWireQueueSize - (usbRead_ & (kWireQueueSize - 1)))));
     usbRead_ += Serial.write(bytes_ + (usbRead_ & (kWireQueueSize - 1)), len);
   }
+#ifdef SME105_BLE
+  void drainBLE() {
+    if (tcpRead_ == write_) return;
+    const size_t room = ble_transport::writable();
+    if (!room) return;
+    const size_t len = std::min(room, std::min(static_cast<size_t>(write_ - tcpRead_),
+        std::min(static_cast<size_t>(256), kWireQueueSize - (tcpRead_ & (kWireQueueSize - 1)))));
+    tcpRead_ += static_cast<uint32_t>(
+        ble_transport::write(bytes_ + (tcpRead_ & (kWireQueueSize - 1)), len));
+  }
+#endif
   void drainTCP(WiFiClient& client) {
     if (tcpRead_ == write_) return;
     // Arduino ESP32 WiFiClient::write may block for 10 select(1s) retries;
@@ -319,6 +330,12 @@ WiFiClient wifiClient;
 bool wifiConfigured = false, tcpAuthenticated = false;
 bool wifiApMode = false, wifiApReady = false;
 bool tcpHadActiveSession = false;
+// The single authenticated remote controller (tcpAuthenticated) is BLE.
+bool remoteIsBle = false;
+char bleLine[176] = {};
+uint8_t bleLineUsed = 0;
+bool bleLineDiscard = false;
+uint32_t blePin = 0;
 bool wifiServerStarted = false;
 bool prefsReady = false, mdnsStarted = false, commandFromUSB = true;
 char wifiToken[33] = {};
@@ -947,6 +964,12 @@ void dropTcpClient(bool transportLost) {
   tcpHadActiveSession = false;
   wifiLineUsed = 0;
   wifiLineDiscard = false;
+  bleLineUsed = 0;
+  bleLineDiscard = false;
+#ifdef SME105_BLE
+  if (remoteIsBle && !transportLost) ble_transport::disconnect();
+#endif
+  remoteIsBle = false;
   if (wifiClient) wifiClient.stop();
   out.dropTcpAtCurrent();
 }
@@ -2682,6 +2705,59 @@ void processTcpLine(char* line) {
   runCommand(line);
   commandFromUSB = true;
 }
+#ifdef SME105_BLE
+void processBleLine(char* line) {
+  if (!tcpAuthenticated) {
+    // The link itself is passkey-authenticated. Claim the single remote
+    // controller role only while idle and when no TCP controller exists.
+    if (stage != IDLE || otaUpdating() || wifiClient.connected()) {
+      static const char deny[] = "DENIED remote_busy\n";
+      ble_transport::write(reinterpret_cast<const uint8_t*>(deny), sizeof(deny) - 1);
+      return;
+    }
+    tcpAuthenticated = true;
+    remoteIsBle = true;
+    out.markTcpAuthenticated();
+    out.print(F("AUTH OK transport=BLE\n"));
+    if (!strcmp(line, "AUTH BLE")) return;
+  }
+  commandFromUSB = false;
+  runCommand(line);
+  commandFromUSB = true;
+}
+void pollBle() {
+  if (remoteIsBle && !ble_transport::authenticatedLink()) {
+    dropTcpClient(true); // link loss mid-session stops the vehicle session
+    return;
+  }
+  if (ble_transport::authenticatedLink()) {
+    uint8_t chunk[96]; // bounded input per loop, like the TCP path
+    const size_t n = ble_transport::read(chunk, sizeof chunk);
+    for (size_t i = 0; i < n; ++i) {
+      const char ch = static_cast<char>(chunk[i]);
+      if (ch == '\n' || ch == '\r') {
+        if (bleLineDiscard) { bleLineDiscard = false; bleLineUsed = 0; continue; }
+        if (bleLineUsed) {
+          bleLine[bleLineUsed] = 0;
+          processBleLine(bleLine);
+          bleLineUsed = 0;
+        }
+      } else if (ch < 32 || ch > 126 || bleLineUsed >= sizeof(bleLine) - 1) {
+        bleLineDiscard = true;
+      } else if (!bleLineDiscard) {
+        bleLine[bleLineUsed++] = ch;
+      }
+    }
+  }
+  if (remoteIsBle) {
+    if (busSessionActive()) tcpHadActiveSession = true;
+    out.drainBLE();
+  }
+  // Notifications pause during the 2400-baud handshake phases.
+  if (stage != QUIET && stage != ECHO_TX && stage != ACK_WAIT && stage != GO_TX)
+    ble_transport::poll();
+}
+#endif
 void pollWiFi() {
   if (!wifiConfigured || !prefsReady) {
     if (signedOta.phase == OtaPhase::Receiving) abortSignedOta("wifi_unavailable");
@@ -2696,7 +2772,8 @@ void pollWiFi() {
   }
   if (!networkOnline()) {
     if (signedOta.phase == OtaPhase::Receiving) abortSignedOta("wifi_disconnected");
-    if (wifiClient.fd() >= 0 || tcpAuthenticated) dropTcpClient(tcpAuthenticated);
+    if (!remoteIsBle && (wifiClient.fd() >= 0 || tcpAuthenticated))
+      dropTcpClient(tcpAuthenticated);
     if (wifiServerStarted) { wifiServer.end(); wifiServerStarted = false; }
     if (mdnsStarted) { MDNS.end(); mdnsStarted = false; }
     const uint32_t now = millis();
@@ -2766,6 +2843,12 @@ void pollWiFi() {
       mdnsStarted = true;
       MDNS.addService("sme105", "tcp", kWiFiPort);
     } else MDNS.end();
+  }
+  if (remoteIsBle) {
+    // One remote controller at a time: BLE owns the session.
+    WiFiClient incoming = wifiServer.accept();
+    if (incoming) incoming.stop();
+    return;
   }
   // An authenticated controller can disappear just as a new connection
   // arrives. Revoke its ongoing vehicle session BEFORE considering anyone
@@ -2922,6 +3005,36 @@ void runCommand(const char* cmd) {
     else out.println(F("WIFI_FORGET OK"));
     return;
   }
+#ifdef SME105_BLE
+  if (!strcmp(cmd, "BLE_STATUS")) {
+    out.print(F("BLE_STATUS enabled=1 link=")); out.print(ble_transport::connected() ? 1 : 0);
+    out.print(F(" authenticated=")); out.print(ble_transport::authenticatedLink() ? 1 : 0);
+    out.print(F(" controller=")); out.print(remoteIsBle ? 1 : 0);
+    out.print(F(" payload=")); out.println(ble_transport::payloadSize());
+    return;
+  }
+  if (!strcmp(cmd, "BLE_PIN")) {
+    if (!commandFromUSB) { out.println(F("DENIED usb_only")); return; }
+    // Deliberately bypass fanout: never send the PIN to a remote peer.
+    Serial.print(F("BLE_PIN ")); Serial.println(blePin);
+    return;
+  }
+  if (!strncmp(cmd, "BLE_PIN_SET ", sizeof("BLE_PIN_SET ") - 1)) {
+    if (!commandFromUSB) { out.println(F("DENIED usb_only")); return; }
+    const char* digits = cmd + sizeof("BLE_PIN_SET ") - 1;
+    char* end = nullptr;
+    const unsigned long pin = strtoul(digits, &end, 10);
+    if (busSessionActive() || !prefsReady || strlen(digits) != 6 || *end ||
+        pin < 100000 || pin > 999999) {
+      out.println(F("DENIED ble_pin")); return;
+    }
+    wifiPrefs.putUInt("ble_pin", static_cast<uint32_t>(pin));
+    if (remoteIsBle) dropTcpClient(false);
+    ble_transport::forgetBonds();
+    out.println(F("BLE_PIN_SET OK bonds_cleared=1 reboot_required=1"));
+    return;
+  }
+#endif
   if (!strcmp(cmd, "STOP")) {
     armedVariant = 255; // STOP from either transport revokes every pending ARM
     if (stage != IDLE && stage != FINISHING) { stopEverything(HOST_STOP); out.println(F("EVENT stop=accepted DE=LOW")); }
@@ -3021,7 +3134,13 @@ void setup() {
   initializeWiFi(); // selected STA/AP credentials + token from NVS; NEVER starts ECU TX
   initializeOtaBootHealth();
 #ifdef SME105_BLE
-  ble_transport::begin("SME105-DCL", 123456); // feasibility build only
+  // Six-digit pairing PIN, random on first boot, readable only over USB.
+  blePin = prefsReady ? wifiPrefs.getUInt("ble_pin", 0) : 0;
+  if (blePin < 100000 || blePin > 999999) {
+    blePin = 100000 + esp_random() % 900000;
+    if (prefsReady) wifiPrefs.putUInt("ble_pin", blePin);
+  }
+  ble_transport::begin("SME105-DCL", blePin);
 #endif
 }
 void loop() {
@@ -3029,6 +3148,9 @@ void loop() {
   serviceOtaHealthAndRestart();
   pollUsb();
   pollWiFi();
+#ifdef SME105_BLE
+  pollBle();
+#endif
   if (stage == QUIET || stage == ECHO_TX || stage == ACK_WAIT || stage == GO_TX) pollHandshake();
   pollActive();
   flushRaw();
@@ -3047,12 +3169,9 @@ void loop() {
   flushPadReports();
   if (stage == FINISHING) reportEnd();
   out.drainUSB();
-  if (tcpAuthenticated) {
+  if (tcpAuthenticated && !remoteIsBle) {
     out.drainTCP(wifiClient);
     if (out.tcpSendFailed()) dropTcpClient(true);
   }
-#ifdef SME105_BLE
-  ble_transport::poll();
-#endif
   delay(0);
 }
