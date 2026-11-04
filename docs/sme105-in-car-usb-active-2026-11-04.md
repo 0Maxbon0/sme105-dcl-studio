@@ -332,3 +332,23 @@ Only the response frame period differs (≈17.5 ms for A4 vs ≈42.5 ms for
 0E), consistent with the 4- vs 14-data-slot counts in the two sources.
 Two independent ignition cycles and both B variants therefore agree on the
 stored code list. Codes were not cleared.
+
+## v11 USB application flash (2026-11-04 ~17:15, ignition OFF)
+
+Adds DIAGMODE 25H KOEO self test (request repeated every block, adaptive
+frame-period header gate) and DIAGMODE 80H go-offline joined onto a running
+CART stream (LHBH1 ch.13: Diagnostics state exits only via go-offline or
+ignition reset). Parser replayed on real captures by
+`tests/test_sme105_cart_join_parser.py`; 246 tests PASS.
+
+- NVS/otadata backed up privately; application-only `write_flash 0x10000`,
+  hash verified. Image SHA-256
+  `213cd293549159362a3992b853c9e96d52191962971c923234aa151d4a0d67fa`.
+- Post-flash: `accepted_version=11 boot_health=VALID`, `stage=0 DE=LOW`,
+  `offline_used=0`, all one-shot counters 0.
+- The first serial open after each esptool reset again returned ~550 bytes of
+  the repeated boot-banner tail (`...source_commands_unverified=1`). The
+  firmware output queue is cursor-based and cannot repeat bytes; subsequent
+  opens are clean and every vehicle END byte count matched the host. Treated
+  as a CP2102 post-reset artifact; host sessions always re-verify
+  HELLO/STATUS/PINS before any TX.
