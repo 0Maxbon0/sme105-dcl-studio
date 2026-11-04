@@ -475,3 +475,25 @@ CSV `…-live.csv` via `scripts/decode_live_pids.py`.
 | LAMBSE1 / KAMRF1 | 1.000 / 1.0 | neutral |
 | IEGO1 | 1015–1020 counts | engine off; recheck warm and running |
 | N / FUELPW1 / VS | 0 | engine off |
+
+## Live data, engine running (cold, ~37–44 °C ECT), ~18:18
+
+`captures/SME105_97AB/20261104T161814961794Z-usb-bridge.*` (transcript SHA-256
+`2340d0eb38cdd63052519ab1a7aa88a109ea5232219f4610689851c191f34519`) and
+`…-live.csv`. Same v14 flow; 250 blocks, PID map 15/15 verified, 3717 values,
+0 parity rejects, go-offline OK with the engine running. Decoder fix: frame
+headers carry the RPM byte when running (no longer assumed 0).
+
+- N 968–1140 rpm cold idle; owner rev at ~36–48 s reached 2640 rpm, tracked by
+  FUELPW1, LOAD (to 32 %) and SAFTOT.
+- ECT 35.6 → 44.4 °C smoothly; ACT follows ECT (substituted, IAT unplugged);
+  IACT steady 947–949 (open).
+- LAMBSE1 0.92 → 0.97 (cold enrichment); KAMRF1 1.0; IEGO1 955–1023 counts,
+  not switching (cold/open loop — recheck warm).
+- **VBAT 12.56–13.13 V running, not rising at 2600 rpm** → charging marginal.
+- **ITP erratic with the engine running**: 11–156 counts at idle with no
+  pedal input (mean 79, σ 33, mean sample-to-sample change 14), versus a
+  rock-steady 159 counts at closed throttle with the engine off. No clean rise
+  during the rev. Consistent with stored code 122 (TP below minimum voltage)
+  as an engine-running electrical fault (TP connector/wiring, SIG RTN/VREF or
+  engine ground), not a worn track.

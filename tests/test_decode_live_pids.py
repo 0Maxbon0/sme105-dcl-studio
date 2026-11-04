@@ -24,7 +24,7 @@ def synthetic_capture(values: dict[int, int]) -> str:
     t = 1_000_000
     for _block in range(3):
         for frame in range(16):
-            slots = {1: word(frame << 8)}  # ID word: rpm byte 0, frame id in bits 8-11
+            slots = {1: word((frame << 8) | 0xF8)}  # ID word: rpm byte, frame id in bits 8-11
             if frame == 4:
                 slots[2] = word(0x621)  # current DIAGMODE 21H, length 6
             pid = dl.LIVE_PIDS[frame]

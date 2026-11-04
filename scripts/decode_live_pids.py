@@ -71,8 +71,9 @@ def frames_from(rx: list[tuple[int, int]]) -> list[Frame]:
     frames: list[Frame] = []
     for i, w in enumerate(words[:-1]):
         nxt = words[i + 1]
-        if ([b for _, b in w] == [0, 0] and len(nxt) == 2 and nxt[0][1] == 0
-                and parity_ok(0, nxt[1][1])):
+        # ID word low byte is the RPM/status byte (non-zero when running).
+        if ([b for _, b in w] == [0, 0] and len(nxt) == 2
+                and parity_ok(nxt[0][1], nxt[1][1])):
             frames.append(Frame(w[0][0], nxt[1][1] & 15, {}))
         elif frames and len(w) == 2:
             slot = round((w[0][0] - frames[-1].t) / SLOT_US)
