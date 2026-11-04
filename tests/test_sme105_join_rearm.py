@@ -42,15 +42,18 @@ class JoinRearmSourceTests(unittest.TestCase):
     def test_quiet_busy_joins_read_variants_and_observe_stays_bad_idle(self) -> None:
         spec = _between(self.source, "constexpr bool joinsRunningCart", "\n}")
         self.assertIn("v <= 1", spec)
-        self.assertIn("kVariantKoeo", spec)
-        self.assertIn("isLiveVariant(v)", spec)
+        self.assertIn("isRepeating(v)", spec)
+        repeating = _between(self.source, "constexpr bool isRepeating", "\n}")
+        self.assertIn("isSelfTest(v)", repeating)
+        self.assertIn("isLiveVariant(v)", repeating)
+        self.assertNotIn("kVariantOffline", repeating)
         self.assertNotIn("kVariantOffline", spec)
         quiet = _between(self.source, "if (stage == QUIET)", "else if (stage == ECHO_TX")
         self.assertIn("joinsRunningCart(variant)", quiet)
         self.assertLess(quiet.index("openNative()"), quiet.index("joinMode = true"))
         self.assertLess(quiet.index("joinMode = true"),
-                        quiet.index("repeatDps = variant == kVariantKoeo || isLiveVariant(variant)"))
-        self.assertLess(quiet.index("repeatDps = variant == kVariantKoeo || isLiveVariant(variant)"),
+                        quiet.index("repeatDps = isRepeating(variant)"))
+        self.assertLess(quiet.index("repeatDps = isRepeating(variant)"),
                         quiet.index("framePeriodUs = 0"))
         self.assertIn("stopLatched = false", quiet)
         self.assertIn("stage = CART_READ", quiet)

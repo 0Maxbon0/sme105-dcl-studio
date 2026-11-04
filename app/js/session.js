@@ -26,6 +26,7 @@ export function noteSessionLine(session, parsed) {
   }
   if (!session.started) return session;
   if (parsed.type === "rx") session.rx += 1;
+  else if (parsed.type === "rx_batch") session.rx += parsed.events.length;
   else if (parsed.type === "pad") session.pads.push(parsed);
   else if (parsed.type === "fault") session.problems.push(`FAULT reason=${parsed.reason}`);
   else if (parsed.type === "denied") session.problems.push(`DENIED ${parsed.reason}`.trim());

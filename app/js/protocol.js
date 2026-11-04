@@ -1,6 +1,6 @@
 /** ASCII line protocol for the SME105 bridge. No DOM, no Bluetooth. */
 
-export const APP_VERSION = "1.0.0";
+export const APP_VERSION = "1.6.0";
 
 export const NUS_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
 export const NUS_RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
@@ -57,9 +57,10 @@ export const TIMEOUTS = {
   codes: 20000,
   KOEO: 75000,
   KOER: 5 * 60 * 1000,
-  LIVE: 31 * 60 * 1000,
-  LIVE2: 31 * 60 * 1000,
-  LIVE3: 31 * 60 * 1000,
+  LIVE: 181 * 60 * 1000,
+  LIVE2: 181 * 60 * 1000,
+  LIVE3: 181 * 60 * 1000,
+  ALL: 181 * 60 * 1000,
   CLR: 12000,
   MEM: 20000,
   OFF: 15000,
@@ -70,9 +71,10 @@ export const VARIANTS = {
   A4: { command: "A4", kind: "codes", label: "stored-alt", timeoutMs: TIMEOUTS.codes, expectMs: 20000 },
   KOEO: { command: "KOEO", kind: "koeo", label: "KOEO", timeoutMs: TIMEOUTS.KOEO, expectMs: 60000 },
   KOER: { command: "KOER", kind: "koer", label: "KOER", timeoutMs: TIMEOUTS.KOER, expectMs: 4 * 60 * 1000 },
-  LIVE: { command: "LIVE", kind: "live", label: "LIVE", timeoutMs: TIMEOUTS.LIVE, expectMs: 30 * 60 * 1000 },
-  LIVE2: { command: "LIVE2", kind: "live", label: "LIVE2", timeoutMs: TIMEOUTS.LIVE2, expectMs: 30 * 60 * 1000 },
-  LIVE3: { command: "LIVE3", kind: "live", label: "LIVE3", timeoutMs: TIMEOUTS.LIVE3, expectMs: 30 * 60 * 1000 },
+  LIVE: { command: "LIVE", kind: "live", label: "LIVE", timeoutMs: TIMEOUTS.LIVE, expectMs: 180 * 60 * 1000 },
+  LIVE2: { command: "LIVE2", kind: "live", label: "LIVE2", timeoutMs: TIMEOUTS.LIVE2, expectMs: 180 * 60 * 1000 },
+  LIVE3: { command: "LIVE3", kind: "live", label: "LIVE3", timeoutMs: TIMEOUTS.LIVE3, expectMs: 180 * 60 * 1000 },
+  ALL: { command: "ALL", kind: "live", label: "ALL", timeoutMs: TIMEOUTS.ALL, expectMs: 180 * 60 * 1000 },
   CLR: { command: "CLR", kind: "clear", label: "CLR", timeoutMs: TIMEOUTS.CLR, expectMs: 4000 },
   MEM: { command: "MEM", kind: "memory", label: "MEM", timeoutMs: TIMEOUTS.MEM, expectMs: 10000 },
   OFF: { command: "OFF", kind: "offline", label: "OFF", timeoutMs: TIMEOUTS.OFF, expectMs: 15000 },
@@ -164,6 +166,21 @@ function num(fields, key) {
 
 export function parseLine(line) {
   const raw = String(line).replace(/\r$/, "");
+  if (raw.startsWith("RXB ")) {
+    const match = raw.match(/^RXB t_us=(\d{1,10}) data=([0-9A-F]{2,32}) dt=(\d+(?:,\d+)*)$/);
+    if (match) {
+      const base = Number(match[1]);
+      const offsets = match[3].split(",").map(Number);
+      if (base <= 0xffffffff && match[2].length % 2 === 0 &&
+          offsets.length === match[2].length / 2 && offsets[0] === 0 &&
+          offsets.every((n, i) => Number.isSafeInteger(n) && n >= 0 && n <= 0xffffffff && (!i || n >= offsets[i - 1]))) {
+        return { type: "rx_batch", raw, events: offsets.map((dt, i) => ({
+          type: "rx", t_us: (base + dt) >>> 0, byte: parseInt(match[2].slice(i * 2, i * 2 + 2), 16),
+        })) };
+      }
+    }
+    return { type: "fault", raw, reason: "RX_BATCH_FORMAT" };
+  }
   if (raw.startsWith("AUTH OK")) return { type: "auth", ok: true, raw };
   if (raw.startsWith("DENIED") || raw.startsWith("TX2_BENCH_DENIED")) {
     return { type: "denied", raw, reason: raw.replace(/^(DENIED|TX2_BENCH_DENIED)\s*/, "") };

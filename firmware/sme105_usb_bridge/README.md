@@ -545,6 +545,33 @@ interpretation has not been verified for 97AB-12A650-KA. There is no
 production-safe DTC decoder, no "DTC read success" claim, and no production
 authority to clear codes or actuate outputs.
 
+## v21 continuous live data
+
+`ARM_ALL` / `READ_ALL` load one 45-word PID map (IW2..IW4, frames 1..15),
+containing 39 unique requested channels. Mode 41 loads the map, mode 21
+repeats it. Frame length remains 6, designed at 22.5 ms/frame and 360 ms/block.
+Each additional map word retains its own RMT DE gate, pad readback and watchdog;
+the complete 45/45 map must be verified before leaving the loading block.
+Actual support and refresh timing have not been measured on the owner's ECU.
+
+ALL uses lossless packed output to fit the 115200-baud USB budget:
+
+```text
+RXB t_us=100000 data=00F8A5 dt=0,1042,2500
+```
+
+`data` is 1..16 raw bytes; `dt` contains their original MCU timestamp offsets
+from `t_us`. Sum modulo 2^32 to reconstruct each original timestamp. Legacy
+single-set captures keep their ordinary RX format. STATUS advertises
+`live_all=1 rx_batch=1 fw=21`. The browser and Python recorder/decoder support
+both formats. Evidence is never discarded to improve throughput.
+
+All live modes stop after three hours, five seconds of ECU silence, transport
+loss, or existing pad/timing/overflow faults. Queues stay fixed-size; no trip is
+stored in ESP32 RAM/flash. Wire timestamps wrap every ~71.6 minutes; host
+decoders unwrap consecutive timestamps. A longer duration is not a hardware
+or vehicle safety certification. BLE is retained; no Wi-Fi migration is made.
+
 ## Compile only — no flash or hardware operation
 
 From the repository root:

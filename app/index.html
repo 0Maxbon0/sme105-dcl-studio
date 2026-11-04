@@ -11,7 +11,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=3">
+  <link rel="stylesheet" href="styles.css?v=4">
 </head>
 <body>
   <header class="top">
@@ -56,15 +56,33 @@
       <p id="live-banner" class="banner" hidden></p>
       <fieldset class="choices">
         <legend data-str="liveSet"></legend>
+        <label><input type="radio" name="pidset" id="set-all-live" value="ALL"> <span data-str="liveAll"></span></label>
+        <details class="set-description"><summary>What this set shows</summary><p data-str="liveAllHelp"></p></details>
         <label><input type="radio" name="pidset" id="set-live" value="LIVE" checked> <span data-str="liveEngine"></span></label>
+        <details class="set-description"><summary>What this set shows</summary><p data-str="liveEngineHelp"></p></details>
         <label><input type="radio" name="pidset" id="set-live2" value="LIVE2"> <span data-str="liveFlags"></span></label>
+        <details class="set-description"><summary>What this set shows</summary><p data-str="liveFlagsHelp"></p></details>
         <label><input type="radio" name="pidset" id="set-live3" value="LIVE3"> <span data-str="liveExtra"></span></label>
+        <details class="set-description"><summary>What this set shows</summary><p data-str="liveExtraHelp"></p></details>
       </fieldset>
+      <label class="check"><input id="manual-gearbox" type="checkbox" checked> Manual gearbox (keep automatic channels as technical data)</label>
+      <p id="vehicle-profile" class="help"></p>
+      <label class="check"><input id="idle-check" type="checkbox"> Compare regulated idle: fully warm, stationary in neutral, pedal released, A/C and other loads off</label>
+      <p class="help">Speed is shown in km/h. All channels and raw values are retained. “Samples received” means how many readings arrived, not a sensor value. Zero does not by itself mean a sensor is missing.</p>
       <button id="live-start" type="button" class="primary" data-str="startLive"></button>
       <label class="meter"><span data-str="startLive"></span><progress id="live-progress" max="100" value="0"></progress></label>
       <p id="live-meta" class="meta"></p>
       <div id="live-cards" class="cards"></div>
       <button id="csv-btn" type="button" data-str="recordCsv" disabled></button>
+      <p class="help">Live capture has a 3-hour limit. Keep the app open and connected. Full readings and raw evidence are saved on this phone; graphs use recent history. This duration has not been validated on the car.</p>
+      <details class="set-description">
+        <summary>Saved recordings on this phone</summary>
+        <label for="saved-recordings">Recording</label>
+        <select id="saved-recordings"></select>
+        <button id="saved-csv" type="button" disabled>Export saved CSV</button>
+        <button id="saved-log" type="button" disabled>Export saved raw log</button>
+        <p id="recording-status" class="help">Recordings remain available after reopening this app. Export before clearing browser data. Interrupted recordings remain incomplete; saving data does not certify its validity.</p>
+      </details>
     </section>
     <section id="view-tools" class="view" hidden>
       <button id="offline-btn" type="button" class="primary" data-str="offline"></button>
@@ -123,6 +141,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="js/app.js?v=8"></script>
+  <script type="module" src="js/app.js?v=10"></script>
 </body>
 </html>

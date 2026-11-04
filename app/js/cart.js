@@ -17,7 +17,8 @@ export function formatCode(data) {
   return data.toString(16).toUpperCase().padStart(3, "0");
 }
 
-export function createCartDecoder(pidSet = null) {
+export function createCartDecoder(pidSet = null, { onSample = null, historyLimit = Infinity } = {}) {
+  let lastWireTime = null, unwrappedTime = 0;
   const dec = {
     pending: [],
     prev: null,
@@ -36,9 +37,11 @@ export function createCartDecoder(pidSet = null) {
     frameCount: 0,
     parityRejects: 0,
     rows: [],
+    totalRows: 0,
     pids: {},
     mem: {},
     pidSet,
+    mapLoadSeen: false,
     closed: false,
   };
 
@@ -95,33 +98,46 @@ export function createCartDecoder(pidSet = null) {
 
   function emitPid(fr) {
     if (dec.t0 === null) dec.t0 = fr.t;
-    if (fr.fid === 4 && fr.slots[2]) dec.mode = fr.slots[2][0];
+    if (fr.fid === 4 && fr.slots[2]) {
+      dec.mode = fr.slots[2][0];
+      if (dec.mode === 0x41) dec.mapLoadSeen = true;
+    }
     if (dec.mode !== 0x21 || fr.fid === 0 || !dec.pidSet) return;
-    const word = fr.slots[3];
-    if (!word) return;
-    if (!parityOk(word[0], word[1])) {
-      dec.parityRejects += 1;
-      return;
+    // A reconnect can first see an old map's mode-21 stream. A multi-slot
+    // recording must witness its map-loading phase before interpreting data.
+    if (Array.isArray(dec.pidSet[0]) && !dec.mapLoadSeen) return;
+    const assigned = dec.pidSet[fr.fid];
+    const pids = Array.isArray(assigned) ? assigned : [assigned];
+    for (const [column, pid] of pids.entries()) {
+      const word = fr.slots[3 + column];
+      if (!pid || !word || !PIDS[pid]) continue;
+      if (!parityOk(word[0], word[1])) {
+        dec.parityRejects += 1;
+        continue;
+      }
+      const raw = wordData(word[0], word[1]);
+      const scaled = scaleWord(pid, raw);
+      const sample = {
+        t: (fr.t - dec.t0 + column * SLOT_US) / 1e6,
+        name: scaled.name, unit: scaled.unit, raw, value: scaled.value,
+      };
+      dec.rows.push(sample);
+      dec.totalRows += 1;
+      let series = dec.pids[scaled.name];
+      if (!series) {
+        series = { name: scaled.name, unit: scaled.unit, pid, samples: [] };
+        dec.pids[scaled.name] = series;
+      }
+      series.samples.push(sample);
+      const summary = series.summary;
+      series.summary = summary ? {
+        ...summary, n: summary.n + 1, min: Math.min(summary.min, sample.value),
+        max: Math.max(summary.max, sample.value), last: sample.value, rawLast: sample.raw,
+      } : { n: 1, first: sample.value, min: sample.value, max: sample.value, last: sample.value, rawLast: sample.raw };
+      if (onSample) onSample(sample);
+      if (series.samples.length > historyLimit) series.samples.splice(0, series.samples.length - historyLimit);
+      if (dec.rows.length > historyLimit * 39) dec.rows.splice(0, dec.rows.length - historyLimit * 39);
     }
-    const pid = dec.pidSet[fr.fid];
-    const spec = PIDS[pid];
-    if (!spec) return;
-    const raw = wordData(word[0], word[1]);
-    const scaled = scaleWord(pid, raw);
-    const sample = {
-      t: (fr.t - dec.t0) / 1e6,
-      name: scaled.name,
-      unit: scaled.unit,
-      raw,
-      value: scaled.value,
-    };
-    dec.rows.push(sample);
-    let series = dec.pids[scaled.name];
-    if (!series) {
-      series = { name: scaled.name, unit: scaled.unit, pid, samples: [] };
-      dec.pids[scaled.name] = series;
-    }
-    series.samples.push(sample);
   }
 
   function processPair(w, nxt) {
@@ -151,6 +167,16 @@ export function createCartDecoder(pidSet = null) {
   return {
     pushRx(t, b) {
       if (dec.closed) return;
+      // The wire clock is uint32 microseconds (~71.6 minutes per wrap).
+      // Preserve monotonic sample times across multiple wraps during a trip.
+      if (lastWireTime === null) unwrappedTime = t;
+      else {
+        const delta = (t - lastWireTime) >>> 0;
+        if (delta > 0x7fffffff) throw new Error("RX timestamps reversed");
+        unwrappedTime += delta;
+      }
+      lastWireTime = t;
+      t = unwrappedTime;
       const pending = dec.pending;
       if (pending.length && t - pending[pending.length - 1].t <= WORD_GAP_US && pending.length < 2) {
         pending.push({ t, b });

@@ -29,13 +29,13 @@ TCP_PORT = 8765
 DEFAULT_TOKEN_FILE = Path("~/.config/sme105/bridge-token").expanduser()
 TOKEN_HEX = re.compile(rb"^[0-9a-fA-F]{32}$")
 COMMANDS = ("STATUS", "TX2_BENCH", "LISTEN", "HELLO", "REQUEST_A4", "REQUEST_0E",
-            "REQUEST_KOEO", "REQUEST_LIVE", "REQUEST_LIVE2", "REQUEST_OFF", "RMT_DUMP", "DE_BENCH",
+            "REQUEST_KOEO", "REQUEST_LIVE", "REQUEST_LIVE2", "REQUEST_ALL", "REQUEST_OFF", "RMT_DUMP", "DE_BENCH",
             "STOP", "REBOOT", "EXIT")
 CAR_TRANSMIT = frozenset(("HELLO", "REQUEST_A4", "REQUEST_0E", "REQUEST_KOEO",
-                          "REQUEST_LIVE", "REQUEST_LIVE2", "REQUEST_OFF"))
+                          "REQUEST_LIVE", "REQUEST_LIVE2", "REQUEST_ALL", "REQUEST_OFF"))
 WIRE_COMMANDS = frozenset(("HELLO", "PINS", "STATUS", "TX2_BENCH", "LISTEN_9600", "OBSERVE", "ARM_A4",
                            "READ_A4", "ARM_0E", "READ_0E", "ARM_KOEO", "READ_KOEO",
-                           "ARM_LIVE", "READ_LIVE", "ARM_LIVE2", "READ_LIVE2",
+                           "ARM_LIVE", "READ_LIVE", "ARM_LIVE2", "READ_LIVE2", "ARM_ALL", "READ_ALL",
                            "ARM_OFF", "READ_OFF", "RMT_DUMP", "DE_BENCH", "STOP", "REBOOT"))
 # Firmware faultAllowsRearm: idle, BAD_IDLE, handshake failures, CART_INIT,
 # HOST_STOP, CAPTURE_TIMEOUT. Pad/DE/phase/overflow stay denied.
@@ -48,6 +48,7 @@ REQUEST_WORDS = {
     # First block requests 41H (4196); TX_PAD reports the steady 21H block.
     "LIVE": ("01B0", "FF5F", "21F6", "00A0"),
     "LIVE2": ("01B0", "FF5F", "21F6", "00A0"),
+    "ALL": ("01B0", "FF5F", "21F6", "00A0"),
     "OFF": ("01B0", "FF5F", "80CE", "7F20"),
 }
 SOURCE_WORDS = "01B0 FF5F 26A4 00A0"
@@ -59,7 +60,7 @@ HELLO_REPLY = b"HELLO SME105_USB_BRIDGE_V1 protocol=1 usb_baud=115200 no_auto_tx
 PINS_REPLY = (b"PINS ro16=GPIO16_UART1 de18=GPIO18_RMT2..5 "
               b"di17=GPIO17_UART2_TX+PAD_RX no_arbitrary_tx=1")
 ARM_EVENT = re.compile(
-    rb"^EVENT read_armed variant=(A4|0E|KOEO|KOER|LIVE3|LIVE2|LIVE|CLR|MEM|OFF) valid_ms=15000 no_tx_yet=1$"
+    rb"^EVENT read_armed variant=(A4|0E|KOEO|KOER|LIVE3|LIVE2|LIVE|ALL|CLR|MEM|OFF) valid_ms=15000 no_tx_yet=1$"
 )
 END_RECORD = re.compile(
     rb"^END reason=(\d{1,3}) ro_bytes=(\d{1,10}) ro_lost=(\d{1,10}) "
@@ -391,6 +392,19 @@ class EvidenceRecorder:
         return completed
 
     def _parse_rx(self, line: bytes) -> None:
+        if line.startswith(b"RXB "):
+            try:
+                try:
+                    from .rx_batch import parse_rx_batch
+                except ImportError:
+                    from rx_batch import parse_rx_batch
+                events = parse_rx_batch(line)
+            except ValueError as exc:
+                self._fault(str(exc))
+                return
+            for timestamp, byte in events:
+                self._parse_rx(f"RX t_us={timestamp} byte={byte:02X}".encode("ascii"))
+            return
         if not line.startswith(b"RX "):
             return
         record = RX_RECORD.fullmatch(line)
@@ -462,6 +476,7 @@ class BridgeClient:
         self._session_name: str | None = None
         self._session_requested = False
         self._read_variant: str | None = None
+        self._all_load_witness = False
         self._reader_error: str | None = None
         self._integrity_error: str | None = None
         self._di_mismatch = False
@@ -544,6 +559,11 @@ class BridgeClient:
                     if line.startswith(b"TX_PAD "):
                         witness = TX_PAD.fullmatch(line)
                         expected_words = REQUEST_WORDS.get(self._read_variant or "", ())
+                        if (self._read_variant == "ALL" and witness is not None
+                                and witness[1] == b"2" and witness[2] == b"4196"
+                                and not self._all_load_witness):
+                            expected_words = ("01B0", "FF5F", "4196", "00A0")
+                            self._all_load_witness = True
                         if (witness is None or not expected_words or
                                 witness[2].decode("ascii") !=
                                 expected_words[int(witness[1])] or
@@ -835,6 +855,7 @@ class BridgeClient:
                 raise BridgeError("ARM timed out or changed; READ denied")
             wire = "READ_" + variant
             self._read_variant = variant
+            self._all_load_witness = False
         else:
             wire = "OBSERVE"
         # Mark the command spent BEFORE attempting a potentially partial write.

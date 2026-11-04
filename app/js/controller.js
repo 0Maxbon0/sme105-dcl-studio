@@ -1,7 +1,7 @@
 /** Operation controller. Timers stay outside; call tick() with the injected clock. */
 
 import { createCartDecoder } from "./cart.js";
-import { pidSetForVariant, summarizeSeries } from "./pids.js";
+import { ALL_LIVE_PIDS, PIDS, pidSetForVariant, summarizeSeries } from "./pids.js";
 import {
   TIMEOUTS,
   VARIANTS,
@@ -9,6 +9,7 @@ import {
   reasonText,
 } from "./protocol.js";
 import { createSession, noteSessionLine, sessionVerdict } from "./session.js";
+import { appendCombined, createCombined, finishCombinedSegment, GROUP_WINDOW_MS, LIVE_GROUPS, startCombinedSegment } from "./combined.js";
 
 function unique(list) {
   const out = [];
@@ -34,6 +35,8 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     trust: "none",
     message: "Disconnected",
     deadline: null,
+    combined: null,
+    archive: null,
   };
 
   function touch() {
@@ -46,6 +49,9 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
 
   function buildResult(verdict) {
     const snap = state.cart ? state.cart.snapshot() : null;
+    if (snap) {
+      for (let i = snap.rows.length - 1; i >= 0 && snap.rows[i].receivedAt == null; --i) snap.rows[i].receivedAt = now();
+    }
     const variant = state.op?.variant || state.lastSession?.variant || "";
     const codes = (snap?.codes || []).map((entry) => ({
       code: entry.code,
@@ -57,7 +63,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     const pids = {};
     if (snap) {
       for (const [name, series] of Object.entries(snap.pids)) {
-        pids[name] = { ...series, summary: summarizeSeries(series.samples) };
+        pids[name] = { ...series, summary: series.summary || summarizeSeries(series.samples) };
       }
     }
     return {
@@ -67,6 +73,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       codes,
       pids,
       rows: snap?.rows || [],
+      totalRows: snap?.totalRows || 0,
       mem: snap?.mem ? { ...snap.mem } : {},
       rom: snap?.rom || null,
       selfTestComplete: !!snap?.selfTestComplete,
@@ -95,7 +102,38 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       verdict = { valid: false, status: "INCOMPLETE", reasons: ["session did not start"], end: null };
     }
     state.lastSession = buildResult(verdict);
-    state.trust = verdict.valid ? "valid" : "untrusted";
+    if (state.op?.variant === "ALL" && verdict.valid) {
+      const map = state.op.session?.pidMap;
+      const complete = [15, 16].includes(verdict.end?.reason) && verdict.end?.de === "LOW"
+        && map?.set === "ALL" && map.sent === 45 && map.verified === 45
+        && state.lastSession.parityRejects === 0
+        && ALL_LIVE_PIDS.slice(1).every((pid) => state.lastSession.pids[PIDS[pid][0]]?.samples.length > 0);
+      if (!complete) {
+        verdict = { ...verdict, valid: false, status: "INCOMPLETE", reasons: ["All-data map or sample verification incomplete"] };
+        state.lastSession.verdict = verdict;
+      }
+    }
+    const combined = state.combined;
+    if (combined && state.op && LIVE_GROUPS.includes(state.op.variant)) {
+      const expected = pidSetForVariant(state.op.variant).slice(1);
+      const map = state.op.session?.pidMap;
+      const complete = verdict.valid && [15, 16].includes(verdict.end?.reason)
+        && state.lastSession.parityRejects === 0
+        && map?.sent === expected.length && map?.verified === expected.length
+        && expected.every((pid) => state.lastSession.pids[PIDS[pid][0]]?.samples.length > 0);
+      finishCombinedSegment(combined, state.lastSession, now(), complete);
+      if (!complete) {
+        combined.active = false;
+        combined.error = "All-data recording stopped: a group failed its capture, PID-map or sample checks.";
+      } else if (combined.active && combined.rotateRequested) {
+        combined.groupIndex = (combined.groupIndex + 1) % LIVE_GROUPS.length;
+        combined.nextPending = true;
+      } else {
+        combined.active = false;
+      }
+    }
+    state.trust = verdict.valid && !combined?.failed ? "valid" : "untrusted";
+    state.archive?.finish(verdict).catch(error => { state.message = `Recording storage: ${error.message}`; touch(); });
     if (verdict.valid && state.lastSession.rom) state.rom = state.lastSession.rom;
     const vbat = state.lastSession.pids.VBAT?.summary?.last;
     if (verdict.valid && vbat != null) state.battery = vbat;
@@ -105,6 +143,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     state.message = verdict.valid
       ? `Valid — ${verdict.end ? reasonText(verdict.end.reason) : "complete"}`
       : `${verdict.status}: ${verdict.reasons.join("; ")}`;
+    if (combined?.error) state.message = combined.error;
     touch();
   }
 
@@ -165,10 +204,29 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     if (!state.op) return;
     if (!state.op.session) state.op.session = createSession();
     if (parsed.type === "session_start") {
-      state.cart = createCartDecoder(pidSetForVariant(state.op.variant));
+      state.cart = createCartDecoder(pidSetForVariant(state.op.variant), state.archive ? {
+        historyLimit: 512,
+        onSample(sample) { sample.receivedAt = now(); state.archive.sample(sample); },
+      } : {});
     }
     noteSessionLine(state.op.session, parsed);
-    if (parsed.type === "rx" && state.cart) state.cart.pushRx(parsed.t_us, parsed.byte);
+    try {
+      if (parsed.type === "rx" && state.cart) state.cart.pushRx(parsed.t_us, parsed.byte);
+      if (parsed.type === "rx_batch" && state.cart) {
+        for (const event of parsed.events) state.cart.pushRx(event.t_us, event.byte);
+      }
+    } catch (error) {
+      state.op.forceStatus = "INCOMPLETE";
+      state.op.forceReason = error.message;
+      stop();
+      return;
+    }
+    if (state.cart && (parsed.type === "rx" || parsed.type === "rx_batch")) {
+      const rows = state.cart.snapshot().rows;
+      // Timestamp newly decoded values for visible age without changing ECU time.
+      for (let i = rows.length - 1; i >= 0 && rows[i].receivedAt == null; --i) rows[i].receivedAt = now();
+    }
+    if (state.combined && state.cart) appendCombined(state.combined, state.cart.snapshot(), now());
     if (parsed.type === "end") {
       const override = state.op.forceStatus
         ? { status: state.op.forceStatus, reason: state.op.forceReason }
@@ -179,11 +237,15 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
 
   function handleLine(line) {
     const parsed = parseLine(line);
+    state.archive?.line(parsed.raw);
     state.log.push(parsed.raw);
+    if (state.archive && state.log.length > 2100) state.log.splice(0, state.log.length - 2000);
     if (parsed.type === "auth") {
       state.identity.auth = parsed.ok ? "OK" : "DENIED";
       if (!parsed.ok) {
+        if (state.combined) { state.combined.active = false; state.combined.nextPending = false; }
         state.link = "denied";
+        if (state.op) finalize({ status: "FAILED", reason: "authentication denied" });
         state.phase = "idle";
         state.deadline = null;
         state.message = parsed.raw;
@@ -238,6 +300,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
         return;
       }
       state.phase = "read";
+      if (state.combined?.active) state.combined.rotateAt = now() + GROUP_WINDOW_MS;
       state.op.session = createSession();
       state.cart = createCartDecoder(pidSetForVariant(state.op.variant));
       state.message = `Reading ${state.op.variant}`;
@@ -270,6 +333,9 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       if (state.phase === "idle") return;
     }
     if (parsed.type === "stop" && state.phase === "stopping") {
+      // STOP acknowledgement precedes drained RX and END in the real bridge.
+      // Keep receiving an established capture until its END or stop timeout.
+      if (state.op?.session?.started && !state.op.forceStatus) return;
       const override = state.op?.forceStatus
         ? { status: state.op.forceStatus, reason: state.op.forceReason }
         : { status: "INCOMPLETE", reason: "stopped" };
@@ -290,6 +356,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     if (state.link !== "ready") return "not connected";
     if (state.phase !== "idle") return "busy";
     if (state.identity.helloOk !== true || state.identity.pinsOk !== true) return "bridge identity not verified";
+    if (op.kind !== "live") state.archive = null;
     state.op = op;
     if (!op.manualBench || op.variant) {
       state.lastSession = null;
@@ -304,8 +371,37 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     return "";
   }
 
+  function beginVehicle(variant) {
+    return beginPrecheck({ variant, kind: VARIANTS[variant].kind, manualBench: false,
+      forceStatus: null, forceReason: "", session: null });
+  }
+
+  function stop() {
+    if (state.combined) { state.combined.active = false; state.combined.nextPending = false; }
+    if (state.phase === "idle" || state.phase === "stopping") { touch(); return; }
+    state.phase = "stopping";
+    state.message = "Stopping";
+    arm(TIMEOUTS.stop);
+    send("STOP");
+    touch();
+  }
+
   return {
     state,
+    setArchive(archive) {
+      if (state.phase !== "idle") throw new Error("Cannot replace an active recording");
+      state.archive = archive;
+    },
+    failRecording(message) {
+      if (state.op) { state.op.forceStatus = "INCOMPLETE"; state.op.forceReason = message; }
+      else if (state.lastSession) {
+        state.lastSession.verdict = { ...state.lastSession.verdict, valid: false, status: "INCOMPLETE", reasons: [message] };
+        state.trust = "untrusted";
+      }
+      stop();
+      state.message = message;
+      touch();
+    },
     subscribe(fn) {
       listeners.add(fn);
       return () => listeners.delete(fn);
@@ -316,7 +412,9 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       state.link = "ready";
       state.deviceName = name;
       state.log = [];
+      state.archive = null;
       state.lastSession = null;
+      state.combined = null;
       state.cart = null;
       state.rom = null;
       state.battery = null;
@@ -329,6 +427,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       touch();
     },
     onDisconnected() {
+      if (state.combined) { state.combined.active = false; state.combined.nextPending = false; }
       if (state.link === "disconnected") return;
       const phase = state.phase;
       state.link = "disconnected";
@@ -349,20 +448,31 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       finalize({ status: "FAILED", reason: "link lost" });
     },
     requestVehicle(variant) {
+      if (state.combined?.active) return { ok: false, error: "all-data recording is running" };
       if (!VARIANTS[variant]) return { ok: false, error: "unknown variant" };
-      const error = beginPrecheck({
-        variant,
-        kind: VARIANTS[variant].kind,
-        manualBench: false,
-        forceStatus: null,
-        forceReason: "",
-        session: null,
-      });
+      if (variant === "ALL" && state.status?.fields?.live_all !== "1") {
+        return { ok: false, error: "Continuous all-data capture requires bridge firmware v21 or newer." };
+      }
+      const previous = state.combined;
+      state.combined = null;
+      const error = beginVehicle(variant);
+      if (error) state.combined = previous;
       if (error) return { ok: false, error };
       state.message = `Checking bridge before ${variant}`;
       return { ok: true };
     },
+    requestAllLive() { return this.requestVehicle("ALL"); },
+    requestSurvey() {
+      if (state.phase !== "idle" || state.combined?.active) return { ok: false, error: "busy" };
+      const previous = state.combined;
+      state.combined = createCombined(now());
+      startCombinedSegment(state.combined, now());
+      const error = beginVehicle(LIVE_GROUPS[0]);
+      if (error) { state.combined = previous; return { ok: false, error }; }
+      return { ok: true };
+    },
     requestBench() {
+      if (state.combined?.active) return { ok: false, error: "busy" };
       const error = beginPrecheck({
         variant: null,
         kind: "bench",
@@ -376,6 +486,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       return { ok: true };
     },
     requestReboot() {
+      if (state.combined?.active) return { ok: false, error: "busy" };
       if (state.link !== "ready") return { ok: false, error: "not connected" };
       if (state.phase !== "idle") return { ok: false, error: "busy" };
       state.phase = "reboot";
@@ -385,15 +496,27 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       touch();
       return { ok: true };
     },
-    requestStop() {
-      if (state.phase === "idle" || state.phase === "stopping") return;
-      state.phase = "stopping";
-      state.message = "Stopping";
-      arm(TIMEOUTS.stop);
-      send("STOP");
-      touch();
-    },
+    requestStop: stop,
     tick() {
+      const combined = state.combined;
+      if (combined?.active) {
+        if (now() >= combined.endAt) { stop(); return true; }
+        if (combined.nextPending && state.phase === "idle") {
+          startCombinedSegment(combined, now());
+          const error = beginVehicle(LIVE_GROUPS[combined.groupIndex]);
+          if (error) { combined.active = false; combined.error = error; touch(); }
+          return true;
+        }
+        if (state.phase === "read" && combined.rotateAt != null && now() >= combined.rotateAt) {
+          combined.rotateRequested = true;
+          state.phase = "stopping";
+          state.message = "All live data — finishing group before switching";
+          arm(TIMEOUTS.stop);
+          send("STOP");
+          touch();
+          return true;
+        }
+      }
       if (state.deadline == null || now() < state.deadline) return false;
       state.deadline = null;
       if (state.phase === "stopping") {

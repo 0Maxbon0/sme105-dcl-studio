@@ -1,11 +1,14 @@
 /** DOM updates. Imported only from the browser entry point. */
 
 import { lookupCode } from "./codes-db.js";
-import { bitRows, formatValue, judgeReading, LIVE2_PIDS, LIVE3_PIDS, LIVE_PIDS, PID_TEXT, PIDS, rowsToCsv, summarizeSeries } from "./pids.js";
+import { ALL_LIVE_PIDS, AUTOMATIC_PIDS, bitRows, displayReading, formatValue, judgeReading, LIVE2_PIDS, LIVE3_PIDS, LIVE_PIDS, PID_TEXT, PIDS, readingLabel, rowsToCsv, summarizeSeries } from "./pids.js";
+import { combinedSnapshot, LIVE_GROUPS } from "./combined.js";
 import { reasonText, stageText, VARIANTS } from "./protocol.js";
 import { STR } from "./strings.js";
+import { readingReference, VEHICLE_PROFILE } from "./reference.js";
 
 const $ = (id) => document.getElementById(id);
+const expandedReadings = new Set();
 
 export function applyStaticStrings() {
   document.querySelectorAll("[data-str]").forEach((node) => {
@@ -22,6 +25,7 @@ export function applyStaticStrings() {
   $("bt-warning").textContent = STR.noBluetooth;
   $("modal-cancel").textContent = STR.cancel;
   $("modal-ok").textContent = STR.proceed;
+  $("vehicle-profile").textContent = VEHICLE_PROFILE;
 }
 
 export function showView(name) {
@@ -131,7 +135,7 @@ function banner(node, state) {
 }
 
 export function render(state) {
-  const busy = state.phase !== "idle";
+  const busy = state.phase !== "idle" || !!state.combined?.active;
   const linked = state.link === "ready";
   $("link-pill").textContent = state.link === "ready"
     ? (state.deviceName || STR.link)
@@ -159,6 +163,7 @@ export function render(state) {
   $("set-live").disabled = busy;
   $("set-live2").disabled = busy;
   $("set-live3").disabled = busy;
+  $("set-all-live").disabled = busy;
 
   banner($("codes-banner"), state);
   banner($("live-banner"), state);
@@ -174,7 +179,7 @@ export function render(state) {
     promptBox.hidden = true;
     promptBox.textContent = "";
   }
-  $("live-progress").value = variant === "LIVE" || variant === "LIVE2" || variant === "LIVE3" ? pct : 0;
+  $("live-progress").value = variant === "ALL" || variant === "LIVE" || variant === "LIVE2" || variant === "LIVE3" ? pct : 0;
 
   const snap = activeSnap(state);
   const result = state.lastSession;
@@ -213,16 +218,17 @@ export function render(state) {
     }
   }
 
-  const setId = variant === "LIVE2" || variant === "LIVE3" || variant === "LIVE"
+  const setId = state.combined ? "ALL" : variant === "ALL" || variant === "LIVE2" || variant === "LIVE3" || variant === "LIVE"
     ? variant
-    : ($("set-live3").checked ? "LIVE3" : $("set-live2").checked ? "LIVE2" : "LIVE");
-  const pidList = setId === "LIVE3" ? LIVE3_PIDS : setId === "LIVE2" ? LIVE2_PIDS : LIVE_PIDS;
+    : ($("set-all-live").checked ? "ALL" : $("set-live3").checked ? "LIVE3" : $("set-live2").checked ? "LIVE2" : "LIVE");
+  const pidList = setId === "ALL" ? ALL_LIVE_PIDS : setId === "LIVE3" ? LIVE3_PIDS : setId === "LIVE2" ? LIVE2_PIDS : LIVE_PIDS;
+  const live = state.combined ? combinedSnapshot(state.combined) : (snap || result);
   const cards = $("live-cards");
-  cards.classList.toggle("untrusted", state.trust === "untrusted");
-  const rows = snap?.rows || result?.rows || [];
+  cards.classList.toggle("untrusted", state.trust === "untrusted" || !!state.combined?.failed);
+  const rows = live?.rows || [];
   $("csv-btn").disabled = rows.length === 0;
   cards.replaceChildren();
-  const hasSamples = rows.length > 0 || state.trust === "progress";
+  const hasSamples = rows.length > 0 || state.trust === "progress" || !!state.combined?.active;
   if (!hasSamples) {
     const note = document.createElement("p");
     note.className = "help";
@@ -234,36 +240,85 @@ export function render(state) {
     ect: lastSample(snap, result, "ECT"),
     iact: lastSample(snap, result, "IACT"),
     itp: lastSample(snap, result, "ITP"),
+    idleCheck: $("idle-check").checked,
   };
+  const manual = $("manual-gearbox").checked;
   for (const pid of hasSamples ? pidList.slice(1) : []) {
     const spec = PIDS[pid];
     if (!spec) continue;
     const [name, unit] = spec;
     const text = PID_TEXT[name] || [name, unit, ""];
-    const samples = snap?.pids?.[name]?.samples || result?.pids?.[name]?.samples || [];
-    const summary = samples.length ? summarizeSeries(samples) : null;
+    const series = live?.pids?.[name];
+    const samples = series?.samples || [];
+    const summary = series?.summary || (samples.length ? summarizeSeries(samples) : null);
     const card = document.createElement("article");
     card.className = "card";
     const title = document.createElement("strong");
     title.textContent = text[0];
     const value = document.createElement("div");
     value.className = "value";
-    value.textContent = summary ? `${formatValue(summary.last)} ${text[1]}`.trim() : "No reading yet";
-    const verdict = summary ? judgeReading(name, summary, { ...context, samples }) : null;
+    value.textContent = readingLabel(name, summary, { manual });
+    const freshness = document.createElement("p");
+    freshness.className = "meta";
+    if (state.combined || setId === "ALL") {
+      const latest = samples.at(-1);
+      const age = latest?.receivedAt != null ? Math.max(0, (Date.now() - latest.receivedAt) / 1000) : null;
+      freshness.textContent = latest
+        ? `Last received ${age == null ? "—" : age.toFixed(1)} s ago${state.combined ? ` · ${latest.variant} · ${latest.validity}` : " · continuous map"}`
+        : "No sample received yet";
+    }
+    const verdict = summary && !(manual && AUTOMATIC_PIDS.has(name))
+      ? judgeReading(name, summary, { ...context, samples }) : null;
     if (verdict) value.classList.add(verdict.level);
     const judgement = document.createElement("p");
     judgement.className = `judge ${verdict ? verdict.level : ""}`;
     judgement.textContent = verdict ? verdict.text : "";
     const range = document.createElement("div");
     range.className = "meta";
+    const displayUnit = summary ? displayReading(name, summary.last).unit : "";
     range.textContent = summary
-      ? `${STR.min} ${formatValue(summary.min)} · ${STR.max} ${formatValue(summary.max)} · n ${summary.n}`
+      ? `${STR.min} ${formatValue(displayReading(name, summary.min).value)} · ${STR.max} ${formatValue(displayReading(name, summary.max).value)} ${displayUnit} · ${summary.n} samples received`
       : "";
     const canvas = document.createElement("canvas");
     const explain = document.createElement("p");
     explain.className = "help";
     explain.textContent = text[2];
-    card.append(title, explain, value, judgement, range, canvas);
+    const reference = readingReference(name, { manual });
+    const normal = document.createElement("p");
+    normal.className = "help";
+    normal.textContent = `Range / reference: ${reference.normal}`;
+    const meaning = document.createElement("p");
+    meaning.className = "help";
+    meaning.textContent = reference.meaning;
+    if (reference.source) {
+      const source = document.createElement("a");
+      source.href = reference.source;
+      source.target = "_blank";
+      source.rel = "noopener noreferrer";
+      source.textContent = " Ford workshop specification";
+      normal.append(source);
+    }
+    const details = document.createElement("details");
+    const detailsTitle = document.createElement("summary");
+    detailsTitle.textContent = `Technical values · ${name}`;
+    // Preserve the user's expanded detail cards across live repainting.
+    details.open = expandedReadings.has(name);
+    details.addEventListener("toggle", () => {
+      if (!details.isConnected) return;
+      if (details.open) expandedReadings.add(name);
+      else expandedReadings.delete(name);
+      if (details.open) drawSpark(canvas, samples);
+    });
+    const raw = document.createElement("p");
+    raw.className = "meta";
+    raw.textContent = summary ? `ECU raw word: ${summary.rawLast} · decoded: ${formatValue(summary.last)} ${unit}` : "No reading yet";
+    const activity = document.createElement("p");
+    activity.className = "help";
+    activity.textContent = summary && summary.min === 0 && summary.max === 0
+      ? "Zero values were received. Zero alone cannot distinguish an inactive signal from an unsupported parameter."
+      : "";
+    details.append(detailsTitle, raw, range, activity, canvas);
+    card.append(title, explain, value, freshness, judgement, normal, meaning, details);
     if (unit === "bits" && samples.length) {
       const bits = document.createElement("ul");
       bits.className = "bits";
@@ -276,9 +331,15 @@ export function render(state) {
       card.append(bits);
     }
     cards.append(card);
-    drawSpark(canvas, samples);
+    // The sparkline normalizes min/max. Positive linear unit conversions
+    // preserve its shape; retain original samples without copying the series.
+    if (details.open) drawSpark(canvas, samples);
   }
-  $("live-meta").textContent = rows.length ? `${rows.length} samples` : "";
+  $("live-meta").textContent = state.combined
+    ? `Slow survey · ${state.combined.active ? `cycling ${LIVE_GROUPS[state.combined.groupIndex]}` : "stopped"} · ${rows.length} samples · ${state.combined.segments.length} completed groups. Groups are sampled in turn, not simultaneously.${state.combined.error ? ` ${state.combined.error}` : ""}`
+    : setId === "ALL" ? `Continuous all-data stream · ${live?.totalRows || rows.length} samples · one map, no group switching. Designed for all channels each 0.36 s; actual vehicle delivery must be measured.`
+    : rows.length ? `${live?.totalRows || rows.length} samples` : "";
+  if (state.archive) $("live-meta").textContent += ` Full data is saved on this phone; graphs show recent readings. ${state.archive.persistent ? "Persistent storage granted." : "Export before clearing browser data; storage persistence was not granted."}${state.archive.error ? ` Storage error: ${state.archive.error}` : ""}`;
   const romNow = snap?.rom || state.rom;
   const mem = snap?.mem || result?.mem || {};
   const memLines = Object.keys(mem).sort((a, b) => a - b).map((key) => `byte ${key}: ${mem[key].toString(16).toUpperCase().padStart(2, "0")}`);
@@ -305,8 +366,8 @@ export function render(state) {
   $("log-pre").textContent = tail.join("\n");
 }
 
-export function exportLog(state) {
-  const blob = new Blob([`${state.log.join("\n")}\n`], { type: "text/plain" });
+export async function exportLog(state) {
+  const blob = state.archive ? await state.archive.export("raw") : new Blob([`${state.log.join("\n")}\n`], { type: "text/plain" });
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
   link.download = "eec-iv-session.txt";
@@ -314,9 +375,9 @@ export function exportLog(state) {
   URL.revokeObjectURL(link.href);
 }
 
-export function exportCsv(state) {
-  const rows = state.cart?.snapshot().rows || state.lastSession?.rows || [];
-  const blob = new Blob([rowsToCsv(rows)], { type: "text/csv" });
+export async function exportCsv(state) {
+  const rows = state.combined?.rows || state.cart?.snapshot().rows || state.lastSession?.rows || [];
+  const blob = state.archive ? await state.archive.export("csv") : new Blob([rowsToCsv(rows)], { type: "text/csv" });
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
   link.download = "eec-iv-live.csv";

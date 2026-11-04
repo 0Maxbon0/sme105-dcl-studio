@@ -2,6 +2,59 @@
 
 Offline, installable web app for a 1998 European Ford Escort 1.6 Zetec (Ford EEC-IV, DCL/CART). The phone talks Bluetooth Low Energy to the `SME105-DCL` ESP32 bridge. The bridge is the only thing that transmits on the car.
 
+## Continuous all-data monitoring
+
+**All live data** uses `ARM_ALL` / `READ_ALL` on bridge firmware v21 or newer.
+It loads one mode-41 map with three words in each of frames 1–15, then repeats
+mode 21 without changing groups. The 45 slots contain all 39 requested channels
+and six repeated key readings. Frame length remains 6: the designed update
+interval is 360 ms per block, not simultaneous measurements. Actual timing and
+supported equipment still require verification on this SME-105 ECU. The three
+individual sets remain available, with an expandable explanation under each
+selection. The earlier rotating survey survives internally for compatibility;
+it is not used by the All live data button.
+
+The map follows LHBH1 chapter 13, pp.13-13/14: configurable slots, mode 41 then
+mode 21. [Reference code](https://github.com/doncreat0r/eeciv/blob/master/tables.h)
+uses multiple PID slots per frame; [another implementation](https://github.com/flxkrmr/eec-iv-reader-arduino/blob/master/src/EecIv.cpp)
+also loads a multi-slot map. These references do not establish vehicle-specific
+sensor support, electrical safety or sustained operation of this bridge.
+
+All live modes have a **three-hour** firmware limit, with an extra minute in
+the app to receive a final END. The decoder unwraps the wire's 32-bit
+microsecond clock (about 71.6 minutes per wrap). The ESP32 keeps fixed-size RAM
+queues and streams data; it does not accumulate a trip or write readings to its
+flash. Its existing pad, DE watchdog, transport and overflow checks remain;
+five seconds without ECU data ends live capture as incomplete, without retry.
+Turning off the key stops ECU communication; it does not provide a clean final
+capture verdict, and does not replace the link/overflow checks during a trip.
+
+The phone saves every raw received line and CSV row in IndexedDB chunks once
+per second. The UI retains at most 512 readings per channel and a recent log
+window in RAM; full-trip counts and min/max remain cumulative. CSV/log export
+reads the full saved recording, not just recent history. Saved recordings can
+be exported after reopening the app. The app never automatically deletes them.
+At least 1 GB of estimated free browser quota is required before live capture;
+this is headroom, not a promise of three hours. Browser quota, actual free space,
+link throughput, battery, Android background suspension and browser eviction
+still apply. A failed write or a queued backlog over 4 MB stops capture and
+retains pending chunks for export in that tab. A process/power loss may lose the
+latest uncommitted chunk. Export recordings before clearing browser data.
+See [browser storage documentation](https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria).
+
+Three hours of simulated ECU frames, including two clock wraps and more than
+1.3 million samples, pass decoder/bounded-memory checks. IndexedDB transaction
+and failure/export tests use a temporary fake-indexeddb installation:
+
+```bash
+FAKE_INDEXEDDB_MODULE=/tmp/sme105-v21-test-deps/node_modules/fake-indexeddb/build/esm/index.js node --test app/tests/recording.test.mjs
+```
+
+These are software checks, not a real three-hour car or radio test. Local
+browser preview was blocked because permission was declined; UI interaction
+and sustained phone storage remain unverified. Keep the app open and connected;
+this prototype has not been qualified for a road trip.
+
 Target browser: Chrome on Android (checked against a Samsung Galaxy A52s). Web Bluetooth is not available in iOS Safari.
 
 ## Install

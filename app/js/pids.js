@@ -15,6 +15,17 @@ export const LIVE3_PIDS = Object.freeze([
   0x30, 0x32, 0x35, 0x36, 0x37, 0x38, 0x11, 0x04,
 ]);
 
+export const ALL_LIVE_PIDS = Object.freeze([...new Set([...LIVE_PIDS, ...LIVE2_PIDS, ...LIVE3_PIDS])]);
+// Rows are frame IDs, columns are IW2..IW4. Must match live_all_map.h.
+export const ALL_LIVE_MAP = Object.freeze([
+  [0, 0, 0], [0x01, 0x24, 0x02], [0x0f, 0x25, 0x07],
+  [0x10, 0x2b, 0x12], [0x05, 0x2a, 0x13], [0x06, 0x15, 0x17],
+  [0x09, 0x1a, 0x26], [0x11, 0x1b, 0x30], [0x03, 0x2f, 0x32],
+  [0x04, 0x2e, 0x35], [0x0c, 0x0b, 0x36], [0x0d, 0x0e, 0x37],
+  [0x08, 0x2d, 0x38], [0x18, 0x01, 0x11], [0x27, 0x09, 0x15],
+  [0x28, 0x2a, 0x01],
+].map((row) => Object.freeze(row)));
+
 export const BITMAP_BITS = {
   BITMAP_0: {
     6: "not in neutral/park",
@@ -113,17 +124,17 @@ export const PIDS = {
 /** Plain names. The short key stays the ECU identifier used in captures. */
 export const PID_TEXT = {
   N: ["Engine speed", "rpm", "How fast the crankshaft is turning. This stays at zero with the engine off."],
-  ACT: ["Intake air temperature", "°C", "The air temperature the ECU is using. If the sensor is unplugged, this copies the coolant temperature."],
-  ECT: ["Coolant temperature", "°C", "Engine coolant temperature. About 85–95 °C is normal when fully warm."],
-  IACT: ["Intake-air sensor, raw", "counts", "The raw sensor number. Near 1000 means the sensor is unplugged or its wire is open."],
+  ACT: ["Intake air temperature", "°C", "The temperature the ECU is using; the reference strategy permits substituted or fixed fallback values. This is not always a direct sensor measurement."],
+  ECT: ["Coolant temperature", "°C", "Engine coolant temperature reported by the ECU. Warm-up, thermostat and fan operation determine expected temperature; a factory pass/fail band is not verified."],
+  IACT: ["Intake-air sensor, raw", "counts", "Unconverted sensor input. Open/short diagnosis needs applicable circuit limits, wiring checks and fault codes."],
   IECT: ["Coolant sensor, raw", "counts", "The raw coolant-sensor number, before it is converted to degrees."],
-  ITP: ["Throttle position", "counts", "Pedal position. It should sit still at idle and rise smoothly as you press the pedal."],
-  VBAT: ["Battery voltage", "volts", "About 12 V with the engine off, and about 13.8–14.5 V while it is running and charging."],
-  BP: ["Barometric pressure", "inHg", "Outside air pressure. Near sea level this is about 29–30."],
+  ITP: ["Throttle sensor signal", "counts", "Should rise smoothly as the throttle opens. Counts are not throttle percent; percentage needs calibrated closed/open positions."],
+  VBAT: ["Battery voltage", "volts", "ECU supply voltage. Starting, charging and electrical loads affect it. Compare with a battery measurement before diagnosing the charging system."],
+  BP: ["Barometric pressure", "inHg", "Absolute outside pressure; expected pressure depends on altitude and weather."],
   SAFTOT: ["Spark advance", "degrees", "How many degrees before top dead centre the spark plug fires."],
-  FUELPW1: ["Injector open time", "ticks", "How long the injector stays open. Zero with the engine off."],
+  FUELPW1: ["Injector pulse command", "ticks", "The protocol reports clock ticks. Milliseconds need a verified ECU clock conversion; no duration is guessed."],
   LAMBSE1: ["Target mixture", "lambda", "1.00 is the normal mixture. Below 1 is richer, which is normal when the engine is cold."],
-  IEGO1: ["Oxygen sensor, raw", "counts", "The exhaust oxygen sensor. Once the engine is warm it should keep moving between low and high."],
+  IEGO1: ["Oxygen sensor feedback", "counts", "Switching is expected during closed-loop operation. Raw count direction and sensor voltage need verified input-circuit scaling; high counts do not by themselves mean rich exhaust."],
   VS: ["Vehicle speed", "mph", "Speed from the vehicle speed sensor. Zero when the car is stopped."],
   LOAD: ["Engine load", "%", "How hard the engine is working. It rises when you press the pedal."],
   KAMRF1: ["Learned fuel correction", "ratio", "The ECU's long-term fuel adjustment. 1.00 means no correction."],
@@ -131,7 +142,7 @@ export const PID_TEXT = {
   FMEM_FLAG2: ["Failure memory, byte 2", "", "A second packed set of failure flags. Same limitation as byte 1."],
   RATCH: ["Learned closed throttle", "counts", "The throttle reading the ECU has learned as 'pedal released'."],
   DSDRPM: ["Target idle speed", "rpm", "The idle speed the ECU is trying to hold."],
-  ISCDTY: ["Idle air valve", "%", "How far the idle-air valve is open. The ECU uses it to hold the idle speed."],
+  ISCDTY: ["Idle air valve command", "%", "Commanded electrical duty cycle, not measured valve opening. The ECU uses it to control idle speed."],
   BITMAP_0: ["Switches, group 1", "", "On/off inputs: gear position, fuel pump, canister purge and the air-conditioning clutch."],
   BITMAP_1: ["Switches, group 2", "", "On/off inputs: closed-loop fuel, power steering, air conditioning, and a few outputs."],
   INDS: ["Neutral / drive switch", "counts", "Whether the gearbox is in park/neutral or in gear."],
@@ -142,18 +153,47 @@ export const PID_TEXT = {
   MAP: ["Manifold pressure", "inHg", "Pressure in the intake manifold. Only present if this ECU uses a MAP sensor."],
   IEGR: ["EGR sensor, raw", "counts", "Raw exhaust-gas recirculation sensor. Stays still if the car has no EGR."],
   MAP_FREQ: ["MAP frequency", "Hz", "Frequency output of a MAP sensor, if fitted."],
-  EGRDC: ["EGR valve command", "%", "How far the ECU is commanding the EGR valve open."],
+  EGRDC: ["EGR valve command", "%", "Commanded electrical duty cycle if supported; this is not measured valve opening or exhaust flow."],
   VSBAR: ["Speed, filtered", "mph", "A filtered vehicle-speed value. Zero when stopped."],
-  MAF: ["Airflow sensor, raw", "counts", "Only meaningful if this ECU has a mass-airflow sensor. Code 157 says it might."],
+  MAF: ["PID 0x26 — possible airflow signal", "counts", "Some implementations call this MAF; the LHBH1 table marks 0x26 unused. Its meaning and physical scaling are unverified on this ECU."],
   BCSDC: ["Torque-converter clutch", "%", "Command to the transmission lock-up clutch, if this car has one."],
   GR_CM: ["Commanded gear", "", "The gear the ECU is commanding. Meaningless on a manual gearbox."],
-  ETVOCM: ["Electronic pressure control", "volts", "Transmission line-pressure control, if fitted."],
+  ETVOCM: ["Transmission overcurrent monitor", "volts", "Reference ETVOCM electrical monitor, if fitted; not a measurement of hydraulic pressure."],
   TV_PRES: ["Transmission pressure", "psi", "Commanded transmission pressure, if fitted."],
   ITOT: ["Transmission temperature, raw", "counts", "Raw transmission-oil temperature, if fitted."],
   PDL: ["Gear position", "", "Park, reverse, neutral, drive or low, if the ECU has that switch."],
 };
 
+// LHBH1 ch.13 pp.13-30/31: VS = raw/32 mph, VSBAR = byte/2 mph.
+// Keep decoder values and historical CSV columns stable; convert for display.
+const MPH_TO_KMH = 1.609344;
+export const AUTOMATIC_PIDS = new Set(["BCSDC", "GR_CM", "ETVOCM", "TV_PRES", "ITOT", "PDL"]);
+const RAW_SIGNALS = new Set(["IACT", "IECT", "ITP", "IEGO1", "RATCH", "INDS", "IOCC", "IVCAL", "IEGR", "MAF", "ITOT"]);
+
+export function displayReading(name, value) {
+  if (name === "VS" || name === "VSBAR") return { value: value * MPH_TO_KMH, unit: "km/h" };
+  if (name === "KAMRF1") return { value: (value - 1) * 100, unit: "% correction" };
+  const spec = Object.values(PIDS).find(([key]) => key === name);
+  return { value, unit: PID_TEXT[name]?.[1] ?? spec?.[1] ?? "" };
+}
+
+/** Human descriptions do not imply a calibrated voltage, temperature or percent. */
+export function readingLabel(name, summary, { manual = true } = {}) {
+  if (!summary) return "No reading yet";
+  if (manual && AUTOMATIC_PIDS.has(name)) return "Not applicable — manual gearbox";
+  if (name === "MAF") return "Signal received — meaning unverified";
+  if (name === "IECT") return "See coolant temperature in °C";
+  if (name === "RATCH") return "Learned closed-throttle reference";
+  if (RAW_SIGNALS.has(name)) return "Raw signal — see details";
+  if (name === "FUELPW1") return summary.last === 0 ? "No injector pulse commanded" : "Injector pulse commanded";
+  if (name === "APT") return ({ "-1": "Closed throttle", 0: "Part throttle", 1: "Wide open throttle" })[summary.last] ?? "Unknown throttle mode";
+  if (["BITMAP_0", "BITMAP_1", "FMEM_FLAGS", "FMEM_FLAG2"].includes(name)) return "See individual flags below";
+  const view = displayReading(name, summary.last);
+  return `${formatValue(pyRound(view.value, 2))} ${view.unit}`.trim();
+}
+
 export function pidSetForVariant(variant) {
+  if (variant === "ALL") return ALL_LIVE_MAP;
   if (variant === "LIVE3") return LIVE3_PIDS;
   if (variant === "LIVE2") return LIVE2_PIDS;
   if (variant === "LIVE") return LIVE_PIDS;
@@ -185,80 +225,18 @@ export function bitRows(name, raw) {
   return [];
 }
 
-function lastOf(samples) {
-  return samples?.length ? samples[samples.length - 1].value : null;
-}
-
-function jumpiness(samples) {
-  if (!samples || samples.length < 6) return 0;
-  const tail = samples.slice(-12);
-  let sum = 0;
-  for (let i = 1; i < tail.length; i += 1) sum += Math.abs(tail[i].value - tail[i - 1].value);
-  return sum / (tail.length - 1);
-}
-
-/** Plain judgement for one live value. level is ok, warn, bad, or quiet. */
+/** Assess only an explicit test against a sourced vehicle specification.
+ * Other channels explain operating context without inventing health limits.
+ */
 export function judgeReading(name, summary, context = {}) {
-  if (!summary) return null;
-  const v = summary.last;
-  const rpm = context.rpm ?? 0;
-  const ect = context.ect;
-  const running = rpm > 400;
-  const warm = ect != null && ect >= 70;
-  if (name === "N") {
-    if (v === 0) return { level: "quiet", text: "Engine is off. This is normal." };
-    if (v > 5000) return { level: "bad", text: "Engine speed is very high." };
-    if (v > 3500) return { level: "warn", text: "Engine speed is high." };
-    return { level: "ok", text: running && v < 1400 ? "Idle speed looks normal." : "Engine speed looks normal." };
+  if (!summary || !Number.isFinite(summary.last)) return null;
+  if (name === "N" && context.idleCheck === true) {
+    if (summary.last === 0) return { level: "quiet", text: "Engine is stopped. The regulated idle comparison does not apply." };
+    if (summary.last < 825) return { level: "warn", text: "Below the 825–925 rpm regulated idle reference. Recheck after the idle settles under the stated test conditions." };
+    if (summary.last > 925) return { level: "warn", text: "Above the 825–925 rpm regulated idle reference. Recheck after the idle settles under the stated test conditions." };
+    return { level: "ok", text: "Within the published regulated idle reference under the stated test conditions. This does not prove overall engine health." };
   }
-  if (name === "VBAT") {
-    if (v < 11.6) return { level: "bad", text: "Battery voltage is too low." };
-    if (v > 15.2) return { level: "bad", text: "Voltage is too high. Check the alternator." };
-    if (running && v < 13.0) return { level: "warn", text: "The engine is running but the battery is not charging well." };
-    if (!running && v < 12.2) return { level: "warn", text: "Battery is low. It may need charging." };
-    return { level: "ok", text: running ? "Charging voltage looks normal." : "Battery voltage looks normal." };
-  }
-  if (name === "IACT") {
-    if (v >= 900) return { level: "bad", text: "Intake-air sensor looks unplugged or its wire is open." };
-    if (v < 30) return { level: "bad", text: "Intake-air sensor looks shorted to ground." };
-    return { level: "ok", text: "Intake-air sensor is in a normal range." };
-  }
-  if (name === "ACT") {
-    if (context.iact >= 900) return { level: "warn", text: "The ECU is guessing this, because the intake-air sensor is not connected." };
-    if (v > 70) return { level: "warn", text: "Intake air is very hot." };
-    return { level: "ok", text: "Intake-air temperature looks normal." };
-  }
-  if (name === "ECT") {
-    if (v >= 115) return { level: "bad", text: "Coolant is too hot. Stop and let the engine cool." };
-    if (v >= 105) return { level: "warn", text: "Coolant is hotter than normal." };
-    if (running && v < 60) return { level: "quiet", text: "Engine is still cold. Some readings are not meaningful yet." };
-    return { level: "ok", text: "Coolant temperature looks normal." };
-  }
-  if (name === "ITP") {
-    const jump = jumpiness(context.samples);
-    if (v < 8) return { level: "bad", text: "No throttle signal. Check the sensor plug and the 5 V supply." };
-    if (running && jump > 40) return { level: "warn", text: "Throttle signal is jumping. Check the connector, the sensor ground and the engine ground." };
-    return { level: "ok", text: "Throttle signal looks steady." };
-  }
-  if (name === "LAMBSE1") {
-    if (warm && (v < 0.85 || v > 1.15)) return { level: "warn", text: "The target mixture is far from normal for a warm engine." };
-    if (!warm && v < 1) return { level: "quiet", text: "Richer than normal. Expected while the engine is cold." };
-    return { level: "ok", text: "Target mixture looks normal." };
-  }
-  if (name === "IEGO1") {
-    if (!warm) return { level: "quiet", text: "Oxygen sensor is not ready until the engine is warm." };
-    const span = summary.max - summary.min;
-    if (summary.n > 30 && span < 40) return { level: "warn", text: "Oxygen sensor is not moving. It may still be cold, or the sensor is not working." };
-    return { level: "ok", text: "Oxygen sensor is moving, which is what a warm engine should do." };
-  }
-  if (name === "BP") {
-    if (v < 27 || v > 31.5) return { level: "warn", text: "Barometric pressure is outside the usual range." };
-    return { level: "ok", text: "Barometric pressure looks normal." };
-  }
-  if (name === "RATCH" && context.itp != null && Math.abs(v - context.itp) > 80 && rpm < 400) {
-    return { level: "warn", text: "Closed-throttle memory does not match the pedal position right now." };
-  }
-  return null;
+  return { level: "quiet", text: "A health verdict needs the stated operating conditions and a verified limit. See the reference below." };
 }
 
 export function formatValue(value) {
@@ -268,8 +246,15 @@ export function formatValue(value) {
 }
 
 export function rowsToCsv(rows) {
-  const lines = ["t_s,pid,raw,value"];
-  for (const row of rows) lines.push(`${row.t},${row.name},${row.raw},${row.value}`);
+  const combined = rows.some((row) => row.segment != null);
+  const lines = ["t_s,pid,raw,value,unit,display_value,display_unit" +
+    (combined ? ",segment,group,segment_t_s,sample_status,time_basis" : "")];
+  for (const row of rows) {
+    const spec = Object.values(PIDS).find(([name]) => name === row.name);
+    const view = displayReading(row.name, row.value);
+    lines.push(`${row.t},${row.name},${row.raw},${row.value},${spec?.[1] ?? ""},${formatValue(view.value)},${view.unit}` +
+      (combined ? `,${row.segment},${row.variant},${row.source_t},${row.validity},host-arrival-aligned` : ""));
+  }
   return lines.join("\n") + "\n";
 }
 

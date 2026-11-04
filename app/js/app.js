@@ -3,6 +3,7 @@ import { createController } from "./controller.js";
 import { APP_VERSION, createLineBuffer } from "./protocol.js";
 import { createMockTransport, createReplay } from "./mock-transport.js";
 import { STR } from "./strings.js";
+import { createRecording, listRecordings, recordingBlob } from "./recording.js";
 import { applyStaticStrings, confirmDialog, exportCsv, exportLog, render, showView } from "./ui.js";
 
 const DEMO_FILES = {
@@ -84,15 +85,65 @@ async function ask(title, body, action) {
   if (controller.state.phase !== "idle") return;
   const ok = await confirmDialog(title, body);
   if (!ok) return;
-  const result = action();
+  if (controller.state.phase !== "idle") return;
+  const result = await action();
   if (result && result.ok === false) controller.state.message = result.error;
   render(controller.state);
 }
 
 function selectedLive() {
+  if (document.getElementById("set-all-live").checked) return "ALL";
   if (document.getElementById("set-live3").checked) return "LIVE3";
   if (document.getElementById("set-live2").checked) return "LIVE2";
   return "LIVE";
+}
+
+async function startLive() {
+  const variant = selectedLive();
+  try {
+    const archive = await createRecording(variant, error => controller.failRecording(`Recording stopped: ${error.message}`));
+    if (controller.state.phase !== "idle" || controller.state.link !== "ready") {
+      await archive.finish({ valid: false, reasons: ["Connection changed while opening recording"] });
+      return { ok: false, error: "Connect the bridge before starting a recording" };
+    }
+    for (const line of [controller.state.identity.hello, controller.state.identity.pins, controller.state.status?.raw]) if (line) archive.line(line);
+    controller.setArchive(archive);
+    const result = variant === "ALL" ? controller.requestAllLive() : controller.requestVehicle(variant);
+    if (!result.ok) await archive.finish({ valid: false, reasons: [result.error] });
+    await refreshRecordings();
+    return result;
+  } catch (error) {
+    return { ok: false, error: `Cannot start recording: ${error.message}` };
+  }
+}
+
+async function refreshRecordings() {
+  const select = document.getElementById("saved-recordings");
+  const previous = select.value;
+  try {
+    const entries = await listRecordings();
+    select.replaceChildren(...entries.map(entry => new Option(`${entry.started ? new Date(entry.started).toLocaleString() : entry.id} · ${entry.variant}`, entry.id)));
+    if (entries.some(entry => entry.id === previous)) select.value = previous;
+    document.getElementById("saved-csv").disabled = !entries.length;
+    document.getElementById("saved-log").disabled = !entries.length;
+  } catch (error) {
+    document.getElementById("recording-status").textContent = `Recording storage unavailable: ${error.message}`;
+  }
+}
+
+async function downloadSaved(kind) {
+  try {
+    const id = document.getElementById("saved-recordings").value;
+    if (!id) return;
+    const blob = controller.state.archive?.id === id
+      ? await controller.state.archive.export(kind) : await recordingBlob(id, kind);
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `eec-iv-${id.slice(0,19).replaceAll(":", "-")}.${kind === "csv" ? "csv" : "txt"}`;
+    link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  } catch (error) {
+    document.getElementById("recording-status").textContent = `Export failed: ${error.message}`;
+  }
 }
 
 function wire() {
@@ -102,6 +153,12 @@ function wire() {
   document.getElementById("bt-warning").hidden = bluetoothAvailable() || demoEnabled();
   const storedDemo = readStorage("eeciv-demo") === "1";
   const storedCapture = readStorage("eeciv-demo-capture");
+  document.getElementById("manual-gearbox").checked = readStorage("eeciv-manual-gearbox") !== "0";
+  document.getElementById("manual-gearbox").addEventListener("change", (event) => {
+    writeStorage("eeciv-manual-gearbox", event.target.checked ? "1" : "0");
+    render(controller.state);
+  });
+  document.getElementById("idle-check").addEventListener("change", () => render(controller.state));
   if (storedDemo) document.getElementById("demo-toggle").checked = true;
   if (storedCapture) document.getElementById("demo-capture").value = storedCapture;
   document.getElementById("bt-warning").hidden = bluetoothAvailable() || demoEnabled();
@@ -124,7 +181,8 @@ function wire() {
     STR.confirmKoerTitle, STR.confirmKoerBody, () => controller.requestVehicle("KOER"),
   ));
   document.getElementById("live-start").addEventListener("click", () => ask(
-    STR.confirmLiveTitle, STR.confirmLiveBody, () => controller.requestVehicle(selectedLive()),
+    STR.confirmLiveTitle, selectedLive() === "ALL" ? STR.confirmAllLiveBody : STR.confirmLiveBody,
+    startLive,
   ));
   document.getElementById("offline-btn").addEventListener("click", () => ask(
     STR.confirmOffTitle, STR.confirmOffBody, () => controller.requestVehicle("OFF"),
@@ -143,8 +201,12 @@ function wire() {
     if (result && result.ok === false) controller.state.message = result.error;
     render(controller.state);
   });
-  document.getElementById("export-btn").addEventListener("click", () => exportLog(controller.state));
-  document.getElementById("csv-btn").addEventListener("click", () => exportCsv(controller.state));
+  const reportExportError = error => { controller.state.message = `Export failed: ${error.message}`; render(controller.state); };
+  document.getElementById("export-btn").addEventListener("click", () => exportLog(controller.state).catch(reportExportError));
+  document.getElementById("csv-btn").addEventListener("click", () => exportCsv(controller.state).catch(reportExportError));
+  document.getElementById("saved-csv").addEventListener("click", () => downloadSaved("csv"));
+  document.getElementById("saved-log").addEventListener("click", () => downloadSaved("raw"));
+  refreshRecordings();
   document.getElementById("demo-toggle").addEventListener("change", () => {
     writeStorage("eeciv-demo", demoEnabled() ? "1" : "0");
     document.getElementById("bt-warning").hidden = bluetoothAvailable() || demoEnabled();
@@ -163,9 +225,11 @@ function wire() {
     showView(demoKey() === "LIVE" ? "live" : "codes");
   });
   let dirty = true;
+  let lastPaint = 0;
   controller.subscribe(() => { dirty = true; });
-  const paint = () => {
-    if (dirty) {
+  const paint = (timestamp) => {
+    if (dirty && timestamp - lastPaint >= 100) {
+      lastPaint = timestamp;
       dirty = false;
       render(controller.state);
     }
@@ -173,6 +237,7 @@ function wire() {
   };
   requestAnimationFrame(paint);
   setInterval(() => controller.tick(), 250);
+  setInterval(() => { if (controller.state.combined || controller.state.op?.kind === "live") dirty = true; }, 1000);
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./sw.js").catch(() => {});
   }

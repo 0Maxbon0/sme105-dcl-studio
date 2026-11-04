@@ -1,8 +1,8 @@
 """Decode an SME105 bridge LIVE (DIAGMODE 41H/21H) capture into PID values.
 
 Frame layout (LHBH1 ch.13): sync, ID word (IW0), IW1 (DPS/status), IW2..
-The bridge loads one PID per frame into IW2; in mode 21H the ECU returns the
-value in that same slot. Scaling follows LHBH1 13-29 "PID Code Tables".
+The bridge loads one PID per frame into IW2 for LIVE/LIVE2/LIVE3, or
+three slots (IW2..IW4) for ALL; mode 21H returns values in the same slots. Scaling follows LHBH1 13-29 "PID Code Tables".
 """
 
 from __future__ import annotations
@@ -13,6 +13,10 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+try:
+    from .rx_batch import parse_rx_batch
+except ImportError:
+    from rx_batch import parse_rx_batch
 
 RX = re.compile(r"RX t_us=(\d+) byte=([0-9A-F]{2})")
 # Must match kLivePids in firmware/sme105_usb_bridge/sme105_usb_bridge.ino.
@@ -20,6 +24,13 @@ LIVE_PIDS = (0x00, 0x01, 0x0F, 0x10, 0x05, 0x06, 0x09, 0x11,
              0x03, 0x04, 0x0C, 0x0D, 0x08, 0x18, 0x27, 0x28)
 LIVE2_PIDS = (0x00, 0x01, 0x24, 0x25, 0x2B, 0x09, 0x2A, 0x15,
               0x1A, 0x1B, 0x2F, 0x2E, 0x0B, 0x0E, 0x2D, 0x11)
+ALL_LIVE_MAP = (
+    (0,0,0), (0x01,0x24,0x02), (0x0F,0x25,0x07), (0x10,0x2B,0x12),
+    (0x05,0x2A,0x13), (0x06,0x15,0x17), (0x09,0x1A,0x26),
+    (0x11,0x1B,0x30), (0x03,0x2F,0x32), (0x04,0x2E,0x35),
+    (0x0C,0x0B,0x36), (0x0D,0x0E,0x37), (0x08,0x2D,0x38),
+    (0x18,0x01,0x11), (0x27,0x09,0x15), (0x28,0x2A,0x01),
+)
 # LHBH1 13-31/32 bitmap definitions (bit index within the 12-bit value).
 BITMAP_BITS = {
     "BITMAP_0": {6: "not in neutral/park", 7: "fuel pump on",
@@ -65,6 +76,18 @@ PIDS = {
     0x1A: ("BITMAP_0", "bits", lambda v: v),
     0x1B: ("BITMAP_1", "bits", lambda v: v),
     0x2F: ("INDS", "A/D", lambda v: v),
+    0x02: ("MAP", "inHg", lambda v: (v & 0xFF) / 8),
+    0x07: ("IEGR", "counts", lambda v: v),
+    0x12: ("MAP_FREQ", "Hz", lambda v: v / 16),
+    0x13: ("EGRDC", "%", lambda v: round(v * 100 / 2048, 1)),
+    0x17: ("VSBAR", "mph", lambda v: (v & 0xFF) / 2),
+    0x26: ("MAF", "counts", lambda v: v),  # identity unverified, retained raw
+    0x30: ("BCSDC", "%", lambda v: round(v * 100 / 2048, 1)),
+    0x32: ("GR_CM", "", lambda v: v & 0xFF),
+    0x35: ("ETVOCM", "V", lambda v: v / 4),
+    0x36: ("TV_PRES", "psi", lambda v: (v & 0xFF) / 2),
+    0x37: ("ITOT", "counts", lambda v: v),
+    0x38: ("PDL", "", lambda v: v & 0xFF),
     0x2E: ("IOCC", "A/D", lambda v: v),
     0x0B: ("IVCAL", "A/D", lambda v: v),
     0x0E: ("APT", "", lambda v: s8(v)),
@@ -85,7 +108,18 @@ class Frame:
 
 def frames_from(rx: list[tuple[int, int]]) -> list[Frame]:
     words: list[list[tuple[int, int]]] = []
-    for t, b in rx:
+    last_wire = None
+    clock = 0
+    for wire_t, b in rx:
+        if last_wire is None:
+            clock = wire_t
+        else:
+            delta = (wire_t - last_wire) & 0xFFFFFFFF
+            if delta > 0x7FFFFFFF:
+                raise ValueError("RX timestamps reversed")
+            clock += delta
+        last_wire = wire_t
+        t = clock
         if words and t - words[-1][-1][0] <= 1300 and len(words[-1]) < 2:
             words[-1].append((t, b))
         else:
@@ -110,27 +144,45 @@ def decode(path: Path, csv_path: Path | None) -> int:
         print("no READ session in capture", file=sys.stderr)
         return 2
     end = text.find("END reason=", start)
-    rx = [(int(t), int(b, 16)) for t, b in RX.findall(text[start:end if end > 0 else None])]
+    rx = []
+    try:
+        for line in text[start:end if end > 0 else None].splitlines():
+            if line.startswith("RXB "):
+                rx.extend(parse_rx_batch(line.encode("ascii")))
+            else:
+                rx.extend((int(t), int(b, 16)) for t, b in RX.findall(line))
+    except (ValueError, UnicodeError) as exc:
+        print(f"invalid compact RX evidence: {exc}")
+        return 2
     frames = frames_from(rx)
     pid_set = LIVE2_PIDS if "variant=LIVE2" in text else LIVE_PIDS
+    all_mode = bool(re.search(r"(?:variant=|live_pid_map set=)ALL(?:\s|$)", text))
+    if all_mode:
+        pid_set = tuple(dict.fromkeys(pid for frame in ALL_LIVE_MAP for pid in frame))
     rows: list[tuple[float, str, int, float]] = []
     bad = 0
     mode = None
+    map_load_seen = False
     t0 = frames[0].t if frames else 0
     for fr in frames:
         if fr.fid == 4 and 2 in fr.slots:
             mode = fr.slots[2][0]
+            if mode == 0x41:
+                map_load_seen = True
         if mode != 0x21 or fr.fid == 0:
             continue
-        word = fr.slots.get(3)  # IW2: sync=0, ID=1, IW1=2, IW2=3
-        if word is None:
+        if all_mode and not map_load_seen:
             continue
-        if not parity_ok(*word):
-            bad += 1
-            continue
-        pid = pid_set[fr.fid]
-        raw = ((word[1] & 15) << 8) | word[0]
-        rows.append(((fr.t - t0) / 1e6, PIDS[pid][0], raw, PIDS[pid][2](raw)))
+        assigned = ALL_LIVE_MAP[fr.fid] if all_mode else (pid_set[fr.fid],)
+        for column, pid in enumerate(assigned):
+            word = fr.slots.get(3 + column)
+            if not pid or word is None:
+                continue
+            if not parity_ok(*word):
+                bad += 1
+                continue
+            raw = ((word[1] & 15) << 8) | word[0]
+            rows.append(((fr.t - t0 + column * SLOT_US) / 1e6, PIDS[pid][0], raw, PIDS[pid][2](raw)))
     if not rows:
         print("no 21H value slots decoded (ECU never entered mode 21H?)")
         return 1
