@@ -19,6 +19,9 @@
 #include <driver/uart.h>
 #include <driver/rmt.h>
 #include <driver/periph_ctrl.h>
+#ifdef SME105_BLE
+#include "ble_transport.h"
+#endif
 #include <freertos/ringbuf.h>
 #include <esp_intr_alloc.h>
 #include <esp_timer.h>
@@ -3017,6 +3020,9 @@ void setup() {
   if (!gateReady || !deTimer || !slotTimer) out.println(F("FAULT reason=HARDWARE_INIT no_transmit=1"));
   initializeWiFi(); // selected STA/AP credentials + token from NVS; NEVER starts ECU TX
   initializeOtaBootHealth();
+#ifdef SME105_BLE
+  ble_transport::begin("SME105-DCL", 123456); // feasibility build only
+#endif
 }
 void loop() {
   serviceSignedOtaTimeout(); // works even when Wi-Fi socket polling exits early
@@ -3045,5 +3051,8 @@ void loop() {
     out.drainTCP(wifiClient);
     if (out.tcpSendFailed()) dropTcpClient(true);
   }
+#ifdef SME105_BLE
+  ble_transport::poll();
+#endif
   delay(0);
 }
