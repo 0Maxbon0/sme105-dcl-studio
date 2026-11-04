@@ -30,13 +30,16 @@ DEFAULT_TOKEN_FILE = Path("~/.config/sme105/bridge-token").expanduser()
 TOKEN_HEX = re.compile(rb"^[0-9a-fA-F]{32}$")
 COMMANDS = ("STATUS", "TX2_BENCH", "LISTEN", "HELLO", "REQUEST_A4", "REQUEST_0E",
             "REQUEST_KOEO", "REQUEST_LIVE", "REQUEST_LIVE2", "REQUEST_OFF", "RMT_DUMP", "DE_BENCH",
-            "STOP", "EXIT")
+            "STOP", "REBOOT", "EXIT")
 CAR_TRANSMIT = frozenset(("HELLO", "REQUEST_A4", "REQUEST_0E", "REQUEST_KOEO",
                           "REQUEST_LIVE", "REQUEST_LIVE2", "REQUEST_OFF"))
 WIRE_COMMANDS = frozenset(("HELLO", "PINS", "STATUS", "TX2_BENCH", "LISTEN_9600", "OBSERVE", "ARM_A4",
                            "READ_A4", "ARM_0E", "READ_0E", "ARM_KOEO", "READ_KOEO",
                            "ARM_LIVE", "READ_LIVE", "ARM_LIVE2", "READ_LIVE2",
-                           "ARM_OFF", "READ_OFF", "RMT_DUMP", "DE_BENCH", "STOP"))
+                           "ARM_OFF", "READ_OFF", "RMT_DUMP", "DE_BENCH", "STOP", "REBOOT"))
+# Firmware faultAllowsRearm: idle, BAD_IDLE, handshake failures, CART_INIT,
+# HOST_STOP, CAPTURE_TIMEOUT. Pad/DE/phase/overflow stay denied.
+REARM_FAULTS = ("0", "1", "2", "3", "4", "5", "15", "16")
 # LHBH1 ch.13 DPS: module select 001, offline map FFF, DIAGMODE + frame length, qualifier.
 REQUEST_WORDS = {
     "A4": ("01B0", "FF5F", "26A4", "00A0"),
@@ -670,14 +673,11 @@ class BridgeClient:
     def _validate_idle_for_vehicle(self, status: BridgeStatus,
                                    variant: str | None = None) -> None:
         if variant == "OFF":
-            # Go-offline normally follows a completed read (END fault 16).
             consumed = status.field("offline_used") != "0"
-            allowed_faults = ("0", "15", "16")
         else:
             consumed = status.field("read_used") != "0"
-            allowed_faults = ("0", "15")
         if (status.field("stage") != "0" or consumed or
-                status.field("fault") not in allowed_faults or
+                status.field("fault") not in REARM_FAULTS or
                 self._session_name is not None or self._pending_transmit):
             raise BridgeError("bridge busy, failed, or read already consumed")
         if self.fault:
@@ -773,6 +773,13 @@ class BridgeClient:
             self.stop()
             self.display("STOP acknowledged by firmware (DE=LOW)")
             return
+        if command == "REBOOT":
+            status = self.status()
+            if status.field("stage") != "0":
+                raise BridgeError("bridge busy; REBOOT denied")
+            self._send("REBOOT")
+            self.display("REBOOT dispatched; firmware restarts only while IDLE")
+            return
         if command == "TX2_BENCH":
             self._run_tx2_bench()
             return
@@ -863,7 +870,7 @@ def confirm_vehicle(command: str, user_input: Callable[[str], str] = input,
 
 def menu(display: Callable[[str], None] = print) -> None:
     display("Commands: STATUS | TX2_BENCH | LISTEN | HELLO | REQUEST_A4 | REQUEST_0E | "
-            "REQUEST_KOEO | REQUEST_OFF | STOP | EXIT")
+            "REQUEST_KOEO | REQUEST_OFF | STOP | REBOOT | EXIT")
     display("TX2_BENCH is local GPIO17 pad/RMT preflight with DE LOW. "
             "LISTEN is RX-only. HELLO uses active 2400-baud handshake; "
             "REQUEST needs ARM and a separately approved READ.")

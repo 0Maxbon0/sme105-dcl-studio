@@ -92,7 +92,7 @@ constexpr uint32_t kOtaCurrentVersion = 1;
 // still be able to boot PENDING_VERIFY from an older accepted version and
 // prove their manifest before promoting ota_ver. On a VALID app with NO pending
 // ledger, a supervised physical USB flash may adopt this build baseline.
-constexpr uint32_t kUsbInstalledBuildVersion = 16;
+constexpr uint32_t kUsbInstalledBuildVersion = 17;
 constexpr size_t kOtaAppSlotMax = 0x140000; // default 4MB ESP32 OTA partition table
 constexpr char kOtaPublisherPublicPEM[] =
   "-----BEGIN PUBLIC KEY-----\n"
@@ -122,6 +122,20 @@ constexpr uint8_t kVariantKoeo = 4, kVariantOffline = 5, kVariantLive = 6, kVari
 constexpr bool isLiveVariant(uint8_t v) { return v == kVariantLive || v == kVariantLive2; }
 constexpr bool isRequestVariant(uint8_t v) {
   return v <= 1 || v == kVariantKoeo || v == kVariantOffline || isLiveVariant(v);
+}
+// CART_READ kinds that may attach to a stream already running at 9600.
+// OBSERVE (3) and go-offline (5) are excluded: OBSERVE keeps BAD_IDLE,
+// and OFF joins from beginSession without a quiet window.
+constexpr bool joinsRunningCart(uint8_t v) {
+  return v <= 1 || v == kVariantKoeo || isLiveVariant(v);
+}
+// Outcomes that never proved a bad TX path. Pad, DE, phase and overflow
+// faults stay latched until reboot. Handshake failures are included because
+// they happen before any 9600 DPS word is armed.
+constexpr bool faultAllowsRearm(Fault reason) {
+  return reason == CAPTURE_TIMEOUT || reason == HOST_STOP || reason == BAD_IDLE ||
+         reason == HSK_TIMEOUT || reason == HSK_ACK || reason == HSK_TX ||
+         reason == CART_INIT;
 }
 constexpr CmdWord IRAM_ATTR word(uint8_t variant, uint8_t slot) {
   return slot == 0 ? CmdWord{0x01,0xB0} :
@@ -1018,6 +1032,9 @@ bool directApRetryDue(uint32_t now, uint32_t lastAttempt, bool vehicleActive) {
       static_cast<uint32_t>(now - lastAttempt) >= kApRetryMs);
 }
 void startSta() {
+#ifdef SME105_BLE
+  WiFi.mode(WIFI_OFF);
+#else
   if (wifiApMode || !wifiConfigured || !prefsReady || busSessionActive()) return;
   const String ssid = wifiPrefs.getString("ssid", "");
   const String pass = wifiPrefs.getString("pass", "");
@@ -1042,8 +1059,12 @@ void startSta() {
   WiFi.setAutoReconnect(true);
   WiFi.begin(ssid.c_str(), pass.c_str()); // asynchronous; no waiting or retry TX
   wifiLastRetryMs = millis();
+#endif
 }
 void startDirectAp() {
+#ifdef SME105_BLE
+  WiFi.mode(WIFI_OFF);
+#else
   if (!wifiApMode || !wifiConfigured || !prefsReady || busSessionActive()) return;
   const String ssid = wifiPrefs.getString("ap_ssid", "");
   const String pass = wifiPrefs.getString("ap_pass", "");
@@ -1061,6 +1082,7 @@ void startDirectAp() {
   const bool started = configured && WiFi.softAP(ssid.c_str(), pass.c_str(), 6, 0, 1);
   wifiApReady = started && WiFi.softAPIP() == kDirectApIp;
   if (!wifiApReady) WiFi.softAPdisconnect(true);
+#endif
 }
 bool networkOnline() {
   return wifiApMode ? wifiApReady && WiFi.getMode() == WIFI_AP &&
@@ -1068,6 +1090,12 @@ bool networkOnline() {
                       WiFi.status() == WL_CONNECTED;
 }
 void initializeWiFi() {
+#ifdef SME105_BLE
+  // BLE PIN lives in NVS namespace sme105wifi key ble_pin. Open read-write
+  // and do not erase keys. This build never starts STA or AP.
+  prefsReady = wifiPrefs.begin("sme105wifi", false);
+  WiFi.mode(WIFI_OFF);
+#else
   WiFi.onEvent(onStaDisconnect, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
   WiFi.onEvent(onStaGotIp, ARDUINO_EVENT_WIFI_STA_GOT_IP);
   WiFi.onEvent(onApStop, ARDUINO_EVENT_WIFI_AP_STOP);
@@ -1096,6 +1124,7 @@ void initializeWiFi() {
   if (wifiConfigured && wifiApMode) startDirectAp();
   else if (wifiConfigured) startSta();
   else WiFi.mode(WIFI_OFF);
+#endif
 }
 
 void initializeOtaBootHealth() {
@@ -2447,6 +2476,20 @@ void pollHandshake() {
   const uint32_t now = millis();
   if (stage == QUIET) {
     if (referenceBus.available() || digitalRead(kRO) != HIGH || handshakeErrors) {
+      if (joinsRunningCart(variant)) {
+        // Already in CART. openNative() clears joinMode, repeatDps and
+        // framePeriodUs, so those are set after it, matching OFFLINE_JOIN.
+        // A4/0E leave repeatDps false: four verified words set captureOnly.
+        if (!openNative()) { stopEverything(CART_INIT); out.println(F("FAULT reason=CART_INIT")); return; }
+        joinMode = true;
+        repeatDps = variant == kVariantKoeo || isLiveVariant(variant);
+        framePeriodUs = 0;
+        stopLatched = false;
+        stage = CART_READ;
+        captureStartedMs = now;
+        out.println(F("EVENT join=running_cart no_handshake=1"));
+        return;
+      }
       stopEverything(BAD_IDLE); return;
     }
     if (now - stageStartedMs >= kQuietMs) {
@@ -2579,6 +2622,12 @@ void reportEnd() {
   out.print(F(" pad_verified=")); out.print(wordsVerified);
   out.print(F(" words_started=")); out.print(wordsStarted);
   out.println(F(" ecu_verified=0 dtc_verified=0 DE=LOW"));
+  // CART_READ only. LISTEN/OBSERVE keep their own one-shot flags.
+  // tx2BenchPassed stays valid for the rest of this boot.
+  if (isRequestVariant(variant) && faultAllowsRearm(failure)) {
+    if (variant == kVariantOffline) offlineConsumed = false;
+    else transmitConsumed = false;
+  }
   stage = IDLE;
 }
 void printStatus() {
@@ -2601,7 +2650,8 @@ void printStatus() {
       static_cast<int32_t>(armExpiresMs - millis()) > 0)
     out.print(variantName(armedVariant));
   else out.print(F("NONE"));
-  out.print(F(" fault=")); out.println(static_cast<unsigned>(failure));
+  out.print(F(" fault=")); out.print(static_cast<unsigned>(failure));
+  out.print(F(" fw=")); out.println(kUsbInstalledBuildVersion);
 }
 void printPins() {
   out.println(F("PINS ro16=GPIO16_UART1 de18=GPIO18_RMT2..5 di17=GPIO17_UART2_TX+PAD_RX no_arbitrary_tx=1"));
@@ -2765,6 +2815,9 @@ void pollBle() {
 }
 #endif
 void pollWiFi() {
+#ifdef SME105_BLE
+  return;
+#else
   if (!wifiConfigured || !prefsReady) {
     if (signedOta.phase == OtaPhase::Receiving) abortSignedOta("wifi_unavailable");
     return;
@@ -2926,6 +2979,7 @@ void pollWiFi() {
   if (out.tcpSendFailed()) { dropTcpClient(true); return; }
   if (tcpAuthenticated) out.drainTCP(wifiClient);
   if (out.tcpSendFailed()) dropTcpClient(true);
+#endif
 }
 void runCommand(const char* cmd) {
   if (!strcmp(cmd, "OTA_DIAG")) {
@@ -2942,6 +2996,30 @@ void runCommand(const char* cmd) {
   }
   if (!strncmp(cmd, "OTA_CONFIRM", sizeof("OTA_CONFIRM") - 1)) {
     confirmOtaBootFromNetwork(cmd);
+    return;
+  }
+  if (!strcmp(cmd, "REBOOT")) {
+    // USB, or a remote that already passed processTcpLine/processBleLine.
+    if ((commandFromUSB || tcpAuthenticated) &&
+        stage == IDLE && !otaUpdating() && !slotInFlight) {
+      deOff();
+      out.println(F("EVENT reboot=accepted DE=LOW"));
+      const uint32_t deadline = millis() + 300;
+      do {
+        out.drainUSB();
+        if (tcpAuthenticated && !remoteIsBle) out.drainTCP(wifiClient);
+#ifdef SME105_BLE
+        if (remoteIsBle) out.drainBLE();
+        ble_transport::poll();
+#endif
+        const bool usbIdle = out.usbCursor() == out.queued();
+        const bool remoteIdle = !tcpAuthenticated || out.tcpCursor() == out.queued();
+        if (usbIdle && remoteIdle) break;
+        delay(1);
+      } while (static_cast<int32_t>(deadline - millis()) > 0);
+      ESP.restart();
+    }
+    out.println(F("DENIED reboot_busy"));
     return;
   }
   if (otaUpdating()) {
@@ -3049,7 +3127,7 @@ void runCommand(const char* cmd) {
   }
   if (!strcmp(cmd, "HELLO")) { out.println(F("HELLO SME105_USB_BRIDGE_V1 protocol=1 usb_baud=115200 no_auto_tx=1")); return; }
   if (!strcmp(cmd, "HELP")) {
-    out.println(F("COMMANDS HELLO HELP STATUS PINS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E ARM_KOEO READ_KOEO ARM_LIVE READ_LIVE ARM_LIVE2 READ_LIVE2 ARM_OFF READ_OFF DE_BENCH RMT_DUMP STOP RESET_IDLE"));
+    out.println(F("COMMANDS HELLO HELP STATUS PINS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E ARM_KOEO READ_KOEO ARM_LIVE READ_LIVE ARM_LIVE2 READ_LIVE2 ARM_OFF READ_OFF DE_BENCH RMT_DUMP STOP RESET_IDLE REBOOT"));
     out.println(F("READ_* requires exact 4/4 TX2_BENCH pad pass this boot plus matching ARM_* within 15s; no automatic TX"));
     out.println(F("WIFI USB_ONLY: WIFI_CONFIG <SSID_B64> <PASS_B64> | WIFI_AP_CONFIG <SSID_B64> <PASS_B64> | WIFI_STA_MODE WIFI_AP_MODE | WIFI_TOKEN | WIFI_FORGET"));
     out.println(F("WIFI read-only: WIFI_STATUS WIFI_DIAG WIFI_AP_STATUS; AP-only 10.77.13.1/24 WPA2 and authenticated TCP/8765"));
@@ -3072,6 +3150,8 @@ void runCommand(const char* cmd) {
                           !strcmp(cmd, "ARM_LIVE") ? kVariantLive :
                           !strcmp(cmd, "ARM_LIVE2") ? kVariantLive2 : 255;
   if (armKind != 255) {
+    // failure is not a gate: a clean END clears the one-shot latch and a
+    // new ARM_* is still required (15s, same transport) before READ_*.
     if (stage != IDLE ||
         (armKind == kVariantOffline ? offlineConsumed : transmitConsumed)) {
       out.println(F("DENIED read_used_or_busy")); return;

@@ -1,0 +1,16 @@
+{
+  "name": "SME105 EEC-IV Diagnostics",
+  "short_name": "EEC-IV",
+  "description": "Offline Bluetooth diagnostics for a 1998 European Ford Escort 1.6 Zetec EEC-IV ECU.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0e1116",
+  "theme_color": "#0e1116",
+  "lang": "en",
+  "icons": [
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

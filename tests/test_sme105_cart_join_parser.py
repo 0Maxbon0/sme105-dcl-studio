@@ -158,13 +158,23 @@ class CartJoinParserReplay(unittest.TestCase):
         return {k: int(v) for k, v in (kv.split("=") for kv in result[1].split())}
 
     def test_offline_join_on_normal_stream_sends_one_dps(self) -> None:
-        result = self.run_parser(rx_bytes(NORMAL_STREAM), join=True, repeat=False)
+        result = self.run_parser(rx_bytes(NORMAL_STREAM), join=True, repeat=False, variant=1)
         self.assertEqual(result["fault"], 0)
         self.assertEqual(result["words"], 4)
         self.assertEqual(result["verified"], 4)
         # Learned in the baseline block, relearned at the TX block's frame 0.
         self.assertEqual(result["short"], 2)
         self.assertEqual(result["long"], 0)
+
+
+    def test_variant_0e_join_sends_exactly_four_words_then_stops(self) -> None:
+        # Same 2026-11-04 running CART capture. Variant 1 is a single DPS
+        # (26 0E): join mode must emit one 4-word block and then go quiet.
+        result = self.run_parser(rx_bytes(NORMAL_STREAM), join=True, repeat=False, variant=1)
+        self.assertEqual(result["fault"], 0)
+        self.assertEqual(result["words"], 4)
+        self.assertEqual(result["verified"], 4)
+        self.assertEqual(result["blocks"], 0)
 
     def test_repeated_dps_survives_long_diagnostic_block(self) -> None:
         # Real 0E session: 10 ms frames, one 42.5 ms diagnostic block, 10 ms again.

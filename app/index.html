@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0e1116">
+  <meta name="color-scheme" content="dark">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>SME105 EEC-IV Diagnostics</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <div>
+      <p class="eyebrow" data-str="shortTitle"></p>
+      <h1 data-str="appTitle"></h1>
+    </div>
+    <div class="top-actions">
+      <span id="link-pill" class="pill">Disconnected</span>
+      <button id="stop-btn" type="button" class="danger" disabled data-str="stop"></button>
+    </div>
+  </header>
+  <p id="message" class="message" role="status"></p>
+  <main>
+    <section id="view-connect" class="view">
+      <p id="secure-warning" class="banner warn" hidden></p>
+      <p id="bt-warning" class="banner warn" hidden></p>
+      <button id="connect-btn" type="button" class="primary"></button>
+      <dl class="facts">
+        <dt data-str="auth"></dt><dd id="auth-value"></dd>
+        <dt data-str="hello"></dt><dd id="hello-value"></dd>
+        <dt data-str="pins"></dt><dd id="pins-value"></dd>
+        <dt data-str="de"></dt><dd id="de-value"></dd>
+        <dt data-str="stage"></dt><dd id="stage-value"></dd>
+        <dt data-str="bench"></dt><dd id="bench-value"></dd>
+        <dt data-str="rom"></dt><dd id="rom-value"></dd>
+        <dt data-str="battery"></dt><dd id="battery-value"></dd>
+      </dl>
+      <pre id="status-raw" class="mono"></pre>
+    </section>
+    <section id="view-codes" class="view" hidden>
+      <p id="codes-banner" class="banner" hidden></p>
+      <button id="read-codes-btn" type="button" class="primary" data-str="readStored"></button>
+      <button id="koeo-btn" type="button" data-str="runKoeo"></button>
+      <label class="meter"><span data-str="koeoProgress"></span><progress id="codes-progress" max="100" value="0"></progress></label>
+      <p id="codes-meta" class="meta"></p>
+      <ul id="codes-list" class="results"></ul>
+    </section>
+    <section id="view-live" class="view" hidden>
+      <p id="live-banner" class="banner" hidden></p>
+      <fieldset class="choices">
+        <legend data-str="liveSet"></legend>
+        <label><input type="radio" name="pidset" id="set-live" value="LIVE" checked> <span data-str="liveEngine"></span></label>
+        <label><input type="radio" name="pidset" id="set-live2" value="LIVE2"> <span data-str="liveFlags"></span></label>
+      </fieldset>
+      <button id="live-start" type="button" class="primary" data-str="startLive"></button>
+      <label class="meter"><span data-str="startLive"></span><progress id="live-progress" max="100" value="0"></progress></label>
+      <p id="live-meta" class="meta"></p>
+      <div id="live-cards" class="cards"></div>
+      <button id="csv-btn" type="button" data-str="recordCsv" disabled></button>
+    </section>
+    <section id="view-tools" class="view" hidden>
+      <button id="offline-btn" type="button" class="primary" data-str="offline"></button>
+      <p class="help" data-str="offlineHelp"></p>
+      <button id="bench-btn" type="button" data-str="selfTest"></button>
+      <p class="help" data-str="selfTestHelp"></p>
+      <button id="reboot-btn" type="button" data-str="reboot"></button>
+    </section>
+    <section id="view-log" class="view" hidden>
+      <div class="row">
+        <h2 data-str="sessionSummary"></h2>
+        <button id="export-btn" type="button" data-str="exportLog"></button>
+      </div>
+      <pre id="log-summary" class="mono"></pre>
+      <h2 data-str="rawLog"></h2>
+      <pre id="log-pre" class="mono log"></pre>
+    </section>
+    <section id="view-about" class="view" hidden>
+      <p><span data-str="aboutVersion"></span> <strong id="about-version"></strong></p>
+      <h2 data-str="safetyTitle"></h2>
+      <p data-str="safetyBody"></p>
+      <h2 data-str="attributionTitle"></h2>
+      <p data-str="attributionBody"></p>
+      <h2 data-str="demoTitle"></h2>
+      <p class="help" data-str="demoHelp"></p>
+      <label class="check"><input id="demo-toggle" type="checkbox"> <span data-str="demoOn"></span></label>
+      <label class="stack"><span data-str="captureLabel"></span>
+        <select id="demo-capture">
+          <option value="0E"></option>
+          <option value="KOEO"></option>
+          <option value="LIVE"></option>
+        </select>
+      </label>
+    </section>
+  </main>
+  <nav>
+    <button type="button" data-view="connect" aria-current="page"></button>
+    <button type="button" data-view="codes"></button>
+    <button type="button" data-view="live"></button>
+    <button type="button" data-view="tools"></button>
+    <button type="button" data-view="log"></button>
+    <button type="button" data-view="about"></button>
+  </nav>
+  <div id="modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <h2 id="modal-title"></h2>
+      <p id="modal-body"></p>
+      <div class="row">
+        <button id="modal-cancel" type="button"></button>
+        <button id="modal-ok" type="button" class="primary"></button>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
