@@ -62,3 +62,85 @@ actuator tests. Next engineering gate is source/protocol reconciliation
 and independent A/B scope/logic-analyzer proof with current limiting,
 before one separately bounded B read. Historic `97AB` ECU identity and
 UART-only payload have not been authenticated as ECU source.
+
+## Later same-day owner-authorized live B attempt (2026-11-04)
+
+Owner subsequently explicitly authorized trying both read-code candidates on
+the connected stationary vehicle, with ignition ON and direct USB, and asked
+for cross-checking the original community repositories. This section records
+the attempts actually made; it does **not** claim any ECU diagnostic response.
+
+### Public-source reconciliation
+
+- `doncreat0r/eeciv`, `tables.h`, defines menu B as `26 0E` for
+  `read codes` (14 data-slot count). Original source:
+  https://github.com/doncreat0r/eeciv/blob/master/tables.h
+- `flxkrmr/eec-iv-reader-arduino`, `src/EecIv.cpp`, defines
+  `01 B0 / FF 5F / 26 A4 / 00 A0` for continuous self-test codes
+  (4 data-slot count), **after** `01 F4` clears DCL error flags, and
+  waits for `nextDiagnosticMode == 0x26` before interpreting returned
+  data. The flxkrmr project's own README warns it is work in progress.
+  Sources: https://github.com/flxkrmr/eec-iv-reader-arduino/blob/master/src/EecIv.cpp
+  and https://github.com/flxkrmr/eec-iv-reader-arduino/blob/master/src/Cart.cpp
+- Neither implementation proves which B variant is valid for this actual
+  SME105 ECU, nor does either prove the current vehicle MAX487 bus electrical
+  compatibility. The local firmware deliberately has no clear/error-flag
+  command; no `01 F4` was sent.
+
+### One USB B-A4 attempt, blocked before any ECU B TX
+
+Using the existing `BridgeClient`, the USB identity, STATUS, PINS and
+boot health prerequisites passed. The **same** continuous USB connection
+then completed a 4/4 local `TX2_BENCH` with RMT and `DE LOW`. The
+owner-authorized `REQUEST_A4` generated `ARM_A4`, a fresh
+`STATUS armed=A4`, then `READ_A4` exactly once.
+
+The firmware emitted `EVENT session=READ_CANDIDATE`, but stopped with
+`END reason=1` (`BAD_IDLE`), `pad_verified=0`,
+`words_started=0`, `DE=LOW`. There was **no Echo ID / Go CART /
+diagnostic B TX**. Its quiet-phase guard refused to transmit while the
+physical RO input was active (or stale bytes were available at 2400 baud).
+19 `RX` bytes were emitted **before** `EVENT session=`, with the same
+CART sync/ID pattern from the prior stream. The firmware's `ro_bytes=19`
+count includes this pre-session residue; the host correctly refused to
+attribute them to the just-started capture (`END RX count mismatch`),
+marking that attempt **INCOMPLETE**, not a read-code result.
+
+- USB transcript `captures/SME105_97AB/20261104T140314560274Z-usb-bridge.txt`,
+  SHA-256 `6f15ce011f8e0dbecaacf39e92561628a31f22bccf29c1a3ec1a041b5348ef4c`.
+- 19 pre-session bytes `captures/SME105_97AB/20261104T140314560274Z-usb-bridge.bin`,
+  SHA-256 `e242a57bc6b201387135c39f77d58cadb33493903372943b2fdec2410b7f7422`.
+
+Afterward a safe UART-only STATUS showed `stage=0`, `DE=LOW`,
+`fault=0`, and v9 `boot_health=VALID` (the USB serial reopen may
+reset the ESP32; that does not reset the vehicle ECU).
+
+### Root cause corroboration: lingering CART traffic
+
+One additional **short receiver-only** `LISTEN_9600` after the
+failed A4 capture obtained `END reason=15 ro_bytes=444 ro_lost=0
+uart_errors=0 ... DE=LOW` in about 1.1 seconds. Data starts
+`00 00 00 D7 00 00 00 28 00 00 00 39 ...`, i.e., existing
+parity-coded CART frame IDs. The ECU-side bus continued broadcasting
+after the host's earlier 10-second OBSERVE stopped. This is a plausible
+explanation for `BAD_IDLE`, but UART alone cannot authenticate the
+electrical sender or rule out other wiring/receiver effects.
+
+- Passive read `captures/SME105_97AB/20261104T140610760178Z-b-busy-line-usb.txt`,
+  SHA-256 `fb83db7a25b08d22d24189d59440a5e357ff7574e604633b4de2b594dad04b2b`.
+- Raw 444 bytes `captures/SME105_97AB/20261104T140610760178Z-b-busy-line-usb.bin`,
+  SHA-256 `bef85b9308c806feb3beec3e63f4a66576dd4600b47330089b3b1ec7874ebb34`.
+
+### Decision
+
+`26 A4` was armed but **not transmitted**, `26 0E` was **not
+attempted** because a second immediate B handshake would also encounter
+the non-idle vehicle DCL link. It is incorrect to say the ECU rejected A4.
+Do not bypass BAD_IDLE or blindly retry/reinitialize the ECU link.
+To conduct another active request with the unchanged firmware, the operator
+must restore physical bus quiet (usually ignition OFF followed by KOEO after
+the vehicle has fully reset); confirm that the engine is not running and
+no critical electronics depend on ignition continuity. That physical action
+cannot be performed through this USB interface. Once quiet is established,
+re-run the ordinary single-shot status/bench/armed request without modifying
+or flashing firmware, monitor every fault and preserve END evidence.
