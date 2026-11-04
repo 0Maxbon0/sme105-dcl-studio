@@ -34,10 +34,17 @@ enum Fault : uint8_t { NO_FAULT, BAD_IDLE, HSK_TX, HSK_TIMEOUT, HSK_ACK,
                        CART_CADENCE, CART_TIMER, PAD_MISMATCH, PAD_FRAMING,
                        DE_TIMEOUT, RX_OVERFLOW, HOST_STOP, CAPTURE_TIMEOUT };
 struct HeaderByte { uint32_t at; uint8_t value; };
+%(cmdword)s
 constexpr uint32_t kGapToleranceUs = 175;
 constexpr uint32_t kSlotMinLeadUs = 180, kSlotMaxLeadUs = 1250;
 %(constants)s
 volatile Stage stage = CART_READ;
+volatile uint8_t variant = %(variant)s;
+volatile bool extraArmed = false, extraInFlight = false;
+volatile uint32_t extraTargetUs = 0, extraStartUs = 0;
+volatile uint8_t extraGate = 0, extraFrame = 0;
+volatile uint8_t pidWordsStarted = 0, pidWordsVerified = 0;
+CmdWord extraWord = {0, 0};
 volatile Fault failure = NO_FAULT;
 volatile bool slotInFlight = false, slotArmed = false;
 volatile uint32_t targetUs = 0;
@@ -46,8 +53,8 @@ volatile uint32_t txStartUs[4] = {};
 volatile bool frameLocked = false, captureOnly = false;
 volatile bool joinMode = %(join)s, repeatDps = %(repeat)s, stopAtBlock = false;
 volatile uint32_t dpsBlocks = 0;
-volatile uint8_t headerUsed = 0, baselineCount = 0, phase = 255, nextId = 0;
 volatile uint32_t lastSyncUs = 0, framePeriodUs = 10000;
+volatile uint8_t headerUsed = 0, baselineCount = 0, phase = 255, nextId = 0;
 HeaderByte header[4] = {};
 uint32_t simNow = 0;
 uint64_t esp_timer_get_time() { return simNow; }
@@ -58,16 +65,22 @@ void faultISR(Fault why) {
   stage = FAULTED;
 }
 %(nearus)s
-%(parity)s
 %(headervalid)s
+%(live)s
 %(parser)s
 struct Rx { uint32_t at; uint8_t b; };
 static const Rx kRx[] = { %(rx)s };
 int main() {
-  uint32_t txDoneAt = 0, lastTarget = 0;
-  int words = 0, longPeriods = 0, shortPeriods = 0;
+  uint32_t txDoneAt = 0, lastTarget = 0, extraDoneAt = 0;
+  int words = 0, longPeriods = 0, shortPeriods = 0, pids = 0;
   for (const Rx& r : kRx) {
     if (stage == FAULTED) break;
+    if (extraArmed && extraTargetUs <= r.at) {
+      extraArmed = false; extraInFlight = true; extraStartUs = extraTargetUs;
+      extraDoneAt = extraTargetUs + 2089; ++pidWordsStarted; ++pids;
+      std::printf("PID frame=%%u pid=%%02X at=%%u\n", extraFrame, extraWord.first, extraTargetUs);
+    }
+    if (extraInFlight && extraDoneAt <= r.at) { extraInFlight = false; ++pidWordsVerified; }
     if (slotArmed && targetUs <= r.at) {
       const uint8_t index = wordsStarted++;
       txStartUs[index] = targetUs;
@@ -78,7 +91,9 @@ int main() {
     if (slotInFlight && txDoneAt <= r.at) {
       slotInFlight = false;
       ++wordsVerified;
+      const uint8_t index = wordsStarted - 1;
       if (wordsVerified == 4 && !repeatDps) captureOnly = true;
+      if (index >= 1 && liveMapFrame(index)) armExtra(index, txStartUs[index] + 2500);
     }
     simNow = r.at + 20;
     const uint32_t before = framePeriodUs;
@@ -88,10 +103,15 @@ int main() {
       if (framePeriodUs > 30000) ++longPeriods; else ++shortPeriods;
     }
   }
-  std::printf("RESULT fault=%%u words=%%d verified=%%u blocks=%%u long=%%d short=%%d last=%%u\n",
-              failure, words, wordsVerified, dpsBlocks, longPeriods, shortPeriods, lastTarget);
+  std::printf("RESULT fault=%%u words=%%d verified=%%u blocks=%%u long=%%d short=%%d last=%%u pids=%%d pidok=%%u\n",
+              failure, words, wordsVerified, dpsBlocks, longPeriods, shortPeriods, lastTarget,
+              pids, pidWordsVerified);
 }
 """
+
+
+def parity(first: int, nibble: int) -> int:
+    return ((((first >> 4) ^ (first & 15) ^ nibble ^ 10) << 4) | nibble) & 0xFF
 
 
 def extract(source: str, start: str, end: str) -> str:
@@ -107,18 +127,21 @@ def rx_bytes(path: Path, skip_until_us: int = 0) -> list[tuple[int, int]]:
 class CartJoinParserReplay(unittest.TestCase):
     source = SKETCH.read_text(encoding="utf-8")
 
-    def run_parser(self, rx: list[tuple[int, int]], *, join: bool, repeat: bool) -> dict[str, int]:
+    def run_parser(self, rx: list[tuple[int, int]], *, join: bool, repeat: bool,
+                   variant: int = 1) -> dict[str, int]:
         constants = "\n".join(
             line for line in self.source.splitlines()
-            if line.startswith(("constexpr uint32_t kJoin", "constexpr uint8_t kVariantKoeo"))
+            if line.startswith(("constexpr uint32_t kJoin",))
         )
         code = HARNESS % {
             "constants": constants,
             "join": "true" if join else "false",
+            "variant": str(variant),
+            "cmdword": extract(self.source, "struct CmdWord {", "\nconst __FlashStringHelper* variantName("),
+            "live": extract(self.source, "bool IRAM_ATTR liveMapFrame(", "\nvoid IRAM_ATTR slotISR("),
             "repeat": "true" if repeat else "false",
             "nearus": extract(self.source, "bool IRAM_ATTR nearUs(", "\nbool IRAM_ATTR headerValid("),
-            "parity": extract(self.source, "constexpr uint8_t parity(", "\nstatic_assert(parity("),
-            "headervalid": extract(self.source, "bool IRAM_ATTR headerValid(", "\nvoid IRAM_ATTR slotISR("),
+            "headervalid": extract(self.source, "bool IRAM_ATTR headerValid(", "\n// Live data: the first TX block"),
             "parser": extract(self.source, "void IRAM_ATTR slideHeader(", "\nvoid IRAM_ATTR uart1ISR("),
             "rx": ",".join(f"{{{t}u,0x{b:02X}}}" for t, b in rx),
         }
@@ -161,6 +184,28 @@ class CartJoinParserReplay(unittest.TestCase):
         self.assertEqual(result["fault"], 0)
         self.assertEqual(result["words"], 4)
         self.assertEqual(result["long"], 1)
+
+    def test_live_sends_no_pid_words_if_ecu_never_enters_41h(self) -> None:
+        # Recorded ECU stays at 10 ms frames: the PID map must never go out.
+        result = self.run_parser(rx_bytes(NORMAL_STREAM), join=True, repeat=True, variant=6)
+        self.assertEqual(result["fault"], 0)
+        self.assertEqual(result["pids"], 0)
+        self.assertGreaterEqual(result["blocks"], 10)
+
+    def test_live_sends_pid_map_once_after_41h_takes_effect(self) -> None:
+        # Synthetic ECU: 2 blocks of 10 ms frames (baseline + 41H request
+        # block), then 22.5 ms frames (DIAGMODE 41H/21H, frame length 6).
+        rx, t = [], 1_000_000
+        for block in range(8):
+            period = 10_000 if block < 2 else 22_500
+            for frame in range(16):
+                for dt, b in ((0, 0x00), (1042, 0x00), (2498, 0x00), (3540, parity(0, frame))):
+                    rx.append((t + dt, b))
+                t += period
+        result = self.run_parser(rx, join=True, repeat=True, variant=6)
+        self.assertEqual(result["fault"], 0)
+        self.assertEqual(result["pids"], 15)
+        self.assertEqual(result["pidok"], 15)
 
     def test_fixed_period_path_unchanged_for_a4_0e(self) -> None:
         result = self.run_parser(rx_bytes(NORMAL_STREAM), join=False, repeat=False)

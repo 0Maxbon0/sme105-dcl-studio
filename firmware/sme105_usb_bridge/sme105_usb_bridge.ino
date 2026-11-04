@@ -50,7 +50,7 @@ constexpr int kRO = 16, kDI = 17, kDE = 18;
 constexpr uint8_t kEchoId[] = {0, 0, 0, 0, 0, 1, 0x82, 0, 0, 0, 0x83};
 constexpr uint8_t kGoCart[] = {0, 0, 0, 0, 0, 1, 0x04, 0, 0, 0, 0x05};
 constexpr uint32_t kCaptureMs = 10000, kQuietMs = 150, kAckMs = 400;
-constexpr uint32_t kKoeoCaptureMs = 60000, kOfflineCaptureMs = 8000;
+constexpr uint32_t kKoeoCaptureMs = 60000, kOfflineCaptureMs = 8000, kLiveCaptureMs = 90000;
 // Join an already-running CART stream: frame period = 7.5ms + 2.5ms per
 // frame-length unit, i.e. 10ms (length 1) .. 42.5ms (length E).
 constexpr uint32_t kJoinMinPeriodUs = 9500, kJoinMaxPeriodUs = 46000;
@@ -89,7 +89,7 @@ constexpr uint32_t kOtaCurrentVersion = 1;
 // still be able to boot PENDING_VERIFY from an older accepted version and
 // prove their manifest before promoting ota_ver. On a VALID app with NO pending
 // ledger, a supervised physical USB flash may adopt this build baseline.
-constexpr uint32_t kUsbInstalledBuildVersion = 13;
+constexpr uint32_t kUsbInstalledBuildVersion = 14;
 constexpr size_t kOtaAppSlotMax = 0x140000; // default 4MB ESP32 OTA partition table
 constexpr char kOtaPublisherPublicPEM[] =
   "-----BEGIN PUBLIC KEY-----\n"
@@ -112,10 +112,12 @@ struct HeaderByte { uint32_t at; uint8_t value; };
 struct CmdWord { uint8_t first; uint8_t second; };
 // Session kinds: 0/1 = DIAGMODE 26H (frame length 4/E), 2 = LISTEN,
 // 3 = OBSERVE, 4 = DIAGMODE 25H on-demand self test (LHBH1 13-22, length E),
-// 5 = DIAGMODE 80H go offline (LHBH1 13-26, qualifier 07FH = ~80H).
-constexpr uint8_t kVariantKoeo = 4, kVariantOffline = 5;
+// 5 = DIAGMODE 80H go offline (LHBH1 13-26, qualifier 07FH = ~80H),
+// 6 = live data: DIAGMODE 41H (load PID map) then 21H (transmit PID values),
+//     frame length 6 as used by the flxkrmr and doncreat0r readers.
+constexpr uint8_t kVariantKoeo = 4, kVariantOffline = 5, kVariantLive = 6;
 constexpr bool isRequestVariant(uint8_t v) {
-  return v <= 1 || v == kVariantKoeo || v == kVariantOffline;
+  return v <= 1 || v == kVariantKoeo || v == kVariantOffline || v == kVariantLive;
 }
 constexpr CmdWord IRAM_ATTR word(uint8_t variant, uint8_t slot) {
   return slot == 0 ? CmdWord{0x01,0xB0} :
@@ -124,6 +126,7 @@ constexpr CmdWord IRAM_ATTR word(uint8_t variant, uint8_t slot) {
                       variant == 1 ? CmdWord{0x26,0x0E} :
                       variant == kVariantKoeo ? CmdWord{0x25,0x3E} :
                       variant == kVariantOffline ? CmdWord{0x80,0xCE} :
+                      variant == kVariantLive ? CmdWord{0x21,0xF6} :
                       CmdWord{0x26,0xA4}) :
          variant == kVariantOffline ? CmdWord{0x7F,0x20} : CmdWord{0x00,0xA0};
 }
@@ -133,11 +136,26 @@ constexpr uint8_t parity(uint8_t first, uint8_t id) {
 static_assert(parity(1,0)==0xB0 && parity(0xFF,15)==0x5F &&
               parity(0x26,4)==0xA4 && parity(0x26,14)==0x0E &&
               parity(0x25,14)==0x3E && parity(0x80,14)==0xCE &&
-              parity(0x7F,0)==0x20,
+              parity(0x7F,0)==0x20 && parity(0x41,6)==0x96 &&
+              parity(0x21,6)==0xF6,
               "DPS word vertical parity");
+// PID index request word: data = 0x800 | pid (flxkrmr PID_CHECKSUM,
+// doncreat0r PIDMap). One PID per frame in IW2; frame 0 left idle because
+// the new frame period is only confirmed at frame 1.
+constexpr CmdWord pidWord(uint8_t pid) {
+  return CmdWord{pid, static_cast<uint8_t>((((pid & 15) ^ (pid >> 4) ^ 8 ^ 10) << 4) | 8)};
+}
+static_assert(pidWord(0x01).second == 0x38 && pidWord(0x11).second == 0x28 &&
+              pidWord(0x0F).second == 0xD8 && pidWord(0x26).second == 0x68,
+              "PID word parity matches doncreat0r PIDMap");
+// LHBH1 13-29: N, ACT, ECT, IACT, IECT, ITP, VBAT, BP, SAFTOT, FUELPW1,
+// LAMBSE1, IEGO1, VS, LOAD, KAMRF1.
+const uint8_t kLivePids[16] = {0x00, 0x01, 0x0F, 0x10, 0x05, 0x06, 0x09, 0x11,
+                               0x03, 0x04, 0x0C, 0x0D, 0x08, 0x18, 0x27, 0x28};
+constexpr uint32_t kLiveFramePeriodUs = 22500; // 7.5ms + 2.5ms * length 6
 const __FlashStringHelper* variantName(uint8_t v) {
   return v == 0 ? F("A4") : v == 1 ? F("0E") :
-         v == kVariantKoeo ? F("KOEO") : F("OFF");
+         v == kVariantKoeo ? F("KOEO") : v == kVariantLive ? F("LIVE") : F("OFF");
 }
 
 HardwareSerial referenceBus(2);
@@ -162,6 +180,12 @@ RxEvent rxRing[kRxRingSize] = {};
 volatile bool frameLocked = false, captureOnly = false;
 volatile bool joinMode = false, repeatDps = false, stopAtBlock = false;
 volatile uint32_t dpsBlocks = 0;
+// Live PID map words ride in IW2, 2.5ms after the DPS slot.
+volatile bool extraArmed = false, extraInFlight = false;
+volatile uint32_t extraTargetUs = 0, extraStartUs = 0;
+volatile uint8_t extraGate = 0, extraFrame = 0;
+volatile uint8_t pidWordsStarted = 0, pidWordsVerified = 0;
+CmdWord extraWord = {0, 0};
 volatile uint8_t headerUsed = 0, baselineCount = 0, phase = 255, nextId = 0;
 volatile uint32_t lastSyncUs = 0, framePeriodUs = 10000;
 HeaderByte header[4] = {};
@@ -1480,10 +1504,63 @@ bool IRAM_ATTR headerValid(uint8_t id, uint8_t expectedPhase) {
          (expectedPhase == 4 ? four : zero);
 }
 
+// Live data: the first TX block loads mode 41H, every later block 21H.
+CmdWord IRAM_ATTR dpsWord(uint8_t index) {
+  if (variant == kVariantLive && index == 2 && dpsBlocks == 0) return CmdWord{0x41, 0x96};
+  return word(variant, index);
+}
+bool IRAM_ATTR liveMapFrame(uint8_t frame) {
+  return variant == kVariantLive && dpsBlocks == 1 && frame < 16 &&
+         kLivePids[frame] != 0 && nearUs(framePeriodUs, kLiveFramePeriodUs, 600);
+}
+// Schedule one PID map word in IW2 of `frame` (single shot, own DE gate).
+void IRAM_ATTR armExtra(uint8_t frame, uint32_t target) {
+  const uint32_t now = static_cast<uint32_t>(esp_timer_get_time());
+  const int32_t lead = static_cast<int32_t>(target - now);
+  if (extraArmed || extraInFlight || slotArmed ||
+      lead < static_cast<int32_t>(kSlotMinLeadUs) || lead > 4000 ||
+      !armTimer(1, static_cast<uint32_t>(lead))) {
+    faultISR(CART_TIMER);
+    return;
+  }
+  extraWord = pidWord(kLivePids[frame]);
+  extraTargetUs = target;
+  extraFrame = frame;
+  extraGate = static_cast<uint8_t>((frame + 1) & 3);
+  extraArmed = true;
+}
 void IRAM_ATTR slotISR() {
   disableSlotTimer();
   portENTER_CRITICAL_ISR(&txLock);
   const uint32_t now = static_cast<uint32_t>(esp_timer_get_time());
+  if (extraArmed) {
+    if (stage != CART_READ || stopLatched || slotArmed || slotInFlight || !gateReady ||
+        !nearUs(now, extraTargetUs) || UART2.status.txfifo_cnt != 0 ||
+        UART2.status.rxfifo_cnt != 0 ||
+        UART2.mem_rx_status.rd_addr != UART2.mem_rx_status.wr_addr ||
+        !(GPIO.in & (1UL << kRO))) {
+      faultISR(CART_TIMER);
+      portEXIT_CRITICAL_ISR(&txLock);
+      return;
+    }
+    if (!armTimer(0, kSlotWatchdogUs)) {
+      faultISR(DE_TIMEOUT);
+      portEXIT_CRITICAL_ISR(&txLock);
+      return;
+    }
+    UART2.int_clr.val = 0xFFFFFFFF;
+    UART2.int_ena.tx_done = 1;
+    extraArmed = false;
+    extraInFlight = true;
+    slotInFlight = true;
+    extraStartUs = now;
+    ++pidWordsStarted;
+    startDeGate(extraGate);
+    WRITE_PERI_REG(UART_FIFO_AHB_REG(2), extraWord.first);
+    WRITE_PERI_REG(UART_FIFO_AHB_REG(2), extraWord.second);
+    portEXIT_CRITICAL_ISR(&txLock);
+    return;
+  }
   if (stage != CART_READ || stopLatched || !slotArmed || slotInFlight ||
       pendingSlot != wordsStarted || wordsVerified != wordsStarted ||
       wordsStarted >= 4 || !gateReady ||
@@ -1510,7 +1587,7 @@ void IRAM_ATTR slotISR() {
   txStartUs[index] = now;
   // RMT autonomous single-shot gate: 2180us HIGH then 80us LOW.
   startDeGate(index);
-  const CmdWord selected = word(variant, index);
+  const CmdWord selected = dpsWord(index);
   // Native UART2 TX AHB FIFO writes, not the APB RX register bitfield.
   WRITE_PERI_REG(UART_FIFO_AHB_REG(2), selected.first);
   WRITE_PERI_REG(UART_FIFO_AHB_REG(2), selected.second);
@@ -1525,11 +1602,13 @@ void IRAM_ATTR uart2ISR(void*) {
     deOff();
     disableDeTimer();
     UART2.int_ena.tx_done = 0;
+    const bool extra = extraInFlight;
+    extraInFlight = false;
     const uint8_t index = static_cast<uint8_t>(wordsStarted - 1);
     const uint32_t now = static_cast<uint32_t>(esp_timer_get_time());
     slotInFlight = false;
-    if (stage != CART_READ || stopLatched || index >= 4 ||
-        !nearUs(now, txStartUs[index] + 2083, 175)) {
+    if (stage != CART_READ || stopLatched || (!extra && index >= 4) ||
+        !nearUs(now, (extra ? extraStartUs : txStartUs[index]) + 2083, 175)) {
       faultISR(CART_TIMER);
     } else {
       // UART2 RX input matrix is ALSO attached to physical GPIO17.
@@ -1548,12 +1627,14 @@ void IRAM_ATTR uart2ISR(void*) {
       const uint8_t b1 = count > 1 ?
           static_cast<uint8_t>(READ_PERI_REG(UART_FIFO_REG(2))) : 0;
       const uint32_t countAfter = UART2.status.rxfifo_cnt;
-      padRx[index][0] = b0;
-      padRx[index][1] = b1;
-      txDoneUs[index] = now;
-      __sync_synchronize();
-      padCount = index + 1;
-      const CmdWord expected = word(variant, index);
+      if (!extra) {
+        padRx[index][0] = b0;
+        padRx[index][1] = b1;
+        txDoneUs[index] = now;
+        __sync_synchronize();
+        padCount = index + 1;
+      }
+      const CmdWord expected = extra ? extraWord : dpsWord(index);
       // RXFIFO_TOUT (bit 8) indicates inactivity, not a UART frame error.
       // Parity, framing and overflow (bits 2..4) invalidate the pad witness.
       if (!deWasHigh) {
@@ -1563,9 +1644,13 @@ void IRAM_ATTR uart2ISR(void*) {
         faultISR(PAD_FRAMING);
       } else if (b0 != expected.first || b1 != expected.second) {
         faultISR(PAD_MISMATCH);
+      } else if (extra) {
+        ++pidWordsVerified;
       } else {
         ++wordsVerified;
         if (wordsVerified == 4 && !repeatDps) captureOnly = true;
+        // Frames 1..3 of the map block: PID word follows in IW2.
+        if (index >= 1 && liveMapFrame(index)) armExtra(index, txStartUs[index] + 2500);
       }
     }
   }
@@ -1602,10 +1687,12 @@ void IRAM_ATTR onFrameHeader(uint8_t id) {
   }
   if (stage == CART_PASSIVE) return;
   nextId = (id + 1) & 15;
+  if (extraArmed || extraInFlight) { faultISR(CART_PHASE); return; }
   // A requested DIAGMODE changes the frame length at the next block start.
   if (joinMode && id == 0) framePeriodUs = 0;
   if (id >= 4) {
     if (!repeatDps) faultISR(CART_PHASE);
+    else if (liveMapFrame(id)) armExtra(id, sync + 2917 + 2500);
     return;
   }
   if (id == 0 && repeatDps) {
@@ -1819,6 +1906,7 @@ bool openNative() {
   rxTotal = lostRx = uartErr = 0;
   frameLocked = false; captureOnly = false; joinMode = false;
   repeatDps = stopAtBlock = false; dpsBlocks = 0;
+  extraArmed = extraInFlight = false; pidWordsStarted = pidWordsVerified = 0;
   baselineCount = 0; headerUsed = 0; phase = 255; nextId = 0; framePeriodUs = 10000;
   wordsStarted = wordsVerified = padCount = 0;
   slotInFlight = slotArmed = false;
@@ -2341,7 +2429,7 @@ void pollHandshake() {
         stopLatched = false;
         // Self test needs the 25H request repeated every block while frame
         // lengths change, so it uses the adaptive header gate.
-        joinMode = repeatDps = variant == kVariantKoeo;
+        joinMode = repeatDps = variant == kVariantKoeo || variant == kVariantLive;
         stage = isRequestVariant(variant) ? CART_READ : CART_PASSIVE;
         captureStartedMs = now;
         out.println(F("EVENT cart=9600_8N1 raw_ro=1 ecu_verified=0 dtc_verified=0"));
@@ -2379,7 +2467,7 @@ void flushPadReports() {
   if (stage == CART_READ && !captureOnly && failure == NO_FAULT) return;
   while (sentPadReports < padCount) {
     const uint8_t i = sentPadReports++;
-    const CmdWord selected = word(variant, i);
+    const CmdWord selected = dpsWord(i);
     out.print(F("TX_PAD slot=")); out.print(i);
     out.print(F(" expected=")); outputHex(selected.first); outputHex(selected.second);
     out.print(F(" observed=")); outputHex(padRx[i][0]); outputHex(padRx[i][1]);
@@ -2410,6 +2498,7 @@ void pollActive() {
     }
     const uint32_t limit = stage != CART_READ ? kCaptureMs :
         variant == kVariantKoeo ? kKoeoCaptureMs :
+        variant == kVariantLive ? kLiveCaptureMs :
         variant == kVariantOffline ? kOfflineCaptureMs : kCaptureMs;
     const uint32_t elapsed = millis() - captureStartedMs;
     if (elapsed >= limit) {
@@ -2427,6 +2516,10 @@ void reportEnd() {
   flushPadReports();
   flushRaw();
   if (rxRead != rxWrite) return;
+  if (variant == kVariantLive) {
+    out.print(F("EVENT live_pid_map sent=")); out.print(pidWordsStarted);
+    out.print(F(" verified=")); out.println(pidWordsVerified);
+  }
   if (repeatDps) {
     out.print(F("EVENT dps_blocks_complete=")); out.print(dpsBlocks + (wordsVerified == 4 ? 1 : 0));
     out.print(F(" frame_period_us=")); out.println(framePeriodUs);
@@ -2763,6 +2856,7 @@ void runCommand(const char* cmd) {
       (!strcmp(cmd, "OBSERVE") || !strcmp(cmd, "READ_A4") ||
        !strcmp(cmd, "READ_0E") || !strcmp(cmd, "LISTEN_9600") ||
        !strcmp(cmd, "READ_KOEO") || !strcmp(cmd, "READ_OFF") ||
+       !strcmp(cmd, "READ_LIVE") || !strcmp(cmd, "ARM_LIVE") ||
        !strcmp(cmd, "TX2_BENCH") || !strcmp(cmd, "DE_BENCH") ||
        !strcmp(cmd, "ARM_A4") || !strcmp(cmd, "ARM_0E") ||
        !strcmp(cmd, "ARM_KOEO") || !strcmp(cmd, "ARM_OFF"))) {
@@ -2821,7 +2915,7 @@ void runCommand(const char* cmd) {
   }
   if (!strcmp(cmd, "HELLO")) { out.println(F("HELLO SME105_USB_BRIDGE_V1 protocol=1 usb_baud=115200 no_auto_tx=1")); return; }
   if (!strcmp(cmd, "HELP")) {
-    out.println(F("COMMANDS HELLO HELP STATUS PINS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E ARM_KOEO READ_KOEO ARM_OFF READ_OFF DE_BENCH RMT_DUMP STOP RESET_IDLE"));
+    out.println(F("COMMANDS HELLO HELP STATUS PINS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E ARM_KOEO READ_KOEO ARM_LIVE READ_LIVE ARM_OFF READ_OFF DE_BENCH RMT_DUMP STOP RESET_IDLE"));
     out.println(F("READ_* requires exact 4/4 TX2_BENCH pad pass this boot plus matching ARM_* within 15s; no automatic TX"));
     out.println(F("WIFI USB_ONLY: WIFI_CONFIG <SSID_B64> <PASS_B64> | WIFI_AP_CONFIG <SSID_B64> <PASS_B64> | WIFI_STA_MODE WIFI_AP_MODE | WIFI_TOKEN | WIFI_FORGET"));
     out.println(F("WIFI read-only: WIFI_STATUS WIFI_DIAG WIFI_AP_STATUS; AP-only 10.77.13.1/24 WPA2 and authenticated TCP/8765"));
@@ -2840,7 +2934,8 @@ void runCommand(const char* cmd) {
   }
   const uint8_t armKind = !strcmp(cmd, "ARM_A4") ? 0 : !strcmp(cmd, "ARM_0E") ? 1 :
                           !strcmp(cmd, "ARM_KOEO") ? kVariantKoeo :
-                          !strcmp(cmd, "ARM_OFF") ? kVariantOffline : 255;
+                          !strcmp(cmd, "ARM_OFF") ? kVariantOffline :
+                          !strcmp(cmd, "ARM_LIVE") ? kVariantLive : 255;
   if (armKind != 255) {
     if (stage != IDLE ||
         (armKind == kVariantOffline ? offlineConsumed : transmitConsumed)) {
@@ -2857,6 +2952,7 @@ void runCommand(const char* cmd) {
   if (!strcmp(cmd, "READ_0E")) { beginSession(CART_READ, 1); return; }
   if (!strcmp(cmd, "READ_KOEO")) { beginSession(CART_READ, kVariantKoeo); return; }
   if (!strcmp(cmd, "READ_OFF")) { beginSession(CART_READ, kVariantOffline); return; }
+  if (!strcmp(cmd, "READ_LIVE")) { beginSession(CART_READ, kVariantLive); return; }
   if (!strcmp(cmd, "OBSERVE")) { beginSession(CART_PASSIVE, 3); return; }
   if (!strcmp(cmd, "LISTEN_9600")) { beginSession(CART_PASSIVE, 2); return; }
   out.println(F("DENIED unknown_or_unsafe_command"));
