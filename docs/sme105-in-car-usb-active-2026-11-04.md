@@ -449,3 +449,29 @@ Echo ID ACK, Go CART, then DPS `01B0 FF5F 253E 00A0` repeated in frames 0–3 of
   0 bytes. The same silence followed the earlier v12 KOEO attempt, which the
   owner heard coincide with a fuel-pump run (consistent with an ECU reset into
   silent standby at self-test exit).
+
+## Live data (v14, DIAGMODE 41H PID map → repeated 21H), KOEO, ~18:09
+
+`captures/SME105_97AB/20261104T160936508451Z-usb-bridge.*` (transcript SHA-256
+`34ea8f4309b122846639deba9eb69bf8ab09ecc280327e6eb606266d5934f3b7`), decoded
+CSV `…-live.csv` via `scripts/decode_live_pids.py`.
+
+- Block 0 `41 96`, block 1 `21 F6` + 15 PID words in IW2 of frames 1–15
+  (`EVENT live_pid_map sent=15 verified=15`), then `21 F6` repeated for
+  **250 blocks** (90 s), all pad- and DE-verified; `ro_bytes=29522`,
+  0 lost, 0 UART errors. 3717 values decoded, **0 parity rejects**.
+  Go-offline afterwards: `offline_quiet_us=7563702`, LISTEN 0 bytes.
+- Owner reports the IAT sensor is physically **unplugged** — explains 113.
+
+| PID | Value (KOEO) | Note |
+| --- | --- | --- |
+| IACT | 947–949 counts | open circuit (near A/D full scale) |
+| ACT | 34.4 °C (raw 47) | equals ECT: ECU substitutes for the failed IAT |
+| ECT / IECT | 34.4 °C / 502 counts | plausible |
+| ITP | 159 → 873 counts | three smooth owner pedal sweeps, no dropouts |
+| VBAT | 11.69 V | low for a resting battery after long key-on |
+| BP | 29.875 inHg (101.2 kPa) | plausible |
+| SAFTOT | 10.0° | |
+| LAMBSE1 / KAMRF1 | 1.000 / 1.0 | neutral |
+| IEGO1 | 1015–1020 counts | engine off; recheck warm and running |
+| N / FUELPW1 / VS | 0 | engine off |
