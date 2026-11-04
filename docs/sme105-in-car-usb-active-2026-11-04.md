@@ -252,3 +252,20 @@ slots/diagnostic mode for `26 A4` vs `26 0E`. Revalidate under
 explicit field authorization with bounded one-shot tests and do not
 clear codes, alter actuator states or transmit arbitrary bus words.
 The last instruction for this field session is **STOP**.
+
+## v10 USB application flash (2026-11-04 ~16:35, ignition OFF)
+
+Owner authorized flashing the `c081d18` UART2 pad-readback fix. Bench
+evidence already showed the old `rw_byte` path producing `observed=0101`
+while the APB `READ_PERI_REG(UART_FIFO_REG(2))` path produced exact words
+with `rx_count=2 rx_count_mid=1 rx_count_after=0` on every slot.
+
+- `kUsbInstalledBuildVersion` 9 → 10; 242 Python tests PASS; build PASS.
+- Pre-flash: `running=app0 accepted_version=9 boot_health=VALID`.
+- NVS (`0x9000`) and otadata (`0xe000`) backed up privately outside Git.
+- Application-only `write_flash 0x10000`, hash verified. Image SHA-256
+  `35a9e361c63dc9a3aee681e015745c27eaf40c335fe30d3a0308a437ab83b266`.
+- Post-flash: `running=app0 accepted_version=10 boot_health=VALID`,
+  `stage=0 DE=LOW auto_tx=0 fault=0`, all one-shot counters 0.
+- First post-flash USB read contained repeated/garbled fragments; not
+  reproduced on re-read. No command was executed by it (all counters 0).
