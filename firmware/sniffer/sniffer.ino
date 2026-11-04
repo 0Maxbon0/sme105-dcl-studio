@@ -12,6 +12,7 @@ namespace {
 constexpr uart_port_t kDclUart = UART_NUM_2;
 constexpr int kRxPin = 16;
 constexpr int kUnusedTxPin = 17;
+constexpr int kDriverEnablePin = 18;
 constexpr uint32_t kUsbBaud = 115200;
 constexpr int kDclBaud = 9600;
 constexpr uint32_t kBreakReportMs = 1000;
@@ -34,6 +35,8 @@ void emitHex(const uint8_t* data, size_t length) {
 }
 
 void startUsbIdentity() {
+  digitalWrite(kDriverEnablePin, LOW);
+  pinMode(kDriverEnablePin, OUTPUT);
   pinMode(kUnusedTxPin, INPUT);
   pinMode(kRxPin, INPUT);
   Serial.begin(kUsbBaud);
@@ -85,9 +88,18 @@ void loop() {
   switch (event.type) {
     case UART_DATA: {
       uint8_t buffer[128];
-      const int got = uart_read_bytes(kDclUart, buffer, event.size, 0);
-      if (got > 0) {
+      // event.size can exceed this stack buffer. Never pass it through
+      // directly to uart_read_bytes() or it can overwrite the stack.
+      size_t remaining = event.size;
+      while (remaining > 0) {
+        const size_t chunk = remaining < sizeof(buffer) ? remaining : sizeof(buffer);
+        const int got = uart_read_bytes(kDclUart, buffer, chunk, 0);
+        if (got <= 0) {
+          Serial.println(F("# UART_EVENT_SHORT_READ"));
+          break;
+        }
         emitHex(buffer, static_cast<size_t>(got));
+        remaining -= static_cast<size_t>(got);
       }
       break;
     }

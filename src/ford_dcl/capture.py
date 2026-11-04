@@ -463,14 +463,12 @@ class SerialCapture:
         self._write_lock = threading.Lock()
 
     def write(self, data: bytes) -> None:
-        """Write bytes to the active serial connection."""
-        with self._write_lock:
-            conn = self._connection
-            if conn is not None and getattr(conn, "is_open", False):
-                conn.write(data)
-                conn.flush()
-            else:
-                raise RuntimeError("serial port is not currently connected")
+        """Never transmit through a capture object, even via direct Python API.
+
+        This class is a receive-only recorder. All ECU active operations
+        require a separate audited protocol-specific executor.
+        """
+        raise PermissionError("SerialCapture is receive-only; writes are forbidden")
 
     def stop(self) -> None:
         """Request clean shutdown."""

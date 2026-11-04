@@ -3,6 +3,9 @@
 These sketches treat 9600 baud, 8 data bits, no parity, and 2 stop bits as the
 default DCL candidate configuration. That configuration and the electrical
 layer must be validated against the exact ECU before active transmission.
+The newly purchased 5 V MAX487 and four-channel level converter need
+[this dedicated quick start](../docs/max487-quickstart.md). Do not use
+the old 3.3 V or XY-K485 wiring for the MAX487.
 USB serial is 115200 baud for `passive_ascii` and `dcl_master`. The timestamped
 `passive_binary` sketch uses 460800 baud to carry its per-byte record overhead.
 
@@ -27,9 +30,9 @@ Common UART wiring:
 GPIO18 is low and GPIO19 is low at idle, so the master defaults to receive.
 Fit an external pull-down on DE so reset, boot, or unpowered-MCU states cannot
 enable the driver; do not rely on firmware alone for the safe boot state.
-Use a 3.3 V part with separately exposed DE and /RE, such as a MAX3485,
-SP3485, or suitable SN65HVD-family device. Add automotive transient protection
-or isolation appropriate to the installation.
+The new MAX487 runs from 5 V. Its RO output needs 5 V-to-3.3 V translation
+before GPIO16; its DI and DE inputs accept a 3.3 V logic HIGH. With the new
+bench wiring, hold /RE at GND and fit a 10 kOhm external DE pull-down.
 
 XY-K485 modules use automatic direction control and do not expose deterministic
 DE and /RE control. Their turnaround behavior cannot enforce this master's
@@ -65,8 +68,8 @@ packets, messages, checksummed units, requests, or responses. A real DCL
 transaction can span lines, and one line can contain parts of multiple
 transactions.
 
-The TX pin is configured by the ESP32 UART API but the passive sketch never
-writes to it. Keep the external transceiver driver disabled.
+Passive firmware now leaves UART TX unattached, drives GPIO18 DE LOW, and
+still requires the external DE pull-down for safe reset/boot.
 
 ## `passive_binary`
 
@@ -133,34 +136,12 @@ status records and must not claim losslessness after any overflow indication.
 
 ## `dcl_master`
 
-The master starts at 9600 8N2 and always enters receive mode first. The optional
-19200 8N2 setting is selected only by the exact `BAUD 19200` USB command.
-
-The USB command allow-list is:
-
-- `HELP`
-- `STATUS`
-- `LIST`
-- `BAUD 9600`
-- `BAUD 19200`
-- `SEND <compile-time-name>`
-
-Commands are newline-terminated and case-sensitive. Unknown, malformed, binary,
-and overlength commands are rejected. There is no arbitrary-byte write command.
-There are no commands for KAM clearing, output-state control, adaptation,
-calibration, memory writes, or actuator tests.
-
-Transmission is limited to compile-time transaction descriptors. A descriptor
-must point to a compile-time byte array, be no more than 32 bytes, fit within
-the 50,000 microsecond driver-active limit, and be explicitly marked verified
-and enabled in source. A one-shot ESP timer forces DE low and /RE low if the
-normal UART write/flush path does not release the bus before that limit.
-
-Exact Ford DCL requests have not been verified. The supplied descriptor is a
-null, zero-length, disabled placeholder, so this firmware cannot transmit a DCL
-request as shipped. Do not replace it with inferred or guessed bytes. Enable a
-descriptor only after its complete raw diagnostic transaction is independently
-verified for the target ECU and confirmed not to change ECU or vehicle state.
+This is a reference-only shell, not a validated vehicle diagnostic tool.
+All candidate request descriptors are disabled; a compile-time guard prevents
+RAW, SEND, wake pulses, and polling from enabling the bus driver. Studio
+blocks uploading this sketch. Do not upload it manually to the car.
+Only after a verified non-mutating ECU transaction and electrical validation
+should a separate reviewed active implementation be developed.
 
 Received master-side bytes are printed individually as:
 
@@ -169,6 +150,13 @@ RX T=123456 BYTE=AB
 ```
 
 These are timestamped UART bytes, not decoded DCL frames.
+
+## `max487_bench`
+
+The new **desk-only** MAX487 test deliberately drives A/B while they are
+disconnected from all external equipment and checks its own receiver echo.
+USB is 115200; local test UART is 9600 8N2. Use
+[MAX487 quick start](../docs/max487-quickstart.md) to wire and flash.
 
 ## Desk bench test (separate sketch)
 

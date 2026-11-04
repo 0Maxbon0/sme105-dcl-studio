@@ -236,20 +236,9 @@ class CaptureManager:
         return record
 
     def send_command(self, command: str) -> dict[str, Any]:
-        """Send an ASCII command to the active serial capture."""
-        with self._lock:
-            if self._runner is None:
-                raise RuntimeError("no capture session is currently running")
-            clean = command.strip()
-            if not clean:
-                raise ValueError("command cannot be empty")
-            line = (clean + "\n").encode("ascii", errors="replace")
-            self._runner.write(line)
-            self.publish(
-                {
-                    "event": "serial_command_sent",
-                    "utc": utc_now(),
-                    "command": clean,
-                }
-            )
-            return {"ok": True, "command": clean}
+        """Fail closed. Capture sessions are receive-only by definition.
+
+        Keep this guard even if a later route bypasses the API-level lock.
+        Vehicle diagnostics must use a separate, verified protocol executor.
+        """
+        raise PermissionError("arbitrary serial writes via capture are disabled")

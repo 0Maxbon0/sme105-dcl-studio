@@ -27,20 +27,10 @@ export class BleTransport {
 
   async connect() {
     if (!bluetoothAvailable()) throw new Error("Web Bluetooth is not available in this browser");
-    const bluetooth = navigator.bluetooth;
-    if (bluetooth.getDevices) {
-      const devices = await bluetooth.getDevices();
-      const existing = devices.find((device) => (device.name || "").startsWith("SME105"));
-      if (existing) {
-        try {
-          return await this.attach(existing);
-        } catch {
-          /* The permitted device did not connect; ask the user to pick one. */
-        }
-      }
-    }
-    const device = await bluetooth.requestDevice({
-      filters: [{ namePrefix: "SME105" }],
+    // Show every nearby device. A name filter leaves Samsung's chooser
+    // spinning when the ESP32 puts its name only in the scan response.
+    const device = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true,
       optionalServices: [NUS_SERVICE],
     });
     return this.attach(device);

@@ -8,6 +8,10 @@ namespace {
 
 HardwareSerial DclSerial(2);
 
+// SAE/SME-105 requests have not been captured from this vehicle.
+// This master shell is a reference build only; no vehicle transmissions.
+constexpr bool kVehicleTxEnabled = false;
+
 constexpr uint32_t kUsbBaud = 115200;
 constexpr uint32_t kDefaultDclBaud = 9600;
 constexpr int kDclRxPin = 16;
@@ -42,14 +46,14 @@ constexpr uint8_t kBytesKoeoFastInit[] = {0x01, 0x5F, 0x01, 0x5F};
 constexpr uint8_t kBytesIsoFastInit[] = {0x33, 0xC4}; // 0x33 wake with parity
 
 constexpr DiagnosticTransaction kDiagnosticTransactions[] = {
-    {"INIT_PING", kBytesInitPing, sizeof(kBytesInitPing), true, "Wakeup / Link Ping (0x000 with parity 0xA)"},
-    {"MODULE_SELECT", kBytesModuleSelect, sizeof(kBytesModuleSelect), true, "Module Select (0x001 with parity 0xB)"},
-    {"LIVE_BLOCK_32B", kBytesLiveBlock32B, sizeof(kBytesLiveBlock32B), true, "Primary 32-Byte Live Telemetry Request"},
-    {"LIVE_PIDS_ALT", kBytesLivePidsAlt, sizeof(kBytesLivePidsAlt), true, "Alternate Parameter Request (Addr 0x01, Cmd 0x02)"},
-    {"DTC_CONTINUOUS", kBytesDtcContinuous, sizeof(kBytesDtcContinuous), true, "Read Continuous Memory DTCs"},
-    {"DTC_KOEO", kBytesDtcKoeo, sizeof(kBytesDtcKoeo), true, "Read KOEO Self-Test DTCs"},
-    {"KOEO_FAST_INIT", kBytesKoeoFastInit, sizeof(kBytesKoeoFastInit), true, "Fast Init Pair (0x015F 0x015F)"},
-    {"ISO_FAST_INIT", kBytesIsoFastInit, sizeof(kBytesIsoFastInit), true, "ISO-style 0x33 Address Key"},
+    {"INIT_PING", kBytesInitPing, sizeof(kBytesInitPing), false, "Unverified candidate; disabled"},
+    {"MODULE_SELECT", kBytesModuleSelect, sizeof(kBytesModuleSelect), false, "Unverified candidate; disabled"},
+    {"LIVE_BLOCK_32B", kBytesLiveBlock32B, sizeof(kBytesLiveBlock32B), false, "Unverified candidate; disabled"},
+    {"LIVE_PIDS_ALT", kBytesLivePidsAlt, sizeof(kBytesLivePidsAlt), false, "Unverified candidate; disabled"},
+    {"DTC_CONTINUOUS", kBytesDtcContinuous, sizeof(kBytesDtcContinuous), false, "Unverified candidate; disabled"},
+    {"DTC_KOEO", kBytesDtcKoeo, sizeof(kBytesDtcKoeo), false, "Unverified candidate; disabled"},
+    {"KOEO_FAST_INIT", kBytesKoeoFastInit, sizeof(kBytesKoeoFastInit), false, "Unverified candidate; disabled"},
+    {"ISO_FAST_INIT", kBytesIsoFastInit, sizeof(kBytesIsoFastInit), false, "Unverified candidate; disabled"},
 };
 
 esp_timer_handle_t txDeadlineTimer = nullptr;
@@ -107,6 +111,10 @@ const DiagnosticTransaction* findTransaction(const char* name) {
 }
 
 bool sendRawBytes(const uint8_t* bytes, size_t length, const char* label = "RAW") {
+  if (!kVehicleTxEnabled) {
+    Serial.println(F("LOCKED: no verified SME-105 transactions; TX disabled"));
+    return false;
+  }
   if (bytes == nullptr || length == 0) return false;
   if (length > kMaxTxBytes) {
     Serial.println(F("ERR length > 32 bytes"));
@@ -158,6 +166,10 @@ bool sendTransaction(const DiagnosticTransaction& transaction) {
 }
 
 void sendBreakPulse(uint32_t durationMs) {
+  if (!kVehicleTxEnabled) {
+    Serial.println(F("LOCKED: wake pulses disabled"));
+    return;
+  }
   setReceiveMode();
   DclSerial.end();
   pinMode(kDclTxPin, OUTPUT);
@@ -185,15 +197,11 @@ void applyDclUartConfig() {
 }
 
 void printHelp() {
-  Serial.println(F("=== SME-105 DCL Master Polling Shell ==="));
+  Serial.println(F("=== SME-105 Master Shell: TX HARD-LOCKED ==="));
   Serial.println(F("ALLOW: HELP | STATUS | LIST"));
   Serial.println(F("ALLOW: BAUD <2400|4800|9600|10400|19200|38400>"));
   Serial.println(F("ALLOW: FORMAT <8N2|8N1|8E1|8O1>"));
-  Serial.println(F("ALLOW: SEND <name>"));
-  Serial.println(F("ALLOW: RAW <hex_bytes> (e.g. RAW 00 A0 01 FF)"));
-  Serial.println(F("ALLOW: WAKE <duration_ms> (sends break pulse)"));
-  Serial.println(F("ALLOW: WAKE_SEND <duration_ms> <name_or_hex>"));
-  Serial.println(F("ALLOW: POLL ON [interval_ms] | POLL OFF"));
+  Serial.println(F("SEND / RAW / WAKE / WAKE_SEND / POLL ON: LOCKED"));
 }
 
 void printStatus() {
@@ -314,6 +322,10 @@ void processCommand(const char* command) {
       }
     }
   } else if (strncmp(command, "POLL ON", 7) == 0) {
+    if (!kVehicleTxEnabled) {
+      Serial.println(F("LOCKED: continuous polling disabled"));
+      return;
+    }
     int interval = 250;
     if (strlen(command) > 8) {
       interval = atoi(command + 8);

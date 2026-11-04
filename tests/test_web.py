@@ -12,7 +12,7 @@ from unittest.mock import patch
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from ford_dcl.capture import CaptureConfig, CaptureSession, utc_now
+from ford_dcl.capture import CaptureConfig, CaptureSession, SerialCapture, utc_now
 from ford_dcl.transport import RecordType
 from ford_dcl.web.app import _session_path, create_app
 from ford_dcl.web.capture_service import CaptureManager
@@ -78,7 +78,10 @@ class WebApplicationTests(unittest.TestCase):
         body = bootstrap.json()
         self.assertEqual(body["application"]["author"], "Eng. Maxim Salib")
         self.assertFalse(body["application"]["active_transmission"])
-        self.assertIn("bench_test", body["firmware"]["uploadable_sketches"])
+        self.assertNotIn("bench_test", body["firmware"]["uploadable_sketches"])
+        self.assertNotIn("max487_bench", body["firmware"]["uploadable_sketches"])
+        self.assertIn("dcl_readiness_bench", body["firmware"]["uploadable_sketches"])
+        self.assertIn("max487-quickstart", [guide["id"] for guide in body["guides"]])
         self.assertIn("serial_access", body)
         self.assertIn("hint", body["serial_access"])
         home = self.client.get("/")
@@ -165,6 +168,28 @@ class WebApplicationTests(unittest.TestCase):
             },
         )
         self.assertEqual(bench.status_code, 423)
+        wrong_max487_confirmation = self.client.post(
+            "/api/firmware/run",
+            headers=self.headers,
+            json={
+                "sketch": "max487_bench",
+                "action": "upload",
+                "port": "COM7",
+                "confirmation": "FLASH_RECEIVE_ONLY_FIRMWARE",
+            },
+        )
+        self.assertEqual(wrong_max487_confirmation.status_code, 423)
+        exact_bench_confirmation = self.client.post(
+            "/api/firmware/run",
+            headers=self.headers,
+            json={
+                "sketch": "max487_bench",
+                "action": "upload",
+                "port": "COM7",
+                "confirmation": "FLASH_BENCH_TEST_DESK_ONLY",
+            },
+        )
+        self.assertEqual(exact_bench_confirmation.status_code, 423)
 
     def test_dtc_and_diagnosis_endpoints(self) -> None:
         dtc = self.client.post(
@@ -201,8 +226,14 @@ class WebApplicationTests(unittest.TestCase):
                 headers=self.headers,
                 json={"command": "SEND LIVE_BLOCK_32B"},
             )
-            self.assertEqual(send.status_code, 200)
-            self.assertEqual(send.json()["command"], "SEND LIVE_BLOCK_32B")
+            self.assertEqual(send.status_code, 423)
+            self.assertIn("disabled", send.json()["detail"])
+            self.assertFalse(any(
+                x.get("event") == "serial_command_sent"
+                for x in self.app.state.capture_manager.events_since(0)
+            ))
+            with self.assertRaises(PermissionError):
+                self.app.state.capture_manager.send_command("START")
             stop = self.client.post("/api/capture/stop", headers=self.headers)
             self.assertEqual(stop.status_code, 200)
             self.assertTrue(self.app.state.capture_manager.wait(2))
@@ -224,6 +255,12 @@ class WebApplicationTests(unittest.TestCase):
 
 
 class CaptureManagerAndSettingsTests(unittest.TestCase):
+    def test_serial_capture_cannot_transmit_even_via_direct_python_api(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            capture = SerialCapture(CaptureConfig(port="fixture", output_dir=Path(folder)))
+            with self.assertRaisesRegex(PermissionError, "receive-only"):
+                capture.write(b"START\n")
+
     def test_zero_duration_capture_runs_until_stop(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

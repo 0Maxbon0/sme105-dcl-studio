@@ -57,6 +57,16 @@ An XY-K485 module's clone, schematic revision, voltage tolerance, idle state,
 and input pull-ups can vary. Visual similarity to an online module is not
 electrical validation.
 
+## Purchased MAX487 (5 V): desk validation
+
+Unlike the XY-K485, the bought MAX487 board exposes manual DE and /RE
+pins. That makes controlled desk testing possible, but does **not** certify
+the board for connection to the vehicle. MAX487 RO may reach 5 V and needs
+3.3 V translation for ESP32 RX. Hold /RE LOW and connect GPIO18 to DE with
+an external 10 kOhm pull-down. Any fixed 120-Ohm termination and TVS
+implementation must be evaluated against the actual Ford DCL electrical
+interface. Use [max487-quickstart.md](max487-quickstart.md) first.
+
 ## Requirements for an active master
 
 Active requests require a purpose-built interface with:

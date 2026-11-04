@@ -45,6 +45,7 @@ p { line-height: 1.45; }
 .message { margin: 8px 16px 0; color: var(--muted); min-height: 1.3em; }
 main { display: grid; gap: 12px; padding-top: 8px; padding-bottom: 16px; }
 .view { display: grid; gap: 12px; }
+.view[hidden] { display: none !important; }
 .banner { margin: 0; padding: 12px; border-radius: 12px; background: #142033; }
 .banner.warn { background: var(--warn); color: var(--warn-ink); }
 .facts { display: grid; grid-template-columns: 8.5rem 1fr; gap: 8px 12px; margin: 0; }
@@ -72,7 +73,16 @@ progress { width: 100%; height: 14px; accent-color: var(--amber); }
 .choices { border: 1px solid var(--line); border-radius: 14px; padding: 12px; }
 .choices label, .check { min-height: 44px; display: flex; gap: 10px; align-items: center; }
 .cards { display: grid; gap: 10px; }
-.card .value { font-size: 1.6rem; margin: 4px 0; }
+.card .value { font-size: 1.6rem; margin: 4px 0; font-weight: 700; }
+.card .value.ok { color: var(--green); }
+.card .value.warn { color: var(--amber); }
+.card .value.bad { color: var(--red); }
+.card .value.quiet { color: var(--muted); }
+.card .judge { margin: 0; font-weight: 650; }
+.card .judge.ok { color: var(--green); }
+.card .judge.warn { color: var(--amber); }
+.card .judge.bad { color: var(--red); }
+.card .judge.quiet { color: var(--muted); }
 .card canvas { width: 100%; height: 52px; display: block; background: #10151c; border-radius: 8px; }
 .bits { margin: 8px 0 0; padding: 0; list-style: none; }
 .bits li.on { color: var(--green); }
@@ -97,7 +107,8 @@ nav button {
   background: transparent;
 }
 nav button[aria-current="page"] { color: var(--amber); font-weight: 700; }
-.modal { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.62); display: grid; align-items: end; z-index: 5; }
+.modal { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.62); display: none; align-items: end; z-index: 5; }
+.modal.open { display: grid; }
 .modal-card { background: var(--card); border-radius: 18px 18px 0 0; padding-top: 18px; padding-bottom: calc(18px + env(safe-area-inset-bottom)); display: grid; gap: 12px; }
 select { min-height: 52px; border-radius: 14px; border: 1px solid var(--line); background: var(--card); padding: 0 12px; width: 100%; }
 @media (min-width: 800px) {

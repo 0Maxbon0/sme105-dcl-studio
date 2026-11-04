@@ -42,6 +42,7 @@ from .settings import SettingsStore
 
 GUIDES = {
     "wiring-safety": ("Wiring and safety", "docs/wiring-safety.md"),
+    "max487-quickstart": ("MAX487 desk wiring and flash", "docs/max487-quickstart.md"),
     "test-protocol": ("Guided test protocol", "docs/test-protocol.md"),
     "high-idle": ("High-idle diagnosis", "docs/high-idle-diagnosis.md"),
     "protocol-notes": ("Protocol evidence ledger", "docs/protocol-notes.md"),
@@ -199,7 +200,14 @@ def create_app(
 
     @app.post("/api/capture/send", dependencies=[Depends(authorize)])
     def capture_send(request: SendCommandRequest) -> dict[str, Any]:
-        return manager.send_command(request.command.strip())
+        # A capture must never serve as an arbitrary command transport.
+        # The former handler bypassed the active-transmission lock and could
+        # trigger an active firmware (e.g. START/ECHOID) without its own
+        # protocol, electrical and operator authorization boundaries.
+        raise HTTPException(
+            status_code=423,
+            detail="arbitrary serial commands are disabled for all captures",
+        )
 
     @app.get("/api/events", dependencies=[Depends(authorize)])
     def events(sequence: int = 0) -> list[dict[str, Any]]:

@@ -12,7 +12,8 @@ HardwareSerial DclSerial(2);
 constexpr uint32_t kUsbBaud = 115200;
 constexpr uint32_t kDclBaud = 9600;
 constexpr int kDclRxPin = 16;
-constexpr int kDclTxPin = 17;
+constexpr int kUnusedTxPin = 17;
+constexpr int kDriverEnablePin = 18;
 constexpr size_t kRxBufferSize = 4096;
 constexpr size_t kBatchCapacity = 64;
 constexpr uint32_t kBatchIdleUs = 2500;
@@ -59,9 +60,12 @@ void captureAvailableBytes() {
 }  // namespace
 
 void setup() {
+  digitalWrite(kDriverEnablePin, LOW);
+  pinMode(kDriverEnablePin, OUTPUT);
+  pinMode(kUnusedTxPin, INPUT);
   Serial.begin(kUsbBaud);
   DclSerial.setRxBufferSize(kRxBufferSize);
-  DclSerial.begin(kDclBaud, SERIAL_8N2, kDclRxPin, kDclTxPin);
+  DclSerial.begin(kDclBaud, SERIAL_8N2, kDclRxPin, -1);
 }
 
 void loop() {

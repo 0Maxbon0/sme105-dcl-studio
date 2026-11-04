@@ -508,7 +508,7 @@
 
   function uploadConfirmation(sketch, checkbox) {
     if (actionIsUploadMissing(checkbox)) return null;
-    if (sketch === "bench_test") return "FLASH_BENCH_TEST_DESK_ONLY";
+    if (sketch === "bench_test" || sketch === "max487_bench" || sketch === "dcl_master") return null;
     return "FLASH_RECEIVE_ONLY_FIRMWARE";
   }
 
@@ -555,9 +555,12 @@
   function syncFirmwareConfirmLabel() {
     const label = $("#firmware-confirm-label");
     if (!label) return;
-    label.textContent = $("#firmware-sketch").value === "bench_test"
-      ? "I confirm the vehicle is disconnected and GPIO4/GPIO21 may drive A+/B−."
-      : "I confirm TX is disconnected and this is receive-only firmware.";
+    const sketch = $("#firmware-sketch").value;
+    const buildOnly = ["bench_test", "max487_bench", "dcl_master"].includes(sketch);
+    $("#firmware-upload").disabled = buildOnly;
+    label.textContent = buildOnly
+      ? "Build only: this sketch cannot be uploaded from the vehicle GUI."
+      : "I confirm the MAX487 driver stays disabled and the vehicle is disconnected during upload.";
   }
 
   async function loadGuide(id, button) {
@@ -595,27 +598,6 @@
     } catch (error) { toast(error.message, "error"); }
   }
 
-  async function sendSerialCommand(cmdText) {
-    const input = $("#capture-cmd-input");
-    const command = (cmdText || (input ? input.value : "") || "").trim();
-    if (!command) {
-      toast("Please enter a command to send", "error");
-      return;
-    }
-    try {
-      await api("/api/capture/send", {
-        method: "POST",
-        body: JSON.stringify({ command }),
-      });
-      toast(`Sent: ${command}`);
-      if (!cmdText && input) {
-        input.value = "";
-      }
-    } catch (error) {
-      toast(error.message, "error");
-    }
-  }
-
   function bindEvents() {
     $("#nav").addEventListener("click", (event) => {
       const button = event.target.closest("[data-page]");
@@ -636,18 +618,6 @@
     });
     $("#capture-start").addEventListener("click", startCapture);
     $("#capture-stop").addEventListener("click", stopCapture);
-    const sendBtn = $("#capture-cmd-send");
-    if (sendBtn) sendBtn.addEventListener("click", () => sendSerialCommand());
-    const cmdInput = $("#capture-cmd-input");
-    if (cmdInput) cmdInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        sendSerialCommand();
-      }
-    });
-    $$("[data-quick-cmd]").forEach((button) => button.addEventListener("click", () => {
-      sendSerialCommand(button.dataset.quickCmd);
-    }));
     $("#abort-button").addEventListener("click", async () => {
       await Promise.allSettled([api("/api/capture/stop", { method: "POST" }), api("/api/firmware/cancel", { method: "POST" })]);
       try { await api("/api/capture/marker", { method: "POST", body: JSON.stringify({ label: "ABORT", detail: "Operator pressed global STOP / ABORT" }) }); } catch (_) {}
@@ -683,7 +653,6 @@
     $("#firmware-upload").addEventListener("click", () => runFirmware("upload"));
     $("#firmware-cancel").addEventListener("click", () => api("/api/firmware/cancel", { method: "POST" }).catch((error) => toast(error.message, "error")));
     $("#bench-build").addEventListener("click", () => runFirmware("build", "bench_test", "#bench-port", $("#bench-confirm")));
-    $("#bench-upload").addEventListener("click", () => runFirmware("upload", "bench_test", "#bench-port", $("#bench-confirm")));
     $("#bench-monitor-start").addEventListener("click", () => runBenchMonitor(true));
     $("#bench-monitor-stop").addEventListener("click", () => runBenchMonitor(false));
     $("#save-settings").addEventListener("click", saveSettings);

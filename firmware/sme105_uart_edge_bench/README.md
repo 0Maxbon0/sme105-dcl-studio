@@ -16,10 +16,16 @@ from ESP32, use **two 1k series resistors** (470 ohm–4.7k acceptable):
 ```bash
 ./.venv/bin/python -m platformio run -d firmware/sme105_uart_edge_bench -t upload --upload-port /dev/ttyUSB0
 ./.venv/bin/python scripts/sme105_uart_edge_bench.py --port /dev/ttyUSB0 --action status
+./.venv/bin/python scripts/sme105_uart_edge_bench.py --port /dev/ttyUSB0 --action pins
 ./.venv/bin/python scripts/sme105_uart_edge_bench.py --port /dev/ttyUSB0 --action bench
 ```
 
-Type `BENCH_GPIO_ONCE` on the third command. Evidence is recorded in
+The pin check is repeatable; it reports actual GPIO17, GPIO16, GPIO19
+idle-high levels and sends **no test bytes**, including if the jumper
+preflight fails. A failed bench consumes the one-shot per boot, so diagnose
+wiring with `--action pins` before trying the bench again after a reset.
+
+Type `BENCH_GPIO_ONCE` when prompted by the bench command. Evidence is recorded in
 `captures/ISOLATED_GPIO`. Runs two locally generated eight-byte tests at
 9600 8N1: UART1 RX FIFO threshold 1 without timeout, and threshold 1 plus
 UART RX timeout. The GPIO19 edge ISR records independent RX logic transitions

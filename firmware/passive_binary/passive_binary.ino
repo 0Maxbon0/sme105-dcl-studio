@@ -11,7 +11,8 @@ HardwareSerial DclSerial(2);
 constexpr uint32_t kUsbBaud = 460800;
 constexpr uint32_t kDclBaud = 9600;
 constexpr int kDclRxPin = 16;
-constexpr int kDclTxPin = 17;
+constexpr int kUnusedTxPin = 17;
+constexpr int kDriverEnablePin = 18;
 constexpr size_t kRxBufferSize = 4096;
 
 constexpr uint8_t kProtocolVersion = 1;
@@ -170,9 +171,14 @@ uint64_t readLastBreakUs() {
 }  // namespace
 
 void setup() {
+  // MAX487 board: physical 10k DE pull-down is still required during reset.
+  // This capture sketch never attaches the UART transmitter.
+  digitalWrite(kDriverEnablePin, LOW);
+  pinMode(kDriverEnablePin, OUTPUT);
+  pinMode(kUnusedTxPin, INPUT);
   Serial.begin(kUsbBaud);
   DclSerial.setRxBufferSize(kRxBufferSize);
-  DclSerial.begin(kDclBaud, SERIAL_8N2, kDclRxPin, kDclTxPin);
+  DclSerial.begin(kDclBaud, SERIAL_8N2, kDclRxPin, -1);
   DclSerial.onReceiveError(onDclReceiveError);
 }
 

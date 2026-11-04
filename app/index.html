@@ -11,7 +11,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=3">
 </head>
 <body>
   <header class="top">
@@ -46,6 +46,8 @@
       <p id="codes-banner" class="banner" hidden></p>
       <button id="read-codes-btn" type="button" class="primary" data-str="readStored"></button>
       <button id="koeo-btn" type="button" data-str="runKoeo"></button>
+      <button id="koer-btn" type="button" data-str="runKoer"></button>
+      <p id="koer-prompt" class="banner warn" hidden></p>
       <label class="meter"><span data-str="koeoProgress"></span><progress id="codes-progress" max="100" value="0"></progress></label>
       <p id="codes-meta" class="meta"></p>
       <ul id="codes-list" class="results"></ul>
@@ -56,6 +58,7 @@
         <legend data-str="liveSet"></legend>
         <label><input type="radio" name="pidset" id="set-live" value="LIVE" checked> <span data-str="liveEngine"></span></label>
         <label><input type="radio" name="pidset" id="set-live2" value="LIVE2"> <span data-str="liveFlags"></span></label>
+        <label><input type="radio" name="pidset" id="set-live3" value="LIVE3"> <span data-str="liveExtra"></span></label>
       </fieldset>
       <button id="live-start" type="button" class="primary" data-str="startLive"></button>
       <label class="meter"><span data-str="startLive"></span><progress id="live-progress" max="100" value="0"></progress></label>
@@ -68,6 +71,10 @@
       <p class="help" data-str="offlineHelp"></p>
       <button id="bench-btn" type="button" data-str="selfTest"></button>
       <p class="help" data-str="selfTestHelp"></p>
+      <button id="mem-btn" type="button" class="primary" data-str="readIdentity"></button>
+      <pre id="identity-out" class="mono"></pre>
+      <button id="clear-btn" type="button" class="danger" data-str="clearCodes"></button>
+      <p class="help" data-str="confirmClearBody"></p>
       <button id="reboot-btn" type="button" data-str="reboot"></button>
     </section>
     <section id="view-log" class="view" hidden>
@@ -88,6 +95,7 @@
       <h2 data-str="demoTitle"></h2>
       <p class="help" data-str="demoHelp"></p>
       <label class="check"><input id="demo-toggle" type="checkbox"> <span data-str="demoOn"></span></label>
+      <button id="play-demo" type="button" class="primary" data-str="playDemo"></button>
       <label class="stack"><span data-str="captureLabel"></span>
         <select id="demo-capture">
           <option value="0E"></option>
@@ -115,6 +123,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="js/app.js"></script>
+  <script type="module" src="js/app.js?v=8"></script>
 </body>
 </html>

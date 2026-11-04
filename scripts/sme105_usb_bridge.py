@@ -59,7 +59,7 @@ HELLO_REPLY = b"HELLO SME105_USB_BRIDGE_V1 protocol=1 usb_baud=115200 no_auto_tx
 PINS_REPLY = (b"PINS ro16=GPIO16_UART1 de18=GPIO18_RMT2..5 "
               b"di17=GPIO17_UART2_TX+PAD_RX no_arbitrary_tx=1")
 ARM_EVENT = re.compile(
-    rb"^EVENT read_armed variant=(A4|0E|KOEO|LIVE2|LIVE|OFF) valid_ms=15000 no_tx_yet=1$"
+    rb"^EVENT read_armed variant=(A4|0E|KOEO|KOER|LIVE3|LIVE2|LIVE|CLR|MEM|OFF) valid_ms=15000 no_tx_yet=1$"
 )
 END_RECORD = re.compile(
     rb"^END reason=(\d{1,3}) ro_bytes=(\d{1,10}) ro_lost=(\d{1,10}) "

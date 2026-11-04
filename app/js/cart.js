@@ -37,6 +37,7 @@ export function createCartDecoder(pidSet = null) {
     parityRejects: 0,
     rows: [],
     pids: {},
+    mem: {},
     pidSet,
     closed: false,
   };
@@ -70,6 +71,13 @@ export function createCartDecoder(pidSet = null) {
     if (low !== null && high !== null) dec.rom = { low, high };
     if (mode === 0x25) dec.blocks25 += 1;
     if (mode === 0x26) dec.blocks26 += 1;
+    if (mode === 0x22) {
+      for (const fr of block) {
+        const word = fr.slots[3];
+        if (!word || !parityOk(word[0], word[1])) continue;
+        dec.mem[fr.fid] = word[0];
+      }
+    }
     if (mode !== 0x25 && mode !== 0x26) return;
     for (const fr of block) {
       const slots = Object.keys(fr.slots).map(Number).sort((a, b) => a - b);

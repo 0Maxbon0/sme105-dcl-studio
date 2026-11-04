@@ -50,7 +50,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     const codes = (snap?.codes || []).map((entry) => ({
       code: entry.code,
       mode: entry.mode,
-      source: entry.mode === 0x25 ? "KOEO" : "stored",
+      source: entry.mode === 0x25 ? (variant === "KOER" ? "engine running" : "engine off") : "stored",
       frame: entry.frame,
       slot: entry.slot,
     }));
@@ -67,6 +67,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       codes,
       pids,
       rows: snap?.rows || [],
+      mem: snap?.mem ? { ...snap.mem } : {},
       rom: snap?.rom || null,
       selfTestComplete: !!snap?.selfTestComplete,
       frame7First: snap?.frame7First ?? null,

@@ -56,8 +56,12 @@ export const TIMEOUTS = {
   bench: 15000,
   codes: 20000,
   KOEO: 75000,
-  LIVE: 100000,
-  LIVE2: 100000,
+  KOER: 5 * 60 * 1000,
+  LIVE: 31 * 60 * 1000,
+  LIVE2: 31 * 60 * 1000,
+  LIVE3: 31 * 60 * 1000,
+  CLR: 12000,
+  MEM: 20000,
   OFF: 15000,
 };
 
@@ -65,8 +69,12 @@ export const VARIANTS = {
   "0E": { command: "0E", kind: "codes", label: "stored", timeoutMs: TIMEOUTS.codes, expectMs: 20000 },
   A4: { command: "A4", kind: "codes", label: "stored-alt", timeoutMs: TIMEOUTS.codes, expectMs: 20000 },
   KOEO: { command: "KOEO", kind: "koeo", label: "KOEO", timeoutMs: TIMEOUTS.KOEO, expectMs: 60000 },
-  LIVE: { command: "LIVE", kind: "live", label: "LIVE", timeoutMs: TIMEOUTS.LIVE, expectMs: 90000 },
-  LIVE2: { command: "LIVE2", kind: "live", label: "LIVE2", timeoutMs: TIMEOUTS.LIVE2, expectMs: 90000 },
+  KOER: { command: "KOER", kind: "koer", label: "KOER", timeoutMs: TIMEOUTS.KOER, expectMs: 4 * 60 * 1000 },
+  LIVE: { command: "LIVE", kind: "live", label: "LIVE", timeoutMs: TIMEOUTS.LIVE, expectMs: 30 * 60 * 1000 },
+  LIVE2: { command: "LIVE2", kind: "live", label: "LIVE2", timeoutMs: TIMEOUTS.LIVE2, expectMs: 30 * 60 * 1000 },
+  LIVE3: { command: "LIVE3", kind: "live", label: "LIVE3", timeoutMs: TIMEOUTS.LIVE3, expectMs: 30 * 60 * 1000 },
+  CLR: { command: "CLR", kind: "clear", label: "CLR", timeoutMs: TIMEOUTS.CLR, expectMs: 4000 },
+  MEM: { command: "MEM", kind: "memory", label: "MEM", timeoutMs: TIMEOUTS.MEM, expectMs: 10000 },
   OFF: { command: "OFF", kind: "offline", label: "OFF", timeoutMs: TIMEOUTS.OFF, expectMs: 15000 },
 };
 
@@ -78,10 +86,21 @@ export function reasonText(code) {
   return name;
 }
 
+const STAGE_PLAIN = {
+  0: "Idle — waiting for a command",
+  1: "Checking that the link is quiet",
+  2: "Sending the wake-up message",
+  3: "Waiting for the ECU to answer",
+  4: "Asking the ECU to start diagnostic mode",
+  5: "Listening only",
+  6: "Talking to the ECU",
+  7: "Finishing and saving the result",
+  8: "Stopped because of a fault",
+};
+
 export function stageText(code) {
   const n = Number(code);
-  const name = STAGES[n];
-  return name === undefined ? `stage ${code}` : `${n} ${name}`;
+  return STAGE_PLAIN[n] || `Unknown state ${code}`;
 }
 
 export function parseFields(line) {

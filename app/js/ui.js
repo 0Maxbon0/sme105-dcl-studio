@@ -1,7 +1,7 @@
 /** DOM updates. Imported only from the browser entry point. */
 
 import { lookupCode } from "./codes-db.js";
-import { bitRows, formatValue, LIVE2_PIDS, LIVE_PIDS, PIDS, rowsToCsv, summarizeSeries } from "./pids.js";
+import { bitRows, formatValue, judgeReading, LIVE2_PIDS, LIVE3_PIDS, LIVE_PIDS, PID_TEXT, PIDS, rowsToCsv, summarizeSeries } from "./pids.js";
 import { reasonText, stageText, VARIANTS } from "./protocol.js";
 import { STR } from "./strings.js";
 
@@ -38,10 +38,12 @@ export function confirmDialog(title, body) {
   $("modal-title").textContent = title;
   $("modal-body").textContent = body;
   modal.hidden = false;
+  modal.classList.add("open");
   $("modal-cancel").focus();
   return new Promise((resolve) => {
     const finish = (value) => {
       modal.hidden = true;
+      modal.classList.remove("open");
       $("modal-ok").removeEventListener("click", onOk);
       $("modal-cancel").removeEventListener("click", onCancel);
       resolve(value);
@@ -62,10 +64,17 @@ function activeCodes(state) {
   if (state.trust === "progress" && state.cart) {
     return state.cart.snapshot().codes.map((entry) => ({
       code: entry.code,
-      source: entry.mode === 0x25 ? "KOEO" : "stored",
+      source: entry.mode === 0x25
+        ? ((state.op?.variant || state.lastSession?.variant) === "KOER" ? "engine running" : "engine off")
+        : "stored",
     }));
   }
   return state.lastSession?.codes || [];
+}
+
+function lastSample(snap, result, name) {
+  const samples = snap?.pids?.[name]?.samples || result?.pids?.[name]?.samples;
+  return samples?.length ? samples[samples.length - 1].value : null;
 }
 
 function activeSnap(state) {
@@ -145,17 +154,27 @@ export function render(state) {
   $("battery-value").textContent = vbat == null ? STR.notKnown : `${formatValue(vbat)} V`;
   $("status-raw").textContent = state.status?.raw || state.identity.hello || "";
 
-  const actions = ["read-codes-btn", "koeo-btn", "live-start", "offline-btn", "bench-btn", "reboot-btn"];
+  const actions = ["read-codes-btn", "koeo-btn", "koer-btn", "live-start", "offline-btn", "bench-btn", "reboot-btn", "clear-btn", "mem-btn"];
   for (const id of actions) $(id).disabled = !linked || busy;
   $("set-live").disabled = busy;
   $("set-live2").disabled = busy;
+  $("set-live3").disabled = busy;
 
   banner($("codes-banner"), state);
   banner($("live-banner"), state);
   const pct = progressValue(state);
   const variant = state.op?.variant || state.lastSession?.variant;
-  $("codes-progress").value = variant === "KOEO" || variant === "0E" ? pct : 0;
-  $("live-progress").value = variant === "LIVE" || variant === "LIVE2" ? pct : 0;
+  $("codes-progress").value = variant === "KOEO" || variant === "KOER" || variant === "0E" ? pct : 0;
+  const prompt = (activeCodes(state).find((entry) => entry.code === "010" || entry.code === "020" || entry.code === "030"));
+  const promptBox = $("koer-prompt");
+  if (prompt && state.trust === "progress") {
+    promptBox.hidden = false;
+    promptBox.textContent = `Do this now: ${lookupCode(prompt.code).description}`;
+  } else {
+    promptBox.hidden = true;
+    promptBox.textContent = "";
+  }
+  $("live-progress").value = variant === "LIVE" || variant === "LIVE2" || variant === "LIVE3" ? pct : 0;
 
   const snap = activeSnap(state);
   const result = state.lastSession;
@@ -194,33 +213,57 @@ export function render(state) {
     }
   }
 
-  const setId = variant === "LIVE2" || (!variant && $("set-live2").checked) ? "LIVE2" : "LIVE";
-  const pidList = setId === "LIVE2" ? LIVE2_PIDS : LIVE_PIDS;
+  const setId = variant === "LIVE2" || variant === "LIVE3" || variant === "LIVE"
+    ? variant
+    : ($("set-live3").checked ? "LIVE3" : $("set-live2").checked ? "LIVE2" : "LIVE");
+  const pidList = setId === "LIVE3" ? LIVE3_PIDS : setId === "LIVE2" ? LIVE2_PIDS : LIVE_PIDS;
   const cards = $("live-cards");
   cards.classList.toggle("untrusted", state.trust === "untrusted");
   const rows = snap?.rows || result?.rows || [];
   $("csv-btn").disabled = rows.length === 0;
   cards.replaceChildren();
-  for (const pid of pidList.slice(1)) {
+  const hasSamples = rows.length > 0 || state.trust === "progress";
+  if (!hasSamples) {
+    const note = document.createElement("p");
+    note.className = "help";
+    note.textContent = STR.liveEmpty;
+    cards.append(note);
+  }
+  const context = {
+    rpm: lastSample(snap, result, "N"),
+    ect: lastSample(snap, result, "ECT"),
+    iact: lastSample(snap, result, "IACT"),
+    itp: lastSample(snap, result, "ITP"),
+  };
+  for (const pid of hasSamples ? pidList.slice(1) : []) {
     const spec = PIDS[pid];
     if (!spec) continue;
     const [name, unit] = spec;
+    const text = PID_TEXT[name] || [name, unit, ""];
     const samples = snap?.pids?.[name]?.samples || result?.pids?.[name]?.samples || [];
     const summary = samples.length ? summarizeSeries(samples) : null;
     const card = document.createElement("article");
     card.className = "card";
     const title = document.createElement("strong");
-    title.textContent = unit ? `${name} (${unit})` : name;
+    title.textContent = text[0];
     const value = document.createElement("div");
     value.className = "value";
-    value.textContent = summary ? `${formatValue(summary.last)} ${unit}`.trim() : STR.notKnown;
+    value.textContent = summary ? `${formatValue(summary.last)} ${text[1]}`.trim() : "No reading yet";
+    const verdict = summary ? judgeReading(name, summary, { ...context, samples }) : null;
+    if (verdict) value.classList.add(verdict.level);
+    const judgement = document.createElement("p");
+    judgement.className = `judge ${verdict ? verdict.level : ""}`;
+    judgement.textContent = verdict ? verdict.text : "";
     const range = document.createElement("div");
     range.className = "meta";
     range.textContent = summary
       ? `${STR.min} ${formatValue(summary.min)} · ${STR.max} ${formatValue(summary.max)} · n ${summary.n}`
       : "";
     const canvas = document.createElement("canvas");
-    card.append(title, value, range, canvas);
+    const explain = document.createElement("p");
+    explain.className = "help";
+    explain.textContent = text[2];
+    card.append(title, explain, value, judgement, range, canvas);
     if (unit === "bits" && samples.length) {
       const bits = document.createElement("ul");
       bits.className = "bits";
@@ -236,6 +279,13 @@ export function render(state) {
     drawSpark(canvas, samples);
   }
   $("live-meta").textContent = rows.length ? `${rows.length} samples` : "";
+  const romNow = snap?.rom || state.rom;
+  const mem = snap?.mem || result?.mem || {};
+  const memLines = Object.keys(mem).sort((a, b) => a - b).map((key) => `byte ${key}: ${mem[key].toString(16).toUpperCase().padStart(2, "0")}`);
+  $("identity-out").textContent = [
+    romNow ? `ECU software ID: ${hexByte(romNow.low)} ${hexByte(romNow.high)}` : "ECU software ID: no reading yet",
+    memLines.length ? `Memory bytes (addresses 1–15):\n${memLines.join("\n")}` : "Memory bytes: no reading yet",
+  ].join("\n");
 
   const verdict = result?.verdict;
   const summary = [];

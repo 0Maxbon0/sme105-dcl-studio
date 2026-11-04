@@ -155,15 +155,48 @@ void runTrial(bool timeout, uint8_t mode) {
   }
 }
 
+bool pinCheck() {
+  // No UART bytes are transmitted. UART2 is initialized only to establish
+  // the electrical idle-HIGH TX level used by the real bench trial.
+  digitalWrite(kDe, LOW);
+  tx.begin(kBaud, SERIAL_8N1, -1, kTx);
+  pinMode(kRx, INPUT);
+  pinMode(kTrace, INPUT);
+  delay(5);
+  const int tx17 = digitalRead(kTx);
+  const int rx16 = digitalRead(kRx);
+  const int trace19 = digitalRead(kTrace);
+  tx.end();
+  pinMode(kTx, INPUT);
+  const bool ready = tx17 == HIGH && rx16 == HIGH && trace19 == HIGH;
+  Serial.print(F("PIN_CHECK tx17=")); Serial.print(tx17);
+  Serial.print(F(" rx16=")); Serial.print(rx16);
+  Serial.print(F(" trace19=")); Serial.print(trace19);
+  Serial.print(F(" ready=")); Serial.print(ready ? 1 : 0);
+  Serial.println(F(" DE=LOW no_test_bytes=1"));
+  return ready;
+}
+
 void test() {
   used = true;
   digitalWrite(kDe, LOW);
   tx.begin(kBaud, SERIAL_8N1, -1, kTx);
   pinMode(kTrace, INPUT);
-  if (digitalRead(kRx) != HIGH || digitalRead(kTrace) != HIGH) {
+  // Print all three pin levels, instead of a generic error hiding which
+  // jumper or pin mapping was wrong. A bad preflight NEVER writes a byte.
+  delay(5);
+  const int tx17 = digitalRead(kTx);
+  const int rx16 = digitalRead(kRx);
+  const int trace19 = digitalRead(kTrace);
+  Serial.print(F("PIN_CHECK tx17=")); Serial.print(tx17);
+  Serial.print(F(" rx16=")); Serial.print(rx16);
+  Serial.print(F(" trace19=")); Serial.print(trace19);
+  Serial.print(F(" ready=")); Serial.print(tx17 == HIGH && rx16 == HIGH && trace19 == HIGH ? 1 : 0);
+  Serial.println(F(" DE=LOW no_test_bytes=1"));
+  if (tx17 != HIGH || rx16 != HIGH || trace19 != HIGH) {
     tx.end();
     pinMode(kTx, INPUT);
-    Serial.println(F("BENCH_DENIED jumper_missing_or_input_not_idle_high"));
+    Serial.println(F("BENCH_DENIED jumper_missing_or_input_not_idle_high; no_test_bytes"));
     return;
   }
   Serial.println(F("BENCH_BEGIN LOCAL_ONLY bytes=8x2 baud=9600 DE=LOW"));
@@ -178,8 +211,10 @@ void test() {
 void dispatch() {
   if (!strcmp(line, "STATUS")) {
     digitalWrite(kDe, LOW);
-    Serial.print(F("STATUS SME105_UART_EDGE_BENCH_V1 DE=LOW ECU_TX=DISABLED used="));
+    Serial.print(F("STATUS SME105_UART_EDGE_BENCH_V2 DE=LOW ECU_TX=DISABLED used="));
     Serial.println(used ? 1 : 0);
+  } else if (!strcmp(line, "PIN_CHECK")) {
+    (void)pinCheck();
   } else if (!strcmp(line, "BENCH_GPIO_ONCE")) {
     if (used) Serial.println(F("DENIED one_bench_test_per_boot"));
     else test();
@@ -198,7 +233,7 @@ void setup() {
   pinMode(kTrace, INPUT);
   Serial.begin(115200);
   delay(250);
-  Serial.println(F("SME105_UART_EDGE_BENCH_V1 USB_JUMPER_ONLY NEVER_CONNECT_TO_VEHICLE"));
+  Serial.println(F("SME105_UART_EDGE_BENCH_V2 USB_JUMPER_ONLY NEVER_CONNECT_TO_VEHICLE"));
   Serial.println(F("GPIO17->GPIO16 1k AND GPIO17->GPIO19 1k; MAX487/CAR DISCONNECTED"));
 }
 

@@ -1,4 +1,4 @@
-const CACHE = "eeciv-v1.0.0";
+const CACHE = "eeciv-v1.2.0";
 const FILES = [
   "./",
   "./index.html",
@@ -40,11 +40,16 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   if (request.method !== "GET") return;
-  event.respondWith(caches.open(CACHE).then(async (cache) => {
-    const hit = await cache.match(request);
-    if (hit) return hit;
-    const response = await fetch(request);
-    if (response && response.ok) cache.put(request, response.clone());
-    return response;
-  }));
+  event.respondWith((async () => {
+    const cache = await caches.open(CACHE);
+    try {
+      const response = await fetch(request);
+      if (response && response.ok) cache.put(request, response.clone());
+      return response;
+    } catch (error) {
+      const hit = await cache.match(request);
+      if (hit) return hit;
+      throw error;
+    }
+  })());
 });

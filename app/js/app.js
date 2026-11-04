@@ -90,7 +90,9 @@ async function ask(title, body, action) {
 }
 
 function selectedLive() {
-  return document.getElementById("set-live2").checked ? "LIVE2" : "LIVE";
+  if (document.getElementById("set-live3").checked) return "LIVE3";
+  if (document.getElementById("set-live2").checked) return "LIVE2";
+  return "LIVE";
 }
 
 function wire() {
@@ -118,11 +120,20 @@ function wire() {
   document.getElementById("koeo-btn").addEventListener("click", () => ask(
     STR.confirmKoeoTitle, STR.confirmKoeoBody, () => controller.requestVehicle("KOEO"),
   ));
+  document.getElementById("koer-btn").addEventListener("click", () => ask(
+    STR.confirmKoerTitle, STR.confirmKoerBody, () => controller.requestVehicle("KOER"),
+  ));
   document.getElementById("live-start").addEventListener("click", () => ask(
     STR.confirmLiveTitle, STR.confirmLiveBody, () => controller.requestVehicle(selectedLive()),
   ));
   document.getElementById("offline-btn").addEventListener("click", () => ask(
     STR.confirmOffTitle, STR.confirmOffBody, () => controller.requestVehicle("OFF"),
+  ));
+  document.getElementById("clear-btn").addEventListener("click", () => ask(
+    STR.confirmClearTitle, STR.confirmClearBody, () => controller.requestVehicle("CLR"),
+  ));
+  document.getElementById("mem-btn").addEventListener("click", () => ask(
+    STR.confirmMemTitle, STR.confirmMemBody, () => controller.requestVehicle("MEM"),
   ));
   document.getElementById("reboot-btn").addEventListener("click", () => ask(
     STR.confirmRebootTitle, STR.confirmRebootBody, () => controller.requestReboot(),
@@ -140,6 +151,16 @@ function wire() {
   });
   document.getElementById("demo-capture").addEventListener("change", () => {
     writeStorage("eeciv-demo-capture", demoKey());
+  });
+  document.getElementById("play-demo").addEventListener("click", async () => {
+    document.getElementById("demo-toggle").checked = true;
+    writeStorage("eeciv-demo", "1");
+    writeStorage("eeciv-demo-capture", demoKey());
+    if (controller.state.link === "ready" || controller.state.link === "denied") {
+      await transport?.disconnect();
+    }
+    await connect();
+    showView(demoKey() === "LIVE" ? "live" : "codes");
   });
   let dirty = true;
   controller.subscribe(() => { dirty = true; });

@@ -18,14 +18,38 @@ from pathlib import Path
 import serial
 
 IDENTITY = re.compile(
-    rb"^STATUS SME105_UART_EDGE_BENCH_V1 DE=LOW ECU_TX=DISABLED used=0$"
+    rb"^STATUS SME105_UART_EDGE_BENCH_V2 DE=LOW ECU_TX=DISABLED used=([01])$"
 )
+PINS = re.compile(
+    rb"^PIN_CHECK tx17=([01]) rx16=([01]) trace19=([01]) "
+    rb"ready=([01]) DE=LOW no_test_bytes=1$"
+)
+
+
+def pin_check(port: serial.Serial) -> bool:
+    """USB-only pin idle probe, never sends bench test bytes."""
+    port.write(b"PIN_CHECK\n")
+    port.flush()
+    response = b""
+    deadline = time.monotonic() + 2.5
+    while time.monotonic() < deadline:
+        response = (response + port.read(256))[-2048:]
+        for line in response.splitlines():
+            match = PINS.fullmatch(line.strip())
+            if match:
+                tx, rx, trace, ready = (int(value) for value in match.groups())
+                print(f"PIN_CHECK: TX2/GPIO17={tx}, RX2/GPIO16={rx}, D19/GPIO19={trace}")
+                if not ready:
+                    print("PIN CHECK FAILED: check both TX2 jumpers and the actual board pin labels; no test bytes sent")
+                return ready == 1 and tx == rx == trace == 1
+    print(f"PIN CHECK INCOMPLETE: no validated reply, raw={response[-350:]!r}")
+    return False
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default="/dev/ttyUSB0")
-    parser.add_argument("--action", required=True, choices=("status", "bench"))
+    parser.add_argument("--action", required=True, choices=("status", "pins", "bench"))
     args = parser.parse_args()
     port = serial.Serial(args.port, baudrate=115200, timeout=0.15, write_timeout=0.8)
     try:
@@ -40,28 +64,38 @@ def main() -> int:
         # the strictly read-only STATUS probe (never BENCH_GPIO_ONCE).
         status = b""
         identified = False
+        consumed = False
         for _ in range(4):
             port.write(b"STATUS\n")
             port.flush()
             deadline = time.monotonic() + 1.25
             while time.monotonic() < deadline:
                 status = (status + port.read(1024))[-8192:]
-                if any(IDENTITY.fullmatch(line.strip()) for line in status.splitlines()):
-                    identified = True
+                for line in status.splitlines():
+                    match = IDENTITY.fullmatch(line.strip())
+                    if match:
+                        identified = True
+                        consumed = match[1] == b"1"
+                        break
+                if identified:
                     break
-                if b"STATUS SME105_UART_EDGE_BENCH_V1 DE=LOW ECU_TX=DISABLED used=1" in status:
-                    print("ABORT: one-shot bench attempt already consumed this boot")
-                    return 3
             if identified:
                 break
         if not identified:
             print(f"ABORT wrong firmware, used state, or bad serial: {status[-500:]!r}")
             return 3
-        print("BENCH STATUS PASS: USB-only firmware, DE=LOW, no vehicle TX")
+        print(f"BENCH STATUS PASS: USB-only firmware, DE=LOW, no vehicle TX, used={int(consumed)}")
         if args.action == "status":
             return 0
+        if args.action == "pins":
+            return 0 if pin_check(port) else 3
+        if consumed:
+            print("ABORT: one-shot bench already consumed this boot. Check pins with --action pins")
+            return 3
         print("ONLY if MAX487 and every car wire are disconnected from ESP32.")
         print("GPIO17 -> GPIO16 and GPIO17 -> GPIO19, each ideally via 1k resistor.")
+        if not pin_check(port):
+            return 3
         if input("Type BENCH_GPIO_ONCE to run isolated GPIO UART test: ").strip() != "BENCH_GPIO_ONCE":
             print("ABORT: confirmation not given; no GPIO TX")
             return 2
@@ -84,7 +118,7 @@ def main() -> int:
         print(f"Evidence: {file}")
         print(f"SHA256: {hashlib.sha256(transcript).hexdigest()}")
         for line in transcript.decode("ascii", errors="replace").splitlines():
-            if line.startswith(("BENCH_", "STATUS ")):
+            if line.startswith(("BENCH_", "STATUS ", "PIN_")):
                 print(line)
         if b"BENCH_END DCL_TX=0 ECU_TX=0 DE=LOW" not in transcript:
             print("INCOMPLETE. Do not auto-repeat; inspect evidence.")

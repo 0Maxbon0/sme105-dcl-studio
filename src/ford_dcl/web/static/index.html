@@ -201,40 +201,7 @@
               <button data-marker="LOAD_OFF">Load off</button><button data-marker="OBSERVATION">Observation</button>
               <button data-marker="ABORT" class="danger ghost">Abort marker</button>
             </div>
-            <div class="master-commands" style="margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line);">
-              <div class="panel-heading" style="margin-bottom: 8px;">
-                <div><p class="eyebrow">DCL Master Interrogation</p><h4 style="margin:0; font-size:15px;">Active serial commands</h4></div>
-                <span class="pill live">Master Polling</span>
-              </div>
-              <div class="form-grid" style="grid-template-columns: 1fr auto; gap: 8px; align-items: end;">
-                <label>Command
-                  <input id="capture-cmd-input" type="text" placeholder="e.g. SEND LIVE_BLOCK_32B" list="dcl-command-suggestions">
-                  <datalist id="dcl-command-suggestions">
-                    <option value="SEND LIVE_BLOCK_32B">
-                    <option value="POLL ON 250">
-                    <option value="POLL OFF">
-                    <option value="SEND DTC_CONTINUOUS">
-                    <option value="SEND DTC_KOEO">
-                    <option value="SEND INIT_PING">
-                    <option value="SEND MODULE_SELECT">
-                    <option value="SEND LIVE_PIDS_ALT">
-                    <option value="STATUS">
-                    <option value="LIST">
-                    <option value="HELP">
-                  </datalist>
-                </label>
-                <button id="capture-cmd-send" class="primary" style="padding: 9px 14px; margin-bottom: 1px;">Send</button>
-              </div>
-              <div class="button-row" style="margin-top: 10px; gap: 6px;">
-                <button class="secondary compact" data-quick-cmd="SEND LIVE_BLOCK_32B">32B Live Data</button>
-                <button class="secondary compact" data-quick-cmd="POLL ON 250">Auto-Poll (250ms)</button>
-                <button class="danger ghost compact" data-quick-cmd="POLL OFF">Stop Poll</button>
-                <button class="secondary compact" data-quick-cmd="SEND DTC_CONTINUOUS">DTCs (Cont.)</button>
-                <button class="secondary compact" data-quick-cmd="SEND DTC_KOEO">DTCs (KOEO)</button>
-                <button class="secondary compact" data-quick-cmd="SEND INIT_PING">Ping</button>
-                <button class="secondary compact" data-quick-cmd="STATUS">Status</button>
-              </div>
-            </div>
+            <p class="hint">Capture is receive-only. Arbitrary serial commands are disabled; Ford DCL diagnostic requests require a separately verified controller.</p>
           </article>
           <article class="panel console-panel">
             <div class="panel-heading"><div><p class="eyebrow">Live execution</p><h3>Capture event stream</h3></div><div class="button-row"><button class="icon-button" data-copy-log="#capture-console">Copy</button><button class="icon-button" data-clear-log="#capture-console">Clear</button></div></div>
@@ -290,15 +257,15 @@
       </section>
 
       <section class="page" id="page-firmware">
-        <div class="section-intro"><div><p class="eyebrow">ESP32 lifecycle</p><h2>Firmware build and upload</h2></div><span class="pill safe">Passive only</span></div>
+        <div class="section-intro"><div><p class="eyebrow">ESP32 lifecycle</p><h2>Firmware build and upload</h2></div><span class="pill safe">Vehicle TX locked</span></div>
         <div class="two-column">
           <article class="panel">
             <div class="warning-box"><strong>Active master locked.</strong> Build inspection is allowed, but the GUI cannot upload active-master firmware or send DCL commands.</div>
             <div class="form-grid">
-              <label>Firmware<select id="firmware-sketch"><option value="sniffer">Passive sniffer — GPIO16 9600 8N1 hex</option><option value="passive_binary">Passive binary — GPIO16 9600 8N2 SLIP</option><option value="passive_ascii">Passive ASCII — GPIO16 9600 8N2 hex</option><option value="bench_test">Desk bench test — GPIO4/21 drive A+/B−</option><option value="dcl_master">Active-master shell — build only</option></select></label>
+              <label>Firmware<select id="firmware-sketch"><option value="dcl_readiness_bench">ESP32 internal UART safe bench — DE low</option><option value="sniffer">Passive sniffer — GPIO16 9600 8N1 hex</option><option value="passive_binary">Passive binary — GPIO16 9600 8N2 SLIP</option><option value="passive_ascii">Passive ASCII — GPIO16 9600 8N2 hex</option><option value="max487_bench">MAX487 physical desk self-test — build only, drives A/B</option><option value="bench_test">Old XY-K485 desk bench test — build only</option><option value="dcl_master">DCL master reference — TX locked, build only</option></select></label>
               <label>Upload port<select id="firmware-port"></select></label>
             </div>
-            <div class="button-row"><button id="firmware-build" class="secondary">Build firmware</button><button id="firmware-upload" class="primary">Upload receive-only firmware</button><button id="firmware-cancel" class="danger ghost">Cancel</button></div>
+            <div class="button-row"><button id="firmware-build" class="secondary">Build firmware</button><button id="firmware-upload" class="primary">Upload selected firmware</button><button id="firmware-cancel" class="danger ghost">Cancel</button></div>
             <label class="check"><input id="firmware-confirm" type="checkbox"><span id="firmware-confirm-label">I confirm TX is disconnected and this is receive-only firmware.</span></label>
             <div id="platformio-status" class="info-box">Checking PlatformIO…</div>
           </article>
@@ -317,14 +284,14 @@
             </div>
             <div class="button-row">
               <button id="bench-build" class="secondary">Build bench test</button>
-              <button id="bench-upload" class="primary">Upload bench test</button>
+              <button id="bench-upload" class="secondary" disabled>Bench upload locked (A/B auto-drive)</button>
             </div>
             <div class="button-row">
               <button id="bench-monitor-start" class="secondary">Start serial monitor</button>
               <button id="bench-monitor-stop" class="danger ghost">Stop monitor</button>
             </div>
             <label class="check"><input id="bench-confirm" type="checkbox"><span>I confirm the vehicle is disconnected and GPIO4/GPIO21 may drive A+/B−.</span></label>
-            <div id="bench-status" class="info-box">Open this page, upload, then start the 115200 serial monitor. PASS/FAIL lines appear below.</div>
+            <div id="bench-status" class="info-box">Build-only reference. Automatic A/B-driving firmware upload is prohibited from the GUI. Use the safe internal UART bench firmware instead.</div>
           </article>
           <article class="panel console-panel">
             <div class="panel-heading"><h3>Bench serial and build log</h3><div class="button-row"><button class="icon-button" data-copy-log="#bench-console">Copy</button><button class="icon-button" data-clear-log="#bench-console">Clear</button></div></div>

@@ -15,13 +15,16 @@ from ..capture import utc_now
 from .resources import resource_path
 
 _SKETCHES = frozenset(
-    {"passive_ascii", "passive_binary", "dcl_master", "bench_test", "sniffer"}
+    {"passive_ascii", "passive_binary", "dcl_master", "bench_test",
+     "max487_bench", "dcl_readiness_bench", "sniffer"}
 )
 _UPLOAD_CONFIRMATIONS = {
     "passive_ascii": "FLASH_RECEIVE_ONLY_FIRMWARE",
     "passive_binary": "FLASH_RECEIVE_ONLY_FIRMWARE",
     "sniffer": "FLASH_RECEIVE_ONLY_FIRMWARE",
-    "bench_test": "FLASH_BENCH_TEST_DESK_ONLY",
+    # Never allow auto-drive bench programs to be flashed from the vehicle
+    # GUI: they can repeatedly energize A/B at boot even during a capture.
+    "dcl_readiness_bench": "FLASH_RECEIVE_ONLY_FIRMWARE",
 }
 _UPLOADABLE = frozenset(_UPLOAD_CONFIRMATIONS)
 _BENCH_MONITOR_BAUD = 115200
@@ -90,7 +93,7 @@ class FirmwareRunner:
                 "platformio": platformio_executable(),
                 "last_exit_code": self._last_exit_code,
                 "upload_confirmation": _UPLOAD_CONFIRMATIONS["passive_binary"],
-                "bench_upload_confirmation": _UPLOAD_CONFIRMATIONS["bench_test"],
+                "bench_upload_confirmation": None,
                 "uploadable_sketches": sorted(_UPLOADABLE),
                 "buildable_sketches": sorted(_SKETCHES),
                 "monitor_running": monitor_running,
