@@ -352,3 +352,32 @@ ignition reset). Parser replayed on real captures by
   opens are clean and every vehicle END byte count matched the host. Treated
   as a CP2102 post-reset artifact; host sessions always re-verify
   HELLO/STATUS/PINS before any TX.
+
+## Test 1 (v11): CART persistence confirmed; go-offline exposed UART2 FIFO bug
+
+KOEO ignition ON, engine off, one USB session
+(`captures/SME105_97AB/20261104T152142640916Z-usb-bridge.*`, transcript SHA-256
+`a99941894ccffca42260b1f012875c3f3ceba284ba52542348160fd95598374f`):
+
+1. `TX2_BENCH` 4/4 PASS.
+2. `OBSERVE` (Echo ID + Go CART): `END reason=16 ro_bytes=3984`.
+3. Receive-only `LISTEN_9600` after that session ended: `baseline=16 synced=1`,
+   `END reason=16 ro_bytes=4000`, i.e. the ECU keeps streaming CART on its own
+   — by design (LHBH1 13-3: Diagnostics state has no exit except go-offline
+   or reset).
+4. `READ_OFF` joined the stream (baseline 16 frames) but the frame-0 DPS slot
+   carried `2E BA` instead of `01 B0` — seen identically by the GPIO17 pad
+   readback and by UART1 RO. Firmware stopped at once: `FAULT reason=11`,
+   `words_started=1`, DE LOW. Frames 1–3 stayed idle, so the ECU received an
+   incomplete DPS, which LHBH1 13-11 requires it to disregard.
+
+Root cause: `stopEverything()` set `UART2.conf0.txfifo_rst`. On classic ESP32
+this corrupts the UART1/UART2 TX FIFO (IDF `uart_ll_txfifo_rst` deliberately
+skips UART1/2). Earlier reads were unaffected because each boot's first DPS
+followed `HardwareSerial::begin()`, which performs a UART2 module reset; the
+join path has no handshake and therefore no reset.
+
+v12 fix: removed the TX FIFO reset; `openNative()` now performs
+`periph_module_reset(PERIPH_UART2_MODULE)` before configuring UART2. Regression
+test added; 247 tests PASS. Image SHA-256
+`c1dc0ce3bc35d8d6c3391e1d12dc7d9a30b5fd87be992dc9573a3d5ab1550762` (not yet flashed).

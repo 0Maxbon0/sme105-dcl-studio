@@ -18,6 +18,7 @@
 #include <driver/gpio.h>
 #include <driver/uart.h>
 #include <driver/rmt.h>
+#include <driver/periph_ctrl.h>
 #include <freertos/ringbuf.h>
 #include <esp_intr_alloc.h>
 #include <esp_timer.h>
@@ -88,7 +89,7 @@ constexpr uint32_t kOtaCurrentVersion = 1;
 // still be able to boot PENDING_VERIFY from an older accepted version and
 // prove their manifest before promoting ota_ver. On a VALID app with NO pending
 // ledger, a supervised physical USB flash may adopt this build baseline.
-constexpr uint32_t kUsbInstalledBuildVersion = 11;
+constexpr uint32_t kUsbInstalledBuildVersion = 12;
 constexpr size_t kOtaAppSlotMax = 0x140000; // default 4MB ESP32 OTA partition table
 constexpr char kOtaPublisherPublicPEM[] =
   "-----BEGIN PUBLIC KEY-----\n"
@@ -1735,7 +1736,10 @@ void stopEverything(Fault reason) {
   stopLatched = true;
   deOff(); disableSlotTimer(); disableDeTimer();
   UART2.int_ena.tx_done = 0;
-  UART2.conf0.txfifo_rst = 1; UART2.conf0.txfifo_rst = 0;
+  // Never set UART2.conf0.txfifo_rst: on classic ESP32 it corrupts the
+  // UART1/UART2 TX FIFO (IDF uart_ll_txfifo_rst is a no-op for them). With
+  // DE off, at most one pending word shifts out to the pad only; openNative()
+  // performs a full UART2 module reset before the next session.
   slotArmed = false;
   slotInFlight = false;
   portEXIT_CRITICAL(&txLock);
@@ -1809,6 +1813,12 @@ bool openNative() {
     .rx_flow_ctrl_thresh = 0,
     .source_clk = UART_SCLK_APB,
   };
+  // The handshake path gets a clean UART2 from HardwareSerial::begin(). A
+  // session joining a running stream does not, so reset the module (its
+  // FIFO pointers included) explicitly; the first config enables its clock.
+  deOff();
+  if (uart_param_config(UART_NUM_2, &conf) != ESP_OK) return false;
+  periph_module_reset(PERIPH_UART2_MODULE);
   if (uart_param_config(UART_NUM_1, &conf) != ESP_OK ||
       uart_param_config(UART_NUM_2, &conf) != ESP_OK ||
       uart_set_pin(UART_NUM_1, UART_PIN_NO_CHANGE, kRO,

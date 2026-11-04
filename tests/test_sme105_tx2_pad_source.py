@@ -94,6 +94,20 @@ class Tx2SourceTests(unittest.TestCase):
         self.assertIn("WRITE_PERI_REG(UART_FIFO_AHB_REG(2), selected.first)", self.source)
         self.assertIn("WRITE_PERI_REG(UART_FIFO_AHB_REG(2), selected.second)", self.source)
 
+    def test_uart2_txfifo_never_reset_and_module_reset_before_session(self) -> None:
+        """Regression: 2026-11-04 OFFLINE_JOIN put 2EBA on the bus for 01B0.
+
+        stopEverything() had set UART2 txfifo_rst, which classic ESP32 cannot
+        do safely (IDF uart_ll_txfifo_rst skips UART1/2). A session that joins
+        a running stream has no HardwareSerial::begin() module reset.
+        """
+        self.assertNotIn("UART2.conf0.txfifo_rst = 1", self.source)
+        native = self.source.split("bool openNative() {", 1)[1].split("\n}\n", 1)[0]
+        reset = native.index("periph_module_reset(PERIPH_UART2_MODULE)")
+        self.assertLess(reset, native.index("uart_set_pin(UART_NUM_2"))
+        self.assertLess(native.index("uart_param_config(UART_NUM_2, &conf) != ESP_OK) return false"),
+                        reset)
+
     def test_cpp_rmt_decoder_positive_and_captured_v5_negative(self) -> None:
         if not shutil.which("g++"):
             self.skipTest("g++ not available for portable pure decoder harness")
