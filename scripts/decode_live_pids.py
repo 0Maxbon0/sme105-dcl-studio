@@ -18,6 +18,16 @@ RX = re.compile(r"RX t_us=(\d+) byte=([0-9A-F]{2})")
 # Must match kLivePids in firmware/sme105_usb_bridge/sme105_usb_bridge.ino.
 LIVE_PIDS = (0x00, 0x01, 0x0F, 0x10, 0x05, 0x06, 0x09, 0x11,
              0x03, 0x04, 0x0C, 0x0D, 0x08, 0x18, 0x27, 0x28)
+LIVE2_PIDS = (0x00, 0x01, 0x24, 0x25, 0x2B, 0x09, 0x2A, 0x15,
+              0x1A, 0x1B, 0x2F, 0x2E, 0x0B, 0x0E, 0x2D, 0x11)
+# LHBH1 13-31/32 bitmap definitions (bit index within the 12-bit value).
+BITMAP_BITS = {
+    "BITMAP_0": {6: "not in neutral/park", 7: "fuel pump on",
+                 10: "canister purge active", 11: "A/C clutch disengaged"},
+    "BITMAP_1": {0: "closed loop fuel", 1: "power steering switch closed",
+                 2: "A/C selected", 4: "IDM input high", 5: "AM1 on", 6: "AM2 on",
+                 8: "overdrive cancel"},
+}
 SLOT_US = 2500
 
 
@@ -47,6 +57,18 @@ PIDS = {
     0x18: ("VS", "mph", lambda v: v / 32),
     0x27: ("LOAD", "%", lambda v: round(v * 0.0488, 2)),
     0x28: ("KAMRF1", "A/F", lambda v: v / 16),
+    0x24: ("FMEM_FLAGS", "bits", lambda v: v & 0xFF),
+    0x25: ("FMEM_FLAG2", "bits", lambda v: v & 0xFF),
+    0x2B: ("RATCH", "TPcnt", lambda v: v / 4),
+    0x2A: ("DSDRPM", "rpm", lambda v: (v & 0xFF) * 16),
+    0x15: ("ISCDTY", "%", lambda v: round(v * 100 / 2048, 1)),
+    0x1A: ("BITMAP_0", "bits", lambda v: v),
+    0x1B: ("BITMAP_1", "bits", lambda v: v),
+    0x2F: ("INDS", "A/D", lambda v: v),
+    0x2E: ("IOCC", "A/D", lambda v: v),
+    0x0B: ("IVCAL", "A/D", lambda v: v),
+    0x0E: ("APT", "", lambda v: s8(v)),
+    0x2D: ("ATMR1", "s", lambda v: v),
 }
 
 
@@ -90,6 +112,7 @@ def decode(path: Path, csv_path: Path | None) -> int:
     end = text.find("END reason=", start)
     rx = [(int(t), int(b, 16)) for t, b in RX.findall(text[start:end if end > 0 else None])]
     frames = frames_from(rx)
+    pid_set = LIVE2_PIDS if "variant=LIVE2" in text else LIVE_PIDS
     rows: list[tuple[float, str, int, float]] = []
     bad = 0
     mode = None
@@ -105,7 +128,7 @@ def decode(path: Path, csv_path: Path | None) -> int:
         if not parity_ok(*word):
             bad += 1
             continue
-        pid = LIVE_PIDS[fr.fid]
+        pid = pid_set[fr.fid]
         raw = ((word[1] & 15) << 8) | word[0]
         rows.append(((fr.t - t0) / 1e6, PIDS[pid][0], raw, PIDS[pid][2](raw)))
     if not rows:
@@ -114,7 +137,7 @@ def decode(path: Path, csv_path: Path | None) -> int:
     print(f"{len(rows)} values, {bad} parity rejects, "
           f"{rows[0][0]:.2f}s .. {rows[-1][0]:.2f}s")
     print(f"{'PID':8} {'unit':6} {'n':>4} {'first':>9} {'min':>9} {'max':>9} {'last':>9}  raw(last)")
-    for pid in LIVE_PIDS[1:]:
+    for pid in pid_set[1:]:
         name, unit, _ = PIDS[pid]
         vals = [r for r in rows if r[1] == name]
         if not vals:
@@ -123,6 +146,12 @@ def decode(path: Path, csv_path: Path | None) -> int:
         scaled = [v[3] for v in vals]
         print(f"{name:8} {unit:6} {len(vals):>4} {scaled[0]:>9} {min(scaled):>9} "
               f"{max(scaled):>9} {scaled[-1]:>9}  {vals[-1][2]}")
+        if unit == "bits":
+            seen = sorted({v[2] for v in vals})
+            print(f"{'':16}distinct raw: {', '.join(f'0x{x:03X}' for x in seen)}")
+            for bit, label in BITMAP_BITS.get(name, {}).items():
+                on = sum(1 for v in vals if v[2] >> bit & 1)
+                print(f"{'':16}bit{bit:<2} {label:<30} set in {on}/{len(vals)}")
     if csv_path:
         with csv_path.open("w", newline="", encoding="utf-8") as fh:
             writer = csv.writer(fh)

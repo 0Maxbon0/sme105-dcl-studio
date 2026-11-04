@@ -89,7 +89,7 @@ constexpr uint32_t kOtaCurrentVersion = 1;
 // still be able to boot PENDING_VERIFY from an older accepted version and
 // prove their manifest before promoting ota_ver. On a VALID app with NO pending
 // ledger, a supervised physical USB flash may adopt this build baseline.
-constexpr uint32_t kUsbInstalledBuildVersion = 14;
+constexpr uint32_t kUsbInstalledBuildVersion = 15;
 constexpr size_t kOtaAppSlotMax = 0x140000; // default 4MB ESP32 OTA partition table
 constexpr char kOtaPublisherPublicPEM[] =
   "-----BEGIN PUBLIC KEY-----\n"
@@ -115,9 +115,10 @@ struct CmdWord { uint8_t first; uint8_t second; };
 // 5 = DIAGMODE 80H go offline (LHBH1 13-26, qualifier 07FH = ~80H),
 // 6 = live data: DIAGMODE 41H (load PID map) then 21H (transmit PID values),
 //     frame length 6 as used by the flxkrmr and doncreat0r readers.
-constexpr uint8_t kVariantKoeo = 4, kVariantOffline = 5, kVariantLive = 6;
+constexpr uint8_t kVariantKoeo = 4, kVariantOffline = 5, kVariantLive = 6, kVariantLive2 = 7;
+constexpr bool isLiveVariant(uint8_t v) { return v == kVariantLive || v == kVariantLive2; }
 constexpr bool isRequestVariant(uint8_t v) {
-  return v <= 1 || v == kVariantKoeo || v == kVariantOffline || v == kVariantLive;
+  return v <= 1 || v == kVariantKoeo || v == kVariantOffline || isLiveVariant(v);
 }
 constexpr CmdWord IRAM_ATTR word(uint8_t variant, uint8_t slot) {
   return slot == 0 ? CmdWord{0x01,0xB0} :
@@ -126,7 +127,7 @@ constexpr CmdWord IRAM_ATTR word(uint8_t variant, uint8_t slot) {
                       variant == 1 ? CmdWord{0x26,0x0E} :
                       variant == kVariantKoeo ? CmdWord{0x25,0x3E} :
                       variant == kVariantOffline ? CmdWord{0x80,0xCE} :
-                      variant == kVariantLive ? CmdWord{0x21,0xF6} :
+                      isLiveVariant(variant) ? CmdWord{0x21,0xF6} :
                       CmdWord{0x26,0xA4}) :
          variant == kVariantOffline ? CmdWord{0x7F,0x20} : CmdWord{0x00,0xA0};
 }
@@ -148,14 +149,20 @@ constexpr CmdWord pidWord(uint8_t pid) {
 static_assert(pidWord(0x01).second == 0x38 && pidWord(0x11).second == 0x28 &&
               pidWord(0x0F).second == 0xD8 && pidWord(0x26).second == 0x68,
               "PID word parity matches doncreat0r PIDMap");
-// LHBH1 13-29: N, ACT, ECT, IACT, IECT, ITP, VBAT, BP, SAFTOT, FUELPW1,
-// LAMBSE1, IEGO1, VS, LOAD, KAMRF1.
-const uint8_t kLivePids[16] = {0x00, 0x01, 0x0F, 0x10, 0x05, 0x06, 0x09, 0x11,
-                               0x03, 0x04, 0x0C, 0x0D, 0x08, 0x18, 0x27, 0x28};
+// LHBH1 13-29. Set 0 (LIVE): N, ACT, ECT, IACT, IECT, ITP, VBAT, BP, SAFTOT,
+// FUELPW1, LAMBSE1, IEGO1, VS, LOAD, KAMRF1. Set 1 (LIVE2): N, FMEM_FLAGS,
+// FMEM_FLAG2, RATCH, ITP, DSDRPM, ISCDTY, BITMAP_0, BITMAP_1, INDS, IOCC,
+// IVCAL, APT, ATMR1, VBAT.
+DRAM_ATTR const uint8_t kLivePids[2][16] = {
+  {0x00, 0x01, 0x0F, 0x10, 0x05, 0x06, 0x09, 0x11,
+   0x03, 0x04, 0x0C, 0x0D, 0x08, 0x18, 0x27, 0x28},
+  {0x00, 0x01, 0x24, 0x25, 0x2B, 0x09, 0x2A, 0x15,
+   0x1A, 0x1B, 0x2F, 0x2E, 0x0B, 0x0E, 0x2D, 0x11}};
 constexpr uint32_t kLiveFramePeriodUs = 22500; // 7.5ms + 2.5ms * length 6
 const __FlashStringHelper* variantName(uint8_t v) {
   return v == 0 ? F("A4") : v == 1 ? F("0E") :
-         v == kVariantKoeo ? F("KOEO") : v == kVariantLive ? F("LIVE") : F("OFF");
+         v == kVariantKoeo ? F("KOEO") : v == kVariantLive ? F("LIVE") :
+         v == kVariantLive2 ? F("LIVE2") : F("OFF");
 }
 
 HardwareSerial referenceBus(2);
@@ -1506,12 +1513,15 @@ bool IRAM_ATTR headerValid(uint8_t id, uint8_t expectedPhase) {
 
 // Live data: the first TX block loads mode 41H, every later block 21H.
 CmdWord IRAM_ATTR dpsWord(uint8_t index) {
-  if (variant == kVariantLive && index == 2 && dpsBlocks == 0) return CmdWord{0x41, 0x96};
+  if (isLiveVariant(variant) && index == 2 && dpsBlocks == 0) return CmdWord{0x41, 0x96};
   return word(variant, index);
 }
+uint8_t IRAM_ATTR livePid(uint8_t frame) {
+  return kLivePids[variant == kVariantLive2 ? 1 : 0][frame & 15];
+}
 bool IRAM_ATTR liveMapFrame(uint8_t frame) {
-  return variant == kVariantLive && dpsBlocks == 1 && frame < 16 &&
-         kLivePids[frame] != 0 && nearUs(framePeriodUs, kLiveFramePeriodUs, 600);
+  return isLiveVariant(variant) && dpsBlocks == 1 && frame < 16 &&
+         livePid(frame) != 0 && nearUs(framePeriodUs, kLiveFramePeriodUs, 600);
 }
 // Schedule one PID map word in IW2 of `frame` (single shot, own DE gate).
 void IRAM_ATTR armExtra(uint8_t frame, uint32_t target) {
@@ -1523,7 +1533,7 @@ void IRAM_ATTR armExtra(uint8_t frame, uint32_t target) {
     faultISR(CART_TIMER);
     return;
   }
-  extraWord = pidWord(kLivePids[frame]);
+  extraWord = pidWord(livePid(frame));
   extraTargetUs = target;
   extraFrame = frame;
   extraGate = static_cast<uint8_t>((frame + 1) & 3);
@@ -2429,7 +2439,7 @@ void pollHandshake() {
         stopLatched = false;
         // Self test needs the 25H request repeated every block while frame
         // lengths change, so it uses the adaptive header gate.
-        joinMode = repeatDps = variant == kVariantKoeo || variant == kVariantLive;
+        joinMode = repeatDps = variant == kVariantKoeo || isLiveVariant(variant);
         stage = isRequestVariant(variant) ? CART_READ : CART_PASSIVE;
         captureStartedMs = now;
         out.println(F("EVENT cart=9600_8N1 raw_ro=1 ecu_verified=0 dtc_verified=0"));
@@ -2498,7 +2508,7 @@ void pollActive() {
     }
     const uint32_t limit = stage != CART_READ ? kCaptureMs :
         variant == kVariantKoeo ? kKoeoCaptureMs :
-        variant == kVariantLive ? kLiveCaptureMs :
+        isLiveVariant(variant) ? kLiveCaptureMs :
         variant == kVariantOffline ? kOfflineCaptureMs : kCaptureMs;
     const uint32_t elapsed = millis() - captureStartedMs;
     if (elapsed >= limit) {
@@ -2516,8 +2526,9 @@ void reportEnd() {
   flushPadReports();
   flushRaw();
   if (rxRead != rxWrite) return;
-  if (variant == kVariantLive) {
-    out.print(F("EVENT live_pid_map sent=")); out.print(pidWordsStarted);
+  if (isLiveVariant(variant)) {
+    out.print(F("EVENT live_pid_map set=")); out.print(variant == kVariantLive2 ? 2 : 1);
+    out.print(F(" sent=")); out.print(pidWordsStarted);
     out.print(F(" verified=")); out.println(pidWordsVerified);
   }
   if (repeatDps) {
@@ -2857,6 +2868,7 @@ void runCommand(const char* cmd) {
        !strcmp(cmd, "READ_0E") || !strcmp(cmd, "LISTEN_9600") ||
        !strcmp(cmd, "READ_KOEO") || !strcmp(cmd, "READ_OFF") ||
        !strcmp(cmd, "READ_LIVE") || !strcmp(cmd, "ARM_LIVE") ||
+       !strcmp(cmd, "READ_LIVE2") || !strcmp(cmd, "ARM_LIVE2") ||
        !strcmp(cmd, "TX2_BENCH") || !strcmp(cmd, "DE_BENCH") ||
        !strcmp(cmd, "ARM_A4") || !strcmp(cmd, "ARM_0E") ||
        !strcmp(cmd, "ARM_KOEO") || !strcmp(cmd, "ARM_OFF"))) {
@@ -2915,7 +2927,7 @@ void runCommand(const char* cmd) {
   }
   if (!strcmp(cmd, "HELLO")) { out.println(F("HELLO SME105_USB_BRIDGE_V1 protocol=1 usb_baud=115200 no_auto_tx=1")); return; }
   if (!strcmp(cmd, "HELP")) {
-    out.println(F("COMMANDS HELLO HELP STATUS PINS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E ARM_KOEO READ_KOEO ARM_LIVE READ_LIVE ARM_OFF READ_OFF DE_BENCH RMT_DUMP STOP RESET_IDLE"));
+    out.println(F("COMMANDS HELLO HELP STATUS PINS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E ARM_KOEO READ_KOEO ARM_LIVE READ_LIVE ARM_LIVE2 READ_LIVE2 ARM_OFF READ_OFF DE_BENCH RMT_DUMP STOP RESET_IDLE"));
     out.println(F("READ_* requires exact 4/4 TX2_BENCH pad pass this boot plus matching ARM_* within 15s; no automatic TX"));
     out.println(F("WIFI USB_ONLY: WIFI_CONFIG <SSID_B64> <PASS_B64> | WIFI_AP_CONFIG <SSID_B64> <PASS_B64> | WIFI_STA_MODE WIFI_AP_MODE | WIFI_TOKEN | WIFI_FORGET"));
     out.println(F("WIFI read-only: WIFI_STATUS WIFI_DIAG WIFI_AP_STATUS; AP-only 10.77.13.1/24 WPA2 and authenticated TCP/8765"));
@@ -2935,7 +2947,8 @@ void runCommand(const char* cmd) {
   const uint8_t armKind = !strcmp(cmd, "ARM_A4") ? 0 : !strcmp(cmd, "ARM_0E") ? 1 :
                           !strcmp(cmd, "ARM_KOEO") ? kVariantKoeo :
                           !strcmp(cmd, "ARM_OFF") ? kVariantOffline :
-                          !strcmp(cmd, "ARM_LIVE") ? kVariantLive : 255;
+                          !strcmp(cmd, "ARM_LIVE") ? kVariantLive :
+                          !strcmp(cmd, "ARM_LIVE2") ? kVariantLive2 : 255;
   if (armKind != 255) {
     if (stage != IDLE ||
         (armKind == kVariantOffline ? offlineConsumed : transmitConsumed)) {
@@ -2953,6 +2966,7 @@ void runCommand(const char* cmd) {
   if (!strcmp(cmd, "READ_KOEO")) { beginSession(CART_READ, kVariantKoeo); return; }
   if (!strcmp(cmd, "READ_OFF")) { beginSession(CART_READ, kVariantOffline); return; }
   if (!strcmp(cmd, "READ_LIVE")) { beginSession(CART_READ, kVariantLive); return; }
+  if (!strcmp(cmd, "READ_LIVE2")) { beginSession(CART_READ, kVariantLive2); return; }
   if (!strcmp(cmd, "OBSERVE")) { beginSession(CART_PASSIVE, 3); return; }
   if (!strcmp(cmd, "LISTEN_9600")) { beginSession(CART_PASSIVE, 2); return; }
   out.println(F("DENIED unknown_or_unsafe_command"));

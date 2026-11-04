@@ -29,13 +29,13 @@ TCP_PORT = 8765
 DEFAULT_TOKEN_FILE = Path("~/.config/sme105/bridge-token").expanduser()
 TOKEN_HEX = re.compile(rb"^[0-9a-fA-F]{32}$")
 COMMANDS = ("STATUS", "TX2_BENCH", "LISTEN", "HELLO", "REQUEST_A4", "REQUEST_0E",
-            "REQUEST_KOEO", "REQUEST_LIVE", "REQUEST_OFF", "RMT_DUMP", "DE_BENCH",
+            "REQUEST_KOEO", "REQUEST_LIVE", "REQUEST_LIVE2", "REQUEST_OFF", "RMT_DUMP", "DE_BENCH",
             "STOP", "EXIT")
 CAR_TRANSMIT = frozenset(("HELLO", "REQUEST_A4", "REQUEST_0E", "REQUEST_KOEO",
-                          "REQUEST_LIVE", "REQUEST_OFF"))
+                          "REQUEST_LIVE", "REQUEST_LIVE2", "REQUEST_OFF"))
 WIRE_COMMANDS = frozenset(("HELLO", "PINS", "STATUS", "TX2_BENCH", "LISTEN_9600", "OBSERVE", "ARM_A4",
                            "READ_A4", "ARM_0E", "READ_0E", "ARM_KOEO", "READ_KOEO",
-                           "ARM_LIVE", "READ_LIVE",
+                           "ARM_LIVE", "READ_LIVE", "ARM_LIVE2", "READ_LIVE2",
                            "ARM_OFF", "READ_OFF", "RMT_DUMP", "DE_BENCH", "STOP"))
 # LHBH1 ch.13 DPS: module select 001, offline map FFF, DIAGMODE + frame length, qualifier.
 REQUEST_WORDS = {
@@ -44,6 +44,7 @@ REQUEST_WORDS = {
     "KOEO": ("01B0", "FF5F", "253E", "00A0"),
     # First block requests 41H (4196); TX_PAD reports the steady 21H block.
     "LIVE": ("01B0", "FF5F", "21F6", "00A0"),
+    "LIVE2": ("01B0", "FF5F", "21F6", "00A0"),
     "OFF": ("01B0", "FF5F", "80CE", "7F20"),
 }
 SOURCE_WORDS = "01B0 FF5F 26A4 00A0"
@@ -55,7 +56,7 @@ HELLO_REPLY = b"HELLO SME105_USB_BRIDGE_V1 protocol=1 usb_baud=115200 no_auto_tx
 PINS_REPLY = (b"PINS ro16=GPIO16_UART1 de18=GPIO18_RMT2..5 "
               b"di17=GPIO17_UART2_TX+PAD_RX no_arbitrary_tx=1")
 ARM_EVENT = re.compile(
-    rb"^EVENT read_armed variant=(A4|0E|KOEO|LIVE|OFF) valid_ms=15000 no_tx_yet=1$"
+    rb"^EVENT read_armed variant=(A4|0E|KOEO|LIVE2|LIVE|OFF) valid_ms=15000 no_tx_yet=1$"
 )
 END_RECORD = re.compile(
     rb"^END reason=(\d{1,3}) ro_bytes=(\d{1,10}) ro_lost=(\d{1,10}) "

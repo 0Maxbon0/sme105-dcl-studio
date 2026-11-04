@@ -27,6 +27,7 @@ HARNESS = r"""
 #include <cstdio>
 #include <vector>
 #define IRAM_ATTR
+#define DRAM_ATTR
 enum Stage : uint8_t { IDLE, QUIET, ECHO_TX, ACK_WAIT, GO_TX,
                        CART_PASSIVE, CART_READ, FINISHING, FAULTED };
 enum Fault : uint8_t { NO_FAULT, BAD_IDLE, HSK_TX, HSK_TIMEOUT, HSK_ACK,
@@ -138,7 +139,7 @@ class CartJoinParserReplay(unittest.TestCase):
             "join": "true" if join else "false",
             "variant": str(variant),
             "cmdword": extract(self.source, "struct CmdWord {", "\nconst __FlashStringHelper* variantName("),
-            "live": extract(self.source, "bool IRAM_ATTR liveMapFrame(", "\nvoid IRAM_ATTR slotISR("),
+            "live": extract(self.source, "uint8_t IRAM_ATTR livePid(", "\nvoid IRAM_ATTR slotISR("),
             "repeat": "true" if repeat else "false",
             "nearus": extract(self.source, "bool IRAM_ATTR nearUs(", "\nbool IRAM_ATTR headerValid("),
             "headervalid": extract(self.source, "bool IRAM_ATTR headerValid(", "\n// Live data: the first TX block"),
@@ -206,6 +207,18 @@ class CartJoinParserReplay(unittest.TestCase):
         self.assertEqual(result["fault"], 0)
         self.assertEqual(result["pids"], 15)
         self.assertEqual(result["pidok"], 15)
+
+    def test_live2_sends_second_pid_set(self) -> None:
+        rx, t = [], 1_000_000
+        for block in range(6):
+            period = 10_000 if block < 2 else 22_500
+            for frame in range(16):
+                for dt, b in ((0, 0x00), (1042, 0x00), (2498, 0x00), (3540, parity(0, frame))):
+                    rx.append((t + dt, b))
+                t += period
+        result = self.run_parser(rx, join=True, repeat=True, variant=7)
+        self.assertEqual(result["fault"], 0)
+        self.assertEqual(result["pids"], 15)
 
     def test_fixed_period_path_unchanged_for_a4_0e(self) -> None:
         result = self.run_parser(rx_bytes(NORMAL_STREAM), join=False, repeat=False)
