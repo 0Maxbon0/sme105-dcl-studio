@@ -269,3 +269,46 @@ with `rx_count=2 rx_count_mid=1 rx_count_after=0` on every slot.
   `stage=0 DE=LOW auto_tx=0 fault=0`, all one-shot counters 0.
 - First post-flash USB read contained repeated/garbled fragments; not
   reproduced on re-read. No command was executed by it (all counters 0).
+
+## v10 KOEO one-shot `READ_0E` — first ECU diagnostic response (2026-11-04 ~16:38)
+
+Owner switched ignition ON (KOEO, engine not running) with USB connected.
+One host session: `TX2_BENCH` 4/4 PASS (RMT `01B0`, DE LOW), `ARM_0E`,
+**one** `READ_0E`. Echo ID + `01` ACK, Go CART, 16-frame baseline, then
+all four command words verified on the pad:
+`TX_PAD 01B0 / FF5F / 260E / 00A0 match=1`,
+`END reason=16 ro_bytes=3810 ro_lost=0 uart_errors=0 pad_verified=4 words_started=4`.
+
+| File under `captures/SME105_97AB/` | SHA-256 |
+| --- | --- |
+| `20261104T143804949449Z-usb-bridge.txt` | `141c6a78563b524d5e405034d2445ce8edbe7b7f4de15a1b683eb1942363b2bb` |
+| `20261104T143804949449Z-usb-bridge.bin` | `a170a0514ef6b6f44ed93f3a973a260bb5a650782efbcb1310161b19761b2c34` |
+
+The ECU changed frame timing for one 16-frame block (≈42.5 ms per frame
+instead of 10 ms) and placed non-sync words in it. Every word below passes
+the CART vertical-parity rule `hi(b1) == lo(b0)^hi(b0)^lo(b1)^0xA`.
+Status-slot mapping per flxkrmr `Cart.h`:
+
+| Frame | Slot | Word | Meaning |
+| --- | --- | --- | --- |
+| 4 | current diagnostic mode | `26E0` | `0x26` — ECU entered code-read mode |
+| 5 | next diagnostic mode | `FFA0` | `0xFF` idle |
+| 6 | DCL error flags low | `1F40` | `0x1F` (likely stale; `01 F4` clear was never sent) |
+| 7 | DCL error flags high | `FC90` | `0xFC`, includes `selfTestComplete` |
+| 8–9 | DMR | `00A0 00A0` | 0 |
+| 10–11 | ROM ID | `ADD0 3810` | `AD` / `38` |
+
+Data words, code = `lo(b1)` followed by `b0` (flxkrmr `onFaultCodeRead`):
+
+| Frame | Word | Code | Ford EEC-IV meaning |
+| --- | --- | --- | --- |
+| 0 | `22B1` | **122** | TP sensor below minimum voltage |
+| 0 | `1391` | **113** | IAT/ACT sensor above maximum voltage (open) |
+| 1 | `14D2` | **214** | Cylinder identification (CID) circuit failure |
+| 1 | `5791` | **157** | MAF sensor below minimum voltage |
+| 2 | `5294` | **452** | Insufficient input from vehicle speed sensor |
+
+All five are valid Ford 3-digit EEC-IV codes. Codes were **not cleared**,
+no KOEO/KOER self-test or actuator command was sent. Remaining caveats:
+`26 0E` vs `26 A4` semantics (memory vs on-demand) are not authenticated;
+no second independent read has been made yet.
