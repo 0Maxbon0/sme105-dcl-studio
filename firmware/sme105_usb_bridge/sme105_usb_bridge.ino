@@ -49,6 +49,11 @@ constexpr int kRO = 16, kDI = 17, kDE = 18;
 constexpr uint8_t kEchoId[] = {0, 0, 0, 0, 0, 1, 0x82, 0, 0, 0, 0x83};
 constexpr uint8_t kGoCart[] = {0, 0, 0, 0, 0, 1, 0x04, 0, 0, 0, 0x05};
 constexpr uint32_t kCaptureMs = 10000, kQuietMs = 150, kAckMs = 400;
+constexpr uint32_t kKoeoCaptureMs = 60000, kOfflineCaptureMs = 8000;
+// Join an already-running CART stream: frame period = 7.5ms + 2.5ms per
+// frame-length unit, i.e. 10ms (length 1) .. 42.5ms (length E).
+constexpr uint32_t kJoinMinPeriodUs = 9500, kJoinMaxPeriodUs = 46000;
+constexpr uint32_t kJoinGateUs = 400;
 constexpr uint32_t kArmMs = 15000, kHandshakeWatchdogUs = 75000;
 constexpr uint32_t kSlotWatchdogUs = 2250;
 constexpr uint32_t kSlotMinLeadUs = 180, kSlotMaxLeadUs = 1250;
@@ -83,7 +88,7 @@ constexpr uint32_t kOtaCurrentVersion = 1;
 // still be able to boot PENDING_VERIFY from an older accepted version and
 // prove their manifest before promoting ota_ver. On a VALID app with NO pending
 // ledger, a supervised physical USB flash may adopt this build baseline.
-constexpr uint32_t kUsbInstalledBuildVersion = 10;
+constexpr uint32_t kUsbInstalledBuildVersion = 11;
 constexpr size_t kOtaAppSlotMax = 0x140000; // default 4MB ESP32 OTA partition table
 constexpr char kOtaPublisherPublicPEM[] =
   "-----BEGIN PUBLIC KEY-----\n"
@@ -104,18 +109,35 @@ enum Fault : uint8_t { NO_FAULT, BAD_IDLE, HSK_TX, HSK_TIMEOUT, HSK_ACK,
 struct RxEvent { uint32_t at; uint8_t value; };
 struct HeaderByte { uint32_t at; uint8_t value; };
 struct CmdWord { uint8_t first; uint8_t second; };
+// Session kinds: 0/1 = DIAGMODE 26H (frame length 4/E), 2 = LISTEN,
+// 3 = OBSERVE, 4 = DIAGMODE 25H on-demand self test (LHBH1 13-22, length E),
+// 5 = DIAGMODE 80H go offline (LHBH1 13-26, qualifier 07FH = ~80H).
+constexpr uint8_t kVariantKoeo = 4, kVariantOffline = 5;
+constexpr bool isRequestVariant(uint8_t v) {
+  return v <= 1 || v == kVariantKoeo || v == kVariantOffline;
+}
 constexpr CmdWord IRAM_ATTR word(uint8_t variant, uint8_t slot) {
   return slot == 0 ? CmdWord{0x01,0xB0} :
          slot == 1 ? CmdWord{0xFF,0x5F} :
-         slot == 2 ? (variant == 0 ? CmdWord{0x26,0xA4} : CmdWord{0x26,0x0E}) :
-         CmdWord{0x00,0xA0};
+         slot == 2 ? (variant == 0 ? CmdWord{0x26,0xA4} :
+                      variant == 1 ? CmdWord{0x26,0x0E} :
+                      variant == kVariantKoeo ? CmdWord{0x25,0x3E} :
+                      variant == kVariantOffline ? CmdWord{0x80,0xCE} :
+                      CmdWord{0x26,0xA4}) :
+         variant == kVariantOffline ? CmdWord{0x7F,0x20} : CmdWord{0x00,0xA0};
 }
 constexpr uint8_t parity(uint8_t first, uint8_t id) {
   return static_cast<uint8_t>((((first >> 4) ^ (first & 15) ^ id ^ 10) << 4) | id);
 }
 static_assert(parity(1,0)==0xB0 && parity(0xFF,15)==0x5F &&
-              parity(0x26,4)==0xA4 && parity(0x26,14)==0x0E,
-              "candidate reference parity");
+              parity(0x26,4)==0xA4 && parity(0x26,14)==0x0E &&
+              parity(0x25,14)==0x3E && parity(0x80,14)==0xCE &&
+              parity(0x7F,0)==0x20,
+              "DPS word vertical parity");
+const __FlashStringHelper* variantName(uint8_t v) {
+  return v == 0 ? F("A4") : v == 1 ? F("0E") :
+         v == kVariantKoeo ? F("KOEO") : F("OFF");
+}
 
 HardwareSerial referenceBus(2);
 hw_timer_t* deTimer = nullptr;
@@ -133,18 +155,21 @@ volatile uint8_t wordsStarted = 0, wordsVerified = 0;
 volatile uint8_t padCount = 0;
 volatile uint8_t padRx[4][2] = {{0}};
 volatile uint32_t txStartUs[4] = {}, txDoneUs[4] = {};
-volatile uint32_t uartErr = 0, lostRx = 0, rxTotal = 0;
+volatile uint32_t uartErr = 0, lostRx = 0, rxTotal = 0, lastRxAtUs = 0;
 volatile uint16_t rxWrite = 0, rxRead = 0;
 RxEvent rxRing[kRxRingSize] = {};
 volatile bool frameLocked = false, captureOnly = false;
+volatile bool joinMode = false, repeatDps = false, stopAtBlock = false;
+volatile uint32_t dpsBlocks = 0;
 volatile uint8_t headerUsed = 0, baselineCount = 0, phase = 255, nextId = 0;
-volatile uint32_t lastSyncUs = 0;
+volatile uint32_t lastSyncUs = 0, framePeriodUs = 10000;
 HeaderByte header[4] = {};
 uint32_t stageStartedMs = 0, captureStartedMs = 0, armExpiresMs = 0;
 uint32_t refTxStartedUs = 0, ackLastMs = 0;
 uint8_t ack[16] = {}, ackCount = 0;
 volatile uint32_t handshakeErrors = 0;
 volatile bool transmitConsumed = false;
+volatile bool offlineConsumed = false; // separate one-shot: may follow a READ
 volatile bool observeConsumed = false; // active Echo-ID/Go-CART, not passive sniff
 uint8_t armedVariant = 255;
 bool armedFromUSB = true; // ARM/READ must originate on the same authenticated transport
@@ -878,7 +903,7 @@ void dropTcpClient(bool transportLost) {
     abortSignedOta("disconnect");
   if (transportLost && otaFirstBootPending)
     otaPendingNetworkConfirmed = false; // reconnect must confirm again
-  if (armedVariant < 2 && !armedFromUSB) armedVariant = 255;
+  if (isRequestVariant(armedVariant) && !armedFromUSB) armedVariant = 255;
   if (transportLost && tcpAuthenticated) {
     ++transportFaults;
     if (busSessionActive()) stopEverything(HOST_STOP);
@@ -1523,46 +1548,30 @@ void IRAM_ATTR uart2ISR(void*) {
         faultISR(PAD_MISMATCH);
       } else {
         ++wordsVerified;
-        if (wordsVerified == 4) captureOnly = true;
+        if (wordsVerified == 4 && !repeatDps) captureOnly = true;
       }
     }
   }
   UART2.int_clr.val = pending;
 }
 
-void IRAM_ATTR observeHeader(uint8_t octet, uint32_t at) {
-  if (stage != CART_READ && stage != CART_PASSIVE) return;
-  if (captureOnly) return;
-  // Preserve every byte in raw ring. Ignore likely local echo for *header parsing only*.
-  if (wordsStarted > 0 && (uint32_t)(at - txStartUs[wordsStarted - 1]) <= 2600) return;
-  if (!frameLocked) {
-    if (headerUsed < 4) header[headerUsed++] = {at, octet};
-    else {
-      for (int i = 0; i < 3; ++i) header[i] = header[i + 1];
-      header[3] = {at, octet};
-    }
-    if (headerUsed == 4 && headerValid(0, 255)) {
-      frameLocked = true;
-      phase = nearUs(header[2].at, header[1].at + 1458) ? 4 : 0;
-      baselineCount = 1;
-      nextId = 1;
-      lastSyncUs = header[1].at;
-      headerUsed = 0;
-    }
-    return;
-  }
-  // Only original consecutive full headers are accepted for grant of TX authority.
+void IRAM_ATTR slideHeader(uint8_t octet, uint32_t at) {
   if (headerUsed < 4) header[headerUsed++] = {at, octet};
-  else { faultISR(CART_HEADER); return; }
-  if (headerUsed != 4) return;
-  const uint8_t id = baselineCount < 16 ? baselineCount : nextId;
-  const uint32_t sync = header[1].at;
-  const uint32_t dt = sync - lastSyncUs;
-  const bool cadence = nearUs(dt, 10000) ||
-      (baselineCount == 16 && nearUs(dt, 12500));
-  const bool valid = headerValid(id, phase) && cadence;
+  else {
+    for (int i = 0; i < 3; ++i) header[i] = header[i + 1];
+    header[3] = {at, octet};
+  }
+}
+void IRAM_ATTR restartJoinSearch() {
+  frameLocked = false;
   headerUsed = 0;
-  if (!valid) { faultISR(CART_HEADER); return; }
+  baselineCount = 0;
+  framePeriodUs = 0;
+}
+// header[] holds a validated sync+ID for frame `id`.
+void IRAM_ATTR onFrameHeader(uint8_t id) {
+  const uint32_t sync = header[1].at;
+  headerUsed = 0;
   lastSyncUs = sync;
   if (baselineCount < 16) {
     ++baselineCount;
@@ -1575,7 +1584,22 @@ void IRAM_ATTR observeHeader(uint8_t octet, uint32_t at) {
     return;
   }
   if (stage == CART_PASSIVE) return;
-  if (nextId >= 4 || wordsVerified != nextId || slotInFlight || slotArmed) {
+  nextId = (id + 1) & 15;
+  // A requested DIAGMODE changes the frame length at the next block start.
+  if (joinMode && id == 0) framePeriodUs = 0;
+  if (id >= 4) {
+    if (!repeatDps) faultISR(CART_PHASE);
+    return;
+  }
+  if (id == 0 && repeatDps) {
+    // LHBH1: idle DPS means normal mode, so the request is repeated in
+    // frames 0..3 of every block. Only a fully verified block may roll over.
+    if (wordsStarted != 0 && wordsVerified != 4) { faultISR(CART_PHASE); return; }
+    if (stopAtBlock) { captureOnly = true; return; }
+    if (wordsStarted == 4) ++dpsBlocks;
+    wordsStarted = wordsVerified = padCount = 0;
+  }
+  if (wordsVerified != id || wordsStarted != id || slotInFlight || slotArmed) {
     faultISR(CART_PHASE);
     return;
   }
@@ -1588,9 +1612,71 @@ void IRAM_ATTR observeHeader(uint8_t octet, uint32_t at) {
     return;
   }
   targetUs = target;
-  pendingSlot = nextId;
+  pendingSlot = id;
   slotArmed = true;
-  ++nextId;
+}
+void IRAM_ATTR observeHeader(uint8_t octet, uint32_t at) {
+  if (stage != CART_READ && stage != CART_PASSIVE) return;
+  if (captureOnly) return;
+  // Preserve every byte in raw ring. Ignore likely local echo for *header parsing only*.
+  if (wordsStarted > 0 && (uint32_t)(at - txStartUs[wordsStarted - 1]) <= 2600) return;
+  if (!frameLocked) {
+    slideHeader(octet, at);
+    if (headerUsed == 4 && headerValid(0, 255)) {
+      frameLocked = true;
+      phase = nearUs(header[2].at, header[1].at + 1458) ? 4 : 0;
+      baselineCount = 1;
+      nextId = 1;
+      lastSyncUs = header[1].at;
+      headerUsed = 0;
+      if (joinMode) framePeriodUs = 0;
+    }
+    return;
+  }
+  const uint8_t expectedId = baselineCount < 16 ? baselineCount : nextId;
+  if (joinMode && framePeriodUs == 0) {
+    // Diagnostic blocks carry data words between headers and the frame
+    // period depends on the active frame length. Learn it from frame 0 -> 1.
+    // "00 00" is always a sync: a zero data word carries parity A ("00 A0").
+    if ((uint32_t)(at - lastSyncUs) > kJoinMaxPeriodUs + 2000) { restartJoinSearch(); return; }
+    slideHeader(octet, at);
+    if (headerUsed == 4 && headerValid(expectedId, phase)) {
+      const uint32_t dt = header[1].at - lastSyncUs;
+      if (dt < kJoinMinPeriodUs || dt > kJoinMaxPeriodUs) { restartJoinSearch(); return; }
+      framePeriodUs = dt;
+      onFrameHeader(expectedId);
+    }
+    return;
+  }
+  if (joinMode && headerUsed == 0) {
+    // Only a byte at the predicted next-sync instant may start a header.
+    const uint32_t expected = lastSyncUs + framePeriodUs - 1042;
+    if (!nearUs(at, expected, kJoinGateUs) &&
+        !(baselineCount == 16 && nearUs(at, expected + 2500, kJoinGateUs))) {
+      if ((int32_t)(at - (expected + 2500 + kJoinGateUs)) > 0) {
+        // Expected sync missing. Before TX authority: resync. Within a
+        // repeated DPS session a lost frame ends the request (fail closed).
+        if (baselineCount < 16) restartJoinSearch();
+        else faultISR(CART_HEADER);
+      }
+      return;
+    }
+  }
+  // Only original consecutive full headers are accepted for grant of TX authority.
+  if (headerUsed < 4) header[headerUsed++] = {at, octet};
+  else { faultISR(CART_HEADER); return; }
+  if (headerUsed != 4) return;
+  const uint32_t dt = header[1].at - lastSyncUs;
+  const uint32_t period = joinMode ? framePeriodUs : 10000;
+  const bool cadence = nearUs(dt, period) ||
+      (baselineCount == 16 && nearUs(dt, period + 2500));
+  if (!headerValid(expectedId, phase) || !cadence) {
+    headerUsed = 0;
+    // No TX has been scheduled before a full baseline block: resync instead.
+    if (joinMode && baselineCount < 16) { restartJoinSearch(); return; }
+    faultISR(CART_HEADER); return;
+  }
+  onFrameHeader(expectedId);
 }
 
 void IRAM_ATTR uart1ISR(void*) {
@@ -1607,6 +1693,7 @@ void IRAM_ATTR uart1ISR(void*) {
   for (uint32_t i = 0; i < count; ++i) {
     const uint8_t value = static_cast<uint8_t>(UART1.fifo.rw_byte);
     const uint32_t at = static_cast<uint32_t>(esp_timer_get_time());
+    lastRxAtUs = at;
     const uint16_t head = rxWrite;
     const uint16_t next = (head + 1) & (kRxRingSize - 1);
     if (next == rxRead) {
@@ -1708,8 +1795,9 @@ bool openNative() {
   closeReference();
   rxRead = rxWrite = 0;
   rxTotal = lostRx = uartErr = 0;
-  frameLocked = false; captureOnly = false;
-  baselineCount = 0; headerUsed = 0; phase = 255; nextId = 0;
+  frameLocked = false; captureOnly = false; joinMode = false;
+  repeatDps = stopAtBlock = false; dpsBlocks = 0;
+  baselineCount = 0; headerUsed = 0; phase = 255; nextId = 0; framePeriodUs = 10000;
   wordsStarted = wordsVerified = padCount = 0;
   slotInFlight = slotArmed = false;
   const uart_config_t conf = {
@@ -2091,12 +2179,15 @@ void beginSession(Stage target, uint8_t kind) {
     }
     observeConsumed = true; // consume before any possible handshake TX
   }
+  const bool offline = target == CART_READ && kind == kVariantOffline;
   if (target == CART_READ &&
-      (transmitConsumed || armedVariant != kind || armedFromUSB != commandFromUSB ||
+      ((offline ? offlineConsumed : transmitConsumed) ||
+       armedVariant != kind || armedFromUSB != commandFromUSB ||
        static_cast<int32_t>(armExpiresMs - millis()) <= 0)) {
     out.println(F("DENIED arm_required_or_consumed")); return;
   }
-  if (target == CART_READ) transmitConsumed = true; // before any 2400 TX
+  if (offline) offlineConsumed = true; // before any DPS TX
+  else if (target == CART_READ) transmitConsumed = true; // before any 2400 TX
   armedVariant = 255;
   stopLatched = true;
   failure = NO_FAULT;
@@ -2111,6 +2202,17 @@ void beginSession(Stage target, uint8_t kind) {
     stopLatched = false;
     stage = CART_PASSIVE; captureStartedMs = millis();
     out.println(F("EVENT session=LISTEN_9600 origin=RO_ONLY no_tx=1"));
+    return;
+  }
+  if (offline) {
+    // The ECU is already CART link master; no 2400 handshake and no quiet
+    // line. DPS words go out only after a full 16-frame baseline block.
+    if (!openNative()) { stopEverything(CART_INIT); out.println(F("FAULT reason=CART_INIT")); return; }
+    joinMode = true;
+    framePeriodUs = 0;
+    stopLatched = false;
+    stage = CART_READ; captureStartedMs = millis();
+    out.println(F("EVENT session=OFFLINE_JOIN no_handshake=1"));
     return;
   }
   if (!openReference()) { stopEverything(CART_INIT); return; }
@@ -2161,7 +2263,10 @@ void pollHandshake() {
       } else {
         if (!openNative()) { stopEverything(CART_INIT); return; }
         stopLatched = false;
-        stage = variant >= 2 ? CART_PASSIVE : CART_READ;
+        // Self test needs the 25H request repeated every block while frame
+        // lengths change, so it uses the adaptive header gate.
+        joinMode = repeatDps = variant == kVariantKoeo;
+        stage = isRequestVariant(variant) ? CART_READ : CART_PASSIVE;
         captureStartedMs = now;
         out.println(F("EVENT cart=9600_8N1 raw_ro=1 ecu_verified=0 dtc_verified=0"));
       }
@@ -2227,7 +2332,18 @@ void pollActive() {
       lastReportedBaseline = baselineCount;
       out.println(F("EVENT baseline=16 synced=1 authority=unverified"));
     }
-    if (millis() - captureStartedMs >= kCaptureMs) stopEverything(CAPTURE_TIMEOUT);
+    const uint32_t limit = stage != CART_READ ? kCaptureMs :
+        variant == kVariantKoeo ? kKoeoCaptureMs :
+        variant == kVariantOffline ? kOfflineCaptureMs : kCaptureMs;
+    const uint32_t elapsed = millis() - captureStartedMs;
+    if (elapsed >= limit) {
+      // A repeated DPS ends only at a block boundary, never mid-request.
+      if (stage == CART_READ && repeatDps && !captureOnly && elapsed < limit + 3000) {
+        stopAtBlock = true;
+        return;
+      }
+      stopEverything(CAPTURE_TIMEOUT);
+    }
   }
 }
 void reportEnd() {
@@ -2235,6 +2351,15 @@ void reportEnd() {
   flushPadReports();
   flushRaw();
   if (rxRead != rxWrite) return;
+  if (repeatDps) {
+    out.print(F("EVENT dps_blocks_complete=")); out.print(dpsBlocks + (wordsVerified == 4 ? 1 : 0));
+    out.print(F(" frame_period_us=")); out.println(framePeriodUs);
+  }
+  if (variant == kVariantOffline && wordsVerified == 4) {
+    const uint32_t now = static_cast<uint32_t>(esp_timer_get_time());
+    out.print(F("EVENT offline_quiet_us=")); out.print(now - lastRxAtUs);
+    out.print(F(" last_tx_us=")); out.println(txDoneUs[3]);
+  }
   out.print(F("END reason=")); out.print(static_cast<unsigned>(failure));
   out.print(F(" ro_bytes=")); out.print(rxTotal);
   out.print(F(" ro_lost=")); out.print(lostRx);
@@ -2257,10 +2382,12 @@ void printStatus() {
   out.print(F(" transport_lost=")); out.print(transportFaults);
   out.print(F(" out_overflow=")); out.print(out.overflow());
   out.print(F(" usb_skipped=")); out.print(out.usbSkipped());
+  out.print(F(" offline_used=")); out.print(offlineConsumed ? 1 : 0);
   out.print(F(" armed="));
-  if (armedVariant < 2 && !transmitConsumed &&
+  if (isRequestVariant(armedVariant) &&
+      !(armedVariant == kVariantOffline ? offlineConsumed : transmitConsumed) &&
       static_cast<int32_t>(armExpiresMs - millis()) > 0)
-    out.print(armedVariant == 0 ? F("A4") : F("0E"));
+    out.print(variantName(armedVariant));
   else out.print(F("NONE"));
   out.print(F(" fault=")); out.println(static_cast<unsigned>(failure));
 }
@@ -2559,8 +2686,10 @@ void runCommand(const char* cmd) {
   if (otaFirstBootPending &&
       (!strcmp(cmd, "OBSERVE") || !strcmp(cmd, "READ_A4") ||
        !strcmp(cmd, "READ_0E") || !strcmp(cmd, "LISTEN_9600") ||
+       !strcmp(cmd, "READ_KOEO") || !strcmp(cmd, "READ_OFF") ||
        !strcmp(cmd, "TX2_BENCH") ||
-       !strcmp(cmd, "ARM_A4") || !strcmp(cmd, "ARM_0E"))) {
+       !strcmp(cmd, "ARM_A4") || !strcmp(cmd, "ARM_0E") ||
+       !strcmp(cmd, "ARM_KOEO") || !strcmp(cmd, "ARM_OFF"))) {
     out.println(F("DENIED boot_health_pending"));
     return;
   }
@@ -2616,7 +2745,7 @@ void runCommand(const char* cmd) {
   }
   if (!strcmp(cmd, "HELLO")) { out.println(F("HELLO SME105_USB_BRIDGE_V1 protocol=1 usb_baud=115200 no_auto_tx=1")); return; }
   if (!strcmp(cmd, "HELP")) {
-    out.println(F("COMMANDS HELLO HELP STATUS PINS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E STOP RESET_IDLE"));
+    out.println(F("COMMANDS HELLO HELP STATUS PINS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E ARM_KOEO READ_KOEO ARM_OFF READ_OFF STOP RESET_IDLE"));
     out.println(F("READ_* requires exact 4/4 TX2_BENCH pad pass this boot plus matching ARM_* within 15s; no automatic TX"));
     out.println(F("WIFI USB_ONLY: WIFI_CONFIG <SSID_B64> <PASS_B64> | WIFI_AP_CONFIG <SSID_B64> <PASS_B64> | WIFI_STA_MODE WIFI_AP_MODE | WIFI_TOKEN | WIFI_FORGET"));
     out.println(F("WIFI read-only: WIFI_STATUS WIFI_DIAG WIFI_AP_STATUS; AP-only 10.77.13.1/24 WPA2 and authenticated TCP/8765"));
@@ -2631,17 +2760,25 @@ void runCommand(const char* cmd) {
     else { failure = NO_FAULT; armedVariant = 255; out.println(F("EVENT idle_reset no_read_rearm=1")); }
     return;
   }
-  if (!strcmp(cmd, "ARM_A4") || !strcmp(cmd, "ARM_0E")) {
-    if (stage != IDLE || transmitConsumed) { out.println(F("DENIED read_used_or_busy")); return; }
-    armedVariant = strcmp(cmd, "ARM_A4") == 0 ? 0 : 1;
+  const uint8_t armKind = !strcmp(cmd, "ARM_A4") ? 0 : !strcmp(cmd, "ARM_0E") ? 1 :
+                          !strcmp(cmd, "ARM_KOEO") ? kVariantKoeo :
+                          !strcmp(cmd, "ARM_OFF") ? kVariantOffline : 255;
+  if (armKind != 255) {
+    if (stage != IDLE ||
+        (armKind == kVariantOffline ? offlineConsumed : transmitConsumed)) {
+      out.println(F("DENIED read_used_or_busy")); return;
+    }
+    armedVariant = armKind;
     armedFromUSB = commandFromUSB;
     armExpiresMs = millis() + kArmMs;
-    out.print(F("EVENT read_armed variant=")); out.print(armedVariant == 0 ? F("A4") : F("0E"));
+    out.print(F("EVENT read_armed variant=")); out.print(variantName(armedVariant));
     out.println(F(" valid_ms=15000 no_tx_yet=1"));
     return;
   }
   if (!strcmp(cmd, "READ_A4")) { beginSession(CART_READ, 0); return; }
   if (!strcmp(cmd, "READ_0E")) { beginSession(CART_READ, 1); return; }
+  if (!strcmp(cmd, "READ_KOEO")) { beginSession(CART_READ, kVariantKoeo); return; }
+  if (!strcmp(cmd, "READ_OFF")) { beginSession(CART_READ, kVariantOffline); return; }
   if (!strcmp(cmd, "OBSERVE")) { beginSession(CART_PASSIVE, 3); return; }
   if (!strcmp(cmd, "LISTEN_9600")) { beginSession(CART_PASSIVE, 2); return; }
   out.println(F("DENIED unknown_or_unsafe_command"));

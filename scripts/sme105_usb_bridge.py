@@ -28,10 +28,19 @@ BAUD = 115200
 TCP_PORT = 8765
 DEFAULT_TOKEN_FILE = Path("~/.config/sme105/bridge-token").expanduser()
 TOKEN_HEX = re.compile(rb"^[0-9a-fA-F]{32}$")
-COMMANDS = ("STATUS", "TX2_BENCH", "LISTEN", "HELLO", "REQUEST_A4", "REQUEST_0E", "STOP", "EXIT")
-CAR_TRANSMIT = frozenset(("HELLO", "REQUEST_A4", "REQUEST_0E"))
+COMMANDS = ("STATUS", "TX2_BENCH", "LISTEN", "HELLO", "REQUEST_A4", "REQUEST_0E",
+            "REQUEST_KOEO", "REQUEST_OFF", "STOP", "EXIT")
+CAR_TRANSMIT = frozenset(("HELLO", "REQUEST_A4", "REQUEST_0E", "REQUEST_KOEO", "REQUEST_OFF"))
 WIRE_COMMANDS = frozenset(("HELLO", "PINS", "STATUS", "TX2_BENCH", "LISTEN_9600", "OBSERVE", "ARM_A4",
-                           "READ_A4", "ARM_0E", "READ_0E", "STOP"))
+                           "READ_A4", "ARM_0E", "READ_0E", "ARM_KOEO", "READ_KOEO",
+                           "ARM_OFF", "READ_OFF", "STOP"))
+# LHBH1 ch.13 DPS: module select 001, offline map FFF, DIAGMODE + frame length, qualifier.
+REQUEST_WORDS = {
+    "A4": ("01B0", "FF5F", "26A4", "00A0"),
+    "0E": ("01B0", "FF5F", "260E", "00A0"),
+    "KOEO": ("01B0", "FF5F", "253E", "00A0"),
+    "OFF": ("01B0", "FF5F", "80CE", "7F20"),
+}
 SOURCE_WORDS = "01B0 FF5F 26A4 00A0"
 V5_GPIO17_WORDS = "6DCC 29E9 6C3C 9847"
 MAX_LINE = 2048
@@ -41,7 +50,7 @@ HELLO_REPLY = b"HELLO SME105_USB_BRIDGE_V1 protocol=1 usb_baud=115200 no_auto_tx
 PINS_REPLY = (b"PINS ro16=GPIO16_UART1 de18=GPIO18_RMT2..5 "
               b"di17=GPIO17_UART2_TX+PAD_RX no_arbitrary_tx=1")
 ARM_EVENT = re.compile(
-    rb"^EVENT read_armed variant=(A4|0E) valid_ms=15000 no_tx_yet=1$"
+    rb"^EVENT read_armed variant=(A4|0E|KOEO|OFF) valid_ms=15000 no_tx_yet=1$"
 )
 END_RECORD = re.compile(
     rb"^END reason=(\d{1,3}) ro_bytes=(\d{1,10}) ro_lost=(\d{1,10}) "
@@ -449,7 +458,7 @@ class BridgeClient:
         self._di_mismatch = False
         self._pending_transmit = False
         self._hello_sent = False
-        self._request_sent = False
+        self._requests_sent: set[str] = set()
         self._verified_status = False
         self._session_ended = threading.Event()
         self._tx2_bench_attempted = False
@@ -525,12 +534,7 @@ class BridgeClient:
                                 self._condition.notify_all()
                     if line.startswith(b"TX_PAD "):
                         witness = TX_PAD.fullmatch(line)
-                        expected_words = (
-                            ("01B0", "FF5F", "26A4", "00A0")
-                            if self._read_variant == "A4" else
-                            ("01B0", "FF5F", "260E", "00A0")
-                            if self._read_variant == "0E" else ()
-                        )
+                        expected_words = REQUEST_WORDS.get(self._read_variant or "", ())
                         if (witness is None or not expected_words or
                                 witness[2].decode("ascii") !=
                                 expected_words[int(witness[1])] or
@@ -657,10 +661,17 @@ class BridgeClient:
             assert self._status is not None
             return self._status
 
-    def _validate_idle_for_vehicle(self, status: BridgeStatus) -> None:
-        if (status.field("stage") != "0" or
-                status.field("read_used") != "0" or
-                status.field("fault") not in ("0", "15") or
+    def _validate_idle_for_vehicle(self, status: BridgeStatus,
+                                   variant: str | None = None) -> None:
+        if variant == "OFF":
+            # Go-offline normally follows a completed read (END fault 16).
+            consumed = status.field("offline_used") != "0"
+            allowed_faults = ("0", "15", "16")
+        else:
+            consumed = status.field("read_used") != "0"
+            allowed_faults = ("0", "15")
+        if (status.field("stage") != "0" or consumed or
+                status.field("fault") not in allowed_faults or
                 self._session_name is not None or self._pending_transmit):
             raise BridgeError("bridge busy, failed, or read already consumed")
         if self.fault:
@@ -761,7 +772,9 @@ class BridgeClient:
             return
         if command == "HELLO" and self._hello_sent:
             raise BridgeError("HELLO already attempted this host session")
-        if command.startswith("REQUEST_") and self._request_sent:
+        variant = command.removeprefix("REQUEST_") if command.startswith("REQUEST_") else None
+        request_key = "OFF" if variant == "OFF" else "READ"
+        if variant is not None and request_key in self._requests_sent:
             raise BridgeError("request already attempted this host session")
         initial = self.status()
         if initial.field("stage") != "0" or self._session_name is not None:
@@ -772,32 +785,28 @@ class BridgeClient:
             self._send("LISTEN_9600")
             self.display("Started passive RO16 UART1 listening; raw events recorded.")
             return
-        self._validate_idle_for_vehicle(initial)
+        self._validate_idle_for_vehicle(initial, variant)
         if command == "HELLO":
             if self._hello_sent:
                 raise BridgeError("HELLO already attempted this host session")
-        elif command.startswith("REQUEST_"):
-            if self._request_sent:
-                raise BridgeError("request already attempted this host session")
-        else:
+        elif variant is None:
             raise BridgeError("unsupported vehicle TX command")
         if not authorize(command):
             self.display("Cancelled; no vehicle TX.")
             return
         checked = self.status()
-        self._validate_idle_for_vehicle(checked)
-        if command.startswith("REQUEST_"):
+        self._validate_idle_for_vehicle(checked, variant)
+        if variant is not None:
             # Firmware requires two physical USB messages: ARM then READ.
             # A second typed confirmation and fresh firmware STATUS is
             # required between them. No automatic ARM->READ execution.
-            variant = command.removeprefix("REQUEST_")
-            self._request_sent = True  # uncertain ARM may not be repeated
+            self._requests_sent.add(request_key)  # uncertain ARM may not be repeated
             self._await_arm(variant)
             if not authorize("READ_" + variant):
                 self.display("Cancelled after ARM; no vehicle READ sent.")
                 return
             checked = self.status()
-            self._validate_idle_for_vehicle(checked)
+            self._validate_idle_for_vehicle(checked, variant)
             if (self._arm_variant != variant or
                     time.monotonic() >= self._arm_deadline - 1.0):
                 raise BridgeError("ARM timed out or changed; READ denied")
@@ -812,7 +821,7 @@ class BridgeClient:
         if command == "HELLO":
             self._hello_sent = True
         else:
-            self._request_sent = True
+            self._requests_sent.add(request_key)
         self._send(wire)
         self.display(f"{wire} dispatched once. Streaming raw evidence; "
                      "no automatic retry or DTC interpretation.")
@@ -837,7 +846,8 @@ def confirm_vehicle(command: str, user_input: Callable[[str], str] = input,
 
 
 def menu(display: Callable[[str], None] = print) -> None:
-    display("Commands: STATUS | TX2_BENCH | LISTEN | HELLO | REQUEST_A4 | REQUEST_0E | STOP | EXIT")
+    display("Commands: STATUS | TX2_BENCH | LISTEN | HELLO | REQUEST_A4 | REQUEST_0E | "
+            "REQUEST_KOEO | REQUEST_OFF | STOP | EXIT")
     display("TX2_BENCH is local GPIO17 pad/RMT preflight with DE LOW. "
             "LISTEN is RX-only. HELLO uses active 2400-baud handshake; "
             "REQUEST needs ARM and a separately approved READ.")
