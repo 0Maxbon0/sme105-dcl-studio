@@ -497,3 +497,23 @@ headers carry the RPM byte when running (no longer assumed 0).
   during the rev. Consistent with stored code 122 (TP below minimum voltage)
   as an engine-running electrical fault (TP connector/wiring, SIG RTN/VREF or
   engine ground), not a worn track.
+
+## v16 BLE bench test (ignition OFF, ~19:00–19:10)
+
+- First BLE image boot-looped: `abort()` in `coex_core_enable` from
+  `NimBLEDevice::init` — ESP-IDF refuses Bluetooth while Wi-Fi modem sleep is
+  disabled (`WiFi.setSleep(false)` in `startSta`). BLE build now keeps modem
+  sleep; the non-BLE build is unchanged. Reflashed; boots cleanly,
+  `accepted_version=16 boot_health=VALID`, `BLE_STATUS enabled=1`.
+- First serial read after the esptool reset returned 2,916,352 bytes in 6 s —
+  impossible at 115200 baud (~70 KB max), proving the recurring post-flash
+  repetition is a host USB-serial artifact, not firmware output.
+- Laptop (BlueZ) paired with `SME105-DCL` using the 6-digit PIN: Paired,
+  Bonded, Trusted; negotiated notify payload 244 bytes.
+- Over BLE: `AUTH OK transport=BLE`, HELLO, STATUS, BLE_STATUS OK;
+  `BLE_PIN` → `DENIED usb_only`; `TX2_BENCH` 4/4 PASS (RMT 01B0) with the BLE
+  radio active. After a BLE client disconnects, the next client claims the
+  controller role again (release OK).
+- Open issue: with BLE enabled the Wi-Fi STA no longer joins the home AP
+  (`WIFI_DIAG last_reason=201` NO_AP_FOUND, 34 disconnects); v15 without BLE
+  was connected. TCP-vs-BLE exclusivity therefore not yet exercised on air.

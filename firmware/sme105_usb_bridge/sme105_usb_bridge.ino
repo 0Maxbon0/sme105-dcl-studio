@@ -1029,10 +1029,16 @@ void startSta() {
   WiFi.mode(WIFI_STA); // A station is enabled only when USB chose STA mode
   WiFi.persistent(false);
   WiFi.setHostname("sme105-bridge");
+#ifdef SME105_BLE
+  // ESP-IDF aborts in coex_enable() when Bluetooth starts while Wi-Fi
+  // modem sleep is disabled; BLE is the primary transport in this build.
+  WiFi.setSleep(true);
+#else
   // Disable modem sleep for a low-latency always-on STA bridge. This uses
   // more power; insufficient vehicle supply/antenna coverage cannot be
   // cured by firmware and remains a separate physical diagnostic.
   WiFi.setSleep(false);
+#endif
   WiFi.setAutoReconnect(true);
   WiFi.begin(ssid.c_str(), pass.c_str()); // asynchronous; no waiting or retry TX
   wifiLastRetryMs = millis();
