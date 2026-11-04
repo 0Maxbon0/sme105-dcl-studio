@@ -424,3 +424,28 @@ pad high before `deOff()` and faults `DE_MISSING` (18) otherwise. New
   3984 CART bytes byte-identical (SHA-256 `ed478fcf…`) to the 13:54 capture.
 - `READ_OFF` with the TX_DONE DE witness: `01B0 FF5F 80CE 7F20` pad-verified,
   no `DE_MISSING`, `offline_quiet_us=7601768`, following LISTEN 0 bytes.
+
+## KOEO on-demand self test (v13), 2026-11-04 ~17:49 — result: code 113
+
+`captures/SME105_97AB/20261104T154903976737Z-usb-bridge.*` (transcript SHA-256
+`fee22fc157dafd53f97cdf6e36b35d55be56350155be3630cdb209fc1c840a5a`).
+Echo ID ACK, Go CART, then DPS `01B0 FF5F 253E 00A0` repeated in frames 0–3 of
+**89 consecutive blocks** (60 s), every word pad-verified and DE-witnessed;
+`ro_bytes=8034 ro_lost=0 uart_errors=0`.
+
+- From the first diagnostic block: 42.5 ms frames, status `25D0 25D0`
+  (current/next DIAGMODE 25H), DCL flags low `1F40`, high `ACC0`, ROM `ADD0 3810`.
+- At t≈9.2 s the high flag byte changed `AC` → `EC` (bit 6 = Ford DCL flag
+  bit 14, "all codes transmitted at least once") — self test complete.
+- From then on, every block carried exactly one code word in the **last slot
+  of frame 0** (+37.5 ms): `13 91` → parity OK → **113** (75 blocks). No code
+  word in frames 1–15 (LHBH1 13-22: codes start in frame 0's last slot and
+  continue frame by frame), so the on-demand result is the single code 113.
+- Interpretation: IAT/ACT circuit above maximum voltage (open) is a **present**
+  fault. Stored codes 122/157 did not reappear on demand; 214 (CID) and 452
+  (VSS) cannot be tested KOEO.
+- When the repeated DPS stopped (block boundary), the ECU stopped transmitting
+  after that block's frame-0 header; the following OFFLINE_JOIN and LISTEN saw
+  0 bytes. The same silence followed the earlier v12 KOEO attempt, which the
+  owner heard coincide with a fuel-pump run (consistent with an ECU reset into
+  silent standby at self-test exit).
