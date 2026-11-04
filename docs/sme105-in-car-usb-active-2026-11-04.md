@@ -199,3 +199,56 @@ New local (not installed) image SHA-256:
 firmware while attached to the active ECU bus; off-vehicle differential
 A/B electrical verification, safe DE behavior, and byte-source checks
 are still necessary. Neither 26A4 nor 260E has yielded a verified DTC.
+
+## OWNER STOP / field observation — 2026-11-04 ~16:18 Africa/Cairo
+
+**Owner explicitly ordered: log everything in the repository and STOP all
+vehicle experiments.** No further ECU command, serial session, flash,
+reset, Wi-Fi change, or ignition action is authorized as part of this turn.
+
+Owner-observed physical state after the interrupted `READ_0E` attempt:
+the **green MAX487 board's RX indicator became illuminated again**, and
+the owner reports the connected unit/ECU keeps emitting traffic after
+host capture ends; in their experience it only stops after ignition is
+switched OFF and then back ON. This is an **eyewitness LED observation**;
+there is *no further instrumented capture after the owner's report*.
+The earlier independently preserved one-second passive USB capture
+(444 bytes, 111 sequential CART ID frames, zero UART errors) supports
+that CART traffic can continue after a host session ends, but an LED
+alone does **not** prove which physical component drives the bus or
+that the ECU is in a particular diagnostic mode.
+
+### Final engineering state at the STOP boundary
+
+- Installed on the USB-connected ESP32: **v9**, latest prior USB status
+  `stage=0 DE=LOW auto_tx=0 fault=0`, OTA `boot_health=VALID`. The
+  serial connection used to read that state was closed afterward.
+  **No new device status was queried after the owner's latest LED report.**
+- Last live candidate: `26 0E` requested once, but only the **first**
+  synchronized command word `01 B0` started. Firmware halted immediately
+  with `PAD_MISMATCH reason=11`, `pad_verified=0`, `words_started=1`;
+  UART1 RO showed `01 B0`, while UART2's old pad readback said `01 01`.
+  `FF 5F / 26 0E / 00 A0` were **not transmitted**.
+- Prior `26 A4` was only armed; it stopped at `BAD_IDLE` with zero
+  command slots transmitted. Hence **neither B variant was tested
+  completely**. No valid diagnostic trouble codes were obtained.
+- Source-only correction of the two-byte UART2 FIFO pop and 2→1→0
+  occupancy validation is committed at `c081d18`. All **242 Python
+  tests** and PlatformIO firmware build passed, but it is **NOT FLASHED**.
+  Local built-image SHA-256:
+  `ca02cedc6613d7fc0e381c1a94202a6f624387557261be74fee3dce1fa0c15ca`.
+- The vehicle and ignition state are **not controlled by software here**.
+  The operator owns the physical actions. Do not infer the RX light
+  extinguished or the ECU stopped sending after this note.
+
+### Resume boundary (only on a *future* explicit instruction)
+
+Preserve all raw transcripts and hashes; do not send another live
+`READ_A4`/`READ_0E` or use LED status as evidence for a valid DTC.
+Before any further ECU-connected work, validate the source-only FIFO
+fix with an isolated differential A/B circuit and an independent physical
+waveform witness, verify RMT DE cutoff, and reconcile CART response
+slots/diagnostic mode for `26 A4` vs `26 0E`. Revalidate under
+explicit field authorization with bounded one-shot tests and do not
+clear codes, alter actuator states or transmit arbitrary bus words.
+The last instruction for this field session is **STOP**.

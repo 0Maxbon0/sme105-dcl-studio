@@ -1,0 +1,117 @@
+HELLO SME105_USB_BRIDGE_V1 protocol=1 usb_baud=115200 no_auto_tx=1
+STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 pad_rx=0 tx2_bench_used=0 tx2_bench_pass=0 read_used=0 observe_used=0 transport_lost=0 out_overflow=0 usb_skipped=0 armed=NONE fault=0
+PINS ro16=GPIO16_UART1 de18=GPIO18_RMT2..5 di17=GPIO17_UART2_TX+PAD_RX no_arbitrary_tx=1
+STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 pad_rx=0 tx2_bench_used=0 tx2_bench_pass=0 read_used=0 observe_used=0 transport_lost=0 out_overflow=0 usb_skipped=0 armed=NONE fault=0
+STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 pad_rx=0 tx2_bench_used=0 tx2_bench_pass=0 read_used=0 observe_used=0 transport_lost=0 out_overflow=0 usb_skipped=0 armed=NONE fault=0
+TX2_BENCH_REF frame=0 bytes=11 uart_baud=2400 de_low=1 external_bus_disabled=1
+TX2_BENCH_REF frame=1 bytes=11 uart_baud=2400 de_low=1 external_bus_disabled=1
+TX2_BENCH_BEGIN gpio17_pad_rx=1 de18=LOW reference_2400_frames=2 config_9600=1 source=AHB_FIFO clk_div=0x50208D uart_conf0=0x800001C
+TX2_BENCH_WORD slot=0 expected=01B0 observed=01B0 rx_count=2 rx_count_mid=1 rx_count_after=0 rx_mem_before=0x504A00 rx_mem_mid=0x504A00 rx_mem_after=0x504A08 raw_flags=0x7002 done=1 elapsed_us=2102 de_low=1 match=1
+TX2_BENCH_WORD slot=1 expected=FF5F observed=FF5F rx_count=2 rx_count_mid=1 rx_count_after=0 rx_mem_before=0x508A08 rx_mem_mid=0x508A08 rx_mem_after=0x508A10 raw_flags=0x7002 done=1 elapsed_us=2084 de_low=1 match=1
+TX2_BENCH_WORD slot=2 expected=26A4 observed=26A4 rx_count=2 rx_count_mid=1 rx_count_after=0 rx_mem_before=0x50CA10 rx_mem_mid=0x50CA10 rx_mem_after=0x50CA18 raw_flags=0x7002 done=1 elapsed_us=2084 de_low=1 match=1
+TX2_BENCH_WORD slot=3 expected=00A0 observed=00A0 rx_count=2 rx_count_mid=1 rx_count_after=0 rx_mem_before=0x510A18 rx_mem_mid=0x510A18 rx_mem_after=0x510A20 raw_flags=0x7002 done=1 elapsed_us=2084 de_low=1 match=1
+TX2_BENCH_RMT scope=GPIO17 source=RMT_COMPLETE_PACKET items=4
+TX2_BENCH_RMT_DECODE expected=01B0 match=1
+TX2_BENCH_RMT_EDGE i=0 l0=0 d0_us=104 l1=1 d1_us=105
+TX2_BENCH_RMT_EDGE i=1 l0=0 d0_us=729 l1=1 d1_us=104
+TX2_BENCH_RMT_EDGE i=2 l0=0 d0_us=521 l1=1 d1_us=208
+TX2_BENCH_RMT_EDGE i=3 l0=0 d0_us=104 l1=1 d1_us=0
+TX2_BENCH_END result=PASS_LOCAL_PAD completed=4 DE=LOW no_rmt_start=1 ecu_tx=0 no_auto_retry=1
+STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 pad_rx=0 tx2_bench_used=1 tx2_bench_pass=1 read_used=0 observe_used=0 transport_lost=0 out_overflow=0 usb_skipped=0 armed=NONE fault=0
+STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 pad_rx=0 tx2_bench_used=1 tx2_bench_pass=1 read_used=0 observe_used=0 transport_lost=0 out_overflow=0 usb_skipped=0 armed=NONE fault=0
+STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 pad_rx=0 tx2_bench_used=1 tx2_bench_pass=1 read_used=0 observe_used=0 transport_lost=0 out_overflow=0 usb_skipped=0 armed=NONE fault=0
+EVENT read_armed variant=0E valid_ms=15000 no_tx_yet=1
+STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 pad_rx=0 tx2_bench_used=1 tx2_bench_pass=1 read_used=0 observe_used=0 transport_lost=0 out_overflow=0 usb_skipped=0 armed=0E fault=0
+EVENT session=READ_CANDIDATE
+EVENT h2400_tx=ECHO_ID bytes=11 candidate=1
+EVENT h2400_tx_done=ECHO_ID
+H2400 t_ms=2796 byte=00
+H2400 t_ms=2796 byte=00
+H2400 t_ms=2796 byte=00
+H2400 t_ms=2796 byte=00
+H2400 t_ms=2796 byte=00
+H2400 t_ms=2796 byte=01
+H2400 t_ms=2796 byte=82
+H2400 t_ms=2796 byte=00
+H2400 t_ms=2796 byte=00
+H2400 t_ms=2796 byte=00
+H2400 t_ms=2796 byte=83
+H2400 t_ms=2801 byte=01
+EVENT ack=candidate_11_echo_plus_01 source=UNVERIFIED
+EVENT h2400_tx=GO_CART bytes=11 candidate=1
+EVENT cart=9600_8N1 raw_ro=1 ecu_verified=0 dtc_verified=0
+RX t_us=2911897 byte=00
+RX t_us=2912936 byte=00
+RX t_us=2914395 byte=00
+RX t_us=2915435 byte=A0
+RX t_us=2921895 byte=00
+RX t_us=2922935 byte=00
+RX t_us=2924394 byte=00
+RX t_us=2925436 byte=B1
+RX t_us=2931895 byte=00
+RX t_us=2932934 byte=00
+RX t_us=2934393 byte=00
+RX t_us=2935435 byte=82
+RX t_us=2941892 byte=00
+RX t_us=2942934 byte=00
+RX t_us=2944392 byte=00
+RX t_us=2945434 byte=93
+RX t_us=2951893 byte=00
+RX t_us=2952934 byte=00
+RX t_us=2954392 byte=00
+RX t_us=2955434 byte=E4
+RX t_us=2961893 byte=00
+RX t_us=2962933 byte=00
+RX t_us=2964392 byte=00
+RX t_us=2965434 byte=F5
+RX t_us=2971892 byte=00
+RX t_us=2972933 byte=00
+RX t_us=2974393 byte=00
+RX t_us=2975433 byte=C6
+RX t_us=2981895 byte=00
+RX t_us=2982934 byte=00
+RX t_us=2984392 byte=00
+RX t_us=2985434 byte=D7
+RX t_us=2991891 byte=00
+RX t_us=2992932 byte=00
+RX t_us=2994392 byte=00
+RX t_us=2995435 byte=28
+RX t_us=3001892 byte=00
+RX t_us=3002932 byte=00
+RX t_us=3004391 byte=00
+RX t_us=3005435 byte=39
+RX t_us=3011892 byte=00
+RX t_us=3012931 byte=00
+RX t_us=3014391 byte=00
+RX t_us=3015435 byte=0A
+RX t_us=3021890 byte=00
+RX t_us=3022931 byte=00
+RX t_us=3024391 byte=00
+RX t_us=3025435 byte=1B
+RX t_us=3031889 byte=00
+RX t_us=3032931 byte=00
+RX t_us=3034390 byte=00
+RX t_us=3035435 byte=6C
+RX t_us=3041889 byte=00
+RX t_us=3042931 byte=00
+RX t_us=3044389 byte=00
+RX t_us=3045430 byte=7D
+RX t_us=3051888 byte=00
+RX t_us=3052930 byte=00
+RX t_us=3054390 byte=00
+RX t_us=3055430 byte=4E
+RX t_us=3061890 byte=00
+RX t_us=3062931 byte=00
+RX t_us=3064388 byte=00
+RX t_us=3065429 byte=5F
+EVENT baseline=16 synced=1 authority=unverified
+RX t_us=3071890 byte=00
+RX t_us=3072931 byte=00
+RX t_us=3074388 byte=00
+RX t_us=3075429 byte=A0
+RX t_us=3076846 byte=01
+RX t_us=3077888 byte=B0
+FAULT reason=11
+TX_PAD slot=0 expected=01B0 observed=0101 tx_us=3075851 done_us=3077940 match=0
+END reason=11 ro_bytes=70 ro_lost=0 uart_errors=0 pad_verified=0 words_started=1 ecu_verified=0 dtc_verified=0 DE=LOW
+EVENT stop=idle DE=LOW

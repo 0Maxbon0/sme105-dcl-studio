@@ -1,0 +1,20 @@
+HELLO SME105_USB_BRIDGE_V1 protocol=1 usb_baud=115200 no_auto_tx=1
+STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 pad_rx=0 tx2_bench_used=0 tx2_bench_pass=0 read_used=0 observe_used=0 transport_lost=0 out_overflow=0 usb_skipped=0 armed=NONE fault=0
+PINS ro16=GPIO16_UART1 de18=GPIO18_RMT2..5 di17=GPIO17_UART2_TX+PAD_RX no_arbitrary_tx=1
+STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 pad_rx=0 tx2_bench_used=0 tx2_bench_pass=0 read_used=0 observe_used=0 transport_lost=0 out_overflow=0 usb_skipped=0 armed=NONE fault=0
+TX2_BENCH_REF frame=0 bytes=11 uart_baud=2400 de_low=1 external_bus_disabled=1
+TX2_BENCH_REF frame=1 bytes=11 uart_baud=2400 de_low=1 external_bus_disabled=1
+TX2_BENCH_BEGIN gpio17_pad_rx=1 de18=LOW reference_2400_frames=2 config_9600=1 source=AHB_FIFO clk_div=0x50208D uart_conf0=0x800001C
+TX2_BENCH_WORD slot=0 expected=01B0 observed=01B0 rx_count=2 rx_count_mid=1 rx_count_after=0 rx_mem_before=0x504A00 rx_mem_mid=0x504A00 rx_mem_after=0x504A08 raw_flags=0x7002 done=1 elapsed_us=2099 de_low=1 match=1
+TX2_BENCH_WORD slot=1 expected=FF5F observed=FF5F rx_count=2 rx_count_mid=1 rx_count_after=0 rx_mem_before=0x508A08 rx_mem_mid=0x508A08 rx_mem_after=0x508A10 raw_flags=0x7002 done=1 elapsed_us=2085 de_low=1 match=1
+TX2_BENCH_WORD slot=2 expected=26A4 observed=26A4 rx_count=2 rx_count_mid=1 rx_count_after=0 rx_mem_before=0x50CA10 rx_mem_mid=0x50CA10 rx_mem_after=0x50CA18 raw_flags=0x7002 done=1 elapsed_us=2085 de_low=1 match=1
+TX2_BENCH_WORD slot=3 expected=00A0 observed=00A0 rx_count=2 rx_count_mid=1 rx_count_after=0 rx_mem_before=0x510A18 rx_mem_mid=0x510A18 rx_mem_after=0x510A20 raw_flags=0x7002 done=1 elapsed_us=2085 de_low=1 match=1
+TX2_BENCH_RMT scope=GPIO17 source=RMT_COMPLETE_PACKET items=4
+TX2_BENCH_RMT_DECODE expected=01B0 match=1
+TX2_BENCH_RMT_EDGE i=0 l0=0 d0_us=105 l1=1 d1_us=104
+TX2_BENCH_RMT_EDGE i=1 l0=0 d0_us=729 l1=1 d1_us=104
+TX2_BENCH_RMT_EDGE i=2 l0=0 d0_us=521 l1=1 d1_us=208
+TX2_BENCH_RMT_EDGE i=3 l0=0 d0_us=104 l1=1 d1_us=0
+TX2_BENCH_END result=PASS_LOCAL_PAD completed=4 DE=LOW no_rmt_start=1 ecu_tx=0 no_auto_retry=1
+STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 pad_rx=0 tx2_bench_used=1 tx2_bench_pass=1 read_used=0 observe_used=0 transport_lost=0 out_overflow=0 usb_skipped=0 armed=NONE fault=0
+EVENT stop=idle DE=LOW
