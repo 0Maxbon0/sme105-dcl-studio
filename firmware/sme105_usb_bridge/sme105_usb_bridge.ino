@@ -1496,8 +1496,18 @@ void IRAM_ATTR uart2ISR(void*) {
       // Verify actual pad-decoded pair, not merely requested TX FIFO bytes.
       const uint32_t flags = UART2.int_raw.val;
       const uint32_t count = UART2.status.rxfifo_cnt;
-      const uint8_t b0 = count > 0 ? static_cast<uint8_t>(UART2.fifo.rw_byte) : 0;
-      const uint8_t b1 = count > 1 ? static_cast<uint8_t>(UART2.fifo.rw_byte) : 0;
+      // Do not read UART2.fifo.rw_byte twice here: the old live-path
+      // readback duplicated 0x01 as 01/01 after an actual 01/B0 RO echo.
+      // The independently witnessed DE-LOW TX2_BENCH uses APB FIFO reads
+      // and verifies that each read consumes exactly one RX entry. Match
+      // that proven register access method in the time-critical ISR.
+      const uint8_t b0 = count > 0 ?
+          static_cast<uint8_t>(READ_PERI_REG(UART_FIFO_REG(2))) : 0;
+      const uint32_t countMid = UART2.status.rxfifo_cnt;
+      __asm__ __volatile__("nop" ::: "memory");
+      const uint8_t b1 = count > 1 ?
+          static_cast<uint8_t>(READ_PERI_REG(UART_FIFO_REG(2))) : 0;
+      const uint32_t countAfter = UART2.status.rxfifo_cnt;
       padRx[index][0] = b0;
       padRx[index][1] = b1;
       txDoneUs[index] = now;
@@ -1506,7 +1516,8 @@ void IRAM_ATTR uart2ISR(void*) {
       const CmdWord expected = word(variant, index);
       // RXFIFO_TOUT (bit 8) indicates inactivity, not a UART frame error.
       // Parity, framing and overflow (bits 2..4) invalidate the pad witness.
-      if (count != 2 || (flags & ((1UL << 2) | (1UL << 3) | (1UL << 4)))) {
+      if (count != 2 || countMid != 1 || countAfter != 0 ||
+          (flags & ((1UL << 2) | (1UL << 3) | (1UL << 4)))) {
         faultISR(PAD_FRAMING);
       } else if (b0 != expected.first || b1 != expected.second) {
         faultISR(PAD_MISMATCH);

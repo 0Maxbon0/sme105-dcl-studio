@@ -73,6 +73,27 @@ class Tx2SourceTests(unittest.TestCase):
             self.assertIn(field, bench)
         self.assertIn("WRITE_PERI_REG(UART_FIFO_AHB_REG(2)", bench)
 
+    def test_live_uart2_isr_pop_matches_proven_apb_readback(self) -> None:
+        """Regression: real CART TX must not produce a false 0101 pad witness.
+
+        In the 2026-11-04 vehicle trace GPIO16 RO captured 01 B0, but
+        UART2.fifo.rw_byte read twice returned 01 01. The DE-low bench
+        correctly advances the hardware APB FIFO with READ_PERI_REG.
+        """
+        live = self.source.split("void IRAM_ATTR uart2ISR(void*) {", 1)[1].split(
+            "void IRAM_ATTR observeHeader(", 1
+        )[0]
+        self.assertEqual(live.count("READ_PERI_REG(UART_FIFO_REG(2))"), 2)
+        self.assertNotIn("static_cast<uint8_t>(UART2.fifo.rw_byte)", live)
+        self.assertIn("countMid = UART2.status.rxfifo_cnt", live)
+        self.assertIn("countAfter = UART2.status.rxfifo_cnt", live)
+        self.assertIn("countMid != 1 || countAfter != 0", live)
+        self.assertIn("faultISR(PAD_FRAMING)", live)
+        self.assertIn("faultISR(PAD_MISMATCH)", live)
+        self.assertIn("deOff();", live)
+        self.assertIn("WRITE_PERI_REG(UART_FIFO_AHB_REG(2), selected.first)", self.source)
+        self.assertIn("WRITE_PERI_REG(UART_FIFO_AHB_REG(2), selected.second)", self.source)
+
     def test_cpp_rmt_decoder_positive_and_captured_v5_negative(self) -> None:
         if not shutil.which("g++"):
             self.skipTest("g++ not available for portable pure decoder harness")

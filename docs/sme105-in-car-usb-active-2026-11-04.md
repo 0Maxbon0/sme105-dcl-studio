@@ -144,3 +144,58 @@ no critical electronics depend on ignition continuity. That physical action
 cannot be performed through this USB interface. Once quiet is established,
 re-run the ordinary single-shot status/bench/armed request without modifying
 or flashing firmware, monitor every fault and preserve END evidence.
+
+## Post-ignition-cycle one-shot B-0E attempt (2026-11-04)
+
+The owner switched ignition OFF and then back to KOEO; the green hardware
+activity LED went dark. The ESP32 remained on direct USB, no Wi-Fi.
+USB HELLO/PINS/STATUS/OTA preflight showed v9 VALID, `stage=0`,
+`DE=LOW`, `auto_tx=0`, `fault=0`. A fresh host session ran
+`TX2_BENCH` with 4/4 GPIO17 words and independent RMT proof (DE LOW),
+then `ARM_0E` and **one** `READ_0E`.
+
+The 2400-baud Echo ID handshake and candidate ACK completed; the 2400-baud
+Go CART command followed. The device captured 16 consecutive sync/ID frames
+on UART1 at 9600 baud, then entered one real CART TX slot. First command
+word was supposed to be `01 B0`. The firmware stopped immediately:
+
+```
+FAULT reason=11
+TX_PAD slot=0 expected=01B0 observed=0101 tx_us=3075851 done_us=3077940 match=0
+END reason=11 ro_bytes=70 ro_lost=0 uart_errors=0 pad_verified=0 words_started=1 ecu_verified=0 dtc_verified=0 DE=LOW
+EVENT stop=idle DE=LOW
+```
+
+`reason=11` means **PAD_MISMATCH**, not an ECU refusal or trouble code.
+The subsequent diagnostic words `FF5F / 260E / 00A0` were never sent.
+Critically, UART1 RO independently captured `t_us=3076846 byte=01` and
+`t_us=3077888 byte=B0` in that same 2089-us slot: the expected TX word
+was visible at the receiver, but the UART2 pad readback duplicated
+`01 01`. These are compatible with a pad-readback bug rather than bad
+UART2 transmission, but do **not** independently prove differential A/B
+bus voltage or ECU signal ownership.
+
+Evidence preserved with no retries:
+
+| File under `captures/SME105_97AB/` | SHA-256 |
+| --- | --- |
+| `20261104T141106825311Z-usb-bridge.txt` | `3de32fe392910e1442e1a6525a81234cecdea874e126a52ec3c89febff177845` |
+| `20261104T141106825311Z-usb-bridge.bin` | `e03980b386b3403b2a993ed4aed9b661b6db20cf866f0627bc6ce102f98ed336` |
+
+### Source-only fix (not flashed)
+
+The live `uart2ISR` previously read `UART2.fifo.rw_byte` twice, while
+the isolated `TX2_BENCH` used the hardware-verified
+`READ_PERI_REG(UART_FIFO_REG(2))` APB FIFO pop method. The source patch
+now uses the latter for both active words, requires the FIFO count to
+decrease **2 → 1 → 0**, and retains fail-closed PAD mismatch/framing
+checks. Added regression coverage in
+`tests/test_sme105_tx2_pad_source.py`. Focused tests: 4 PASS;
+whole Python suite: **242 PASS**; PlatformIO release firmware: **BUILD PASS**.
+New local (not installed) image SHA-256:
+`ca02cedc6613d7fc0e381c1a94202a6f624387557261be74fee3dce1fa0c15ca`.
+
+**Vehicle firmware remains v9**. Do not flash/retest an unqualified TX
+firmware while attached to the active ECU bus; off-vehicle differential
+A/B electrical verification, safe DE behavior, and byte-source checks
+are still necessary. Neither 26A4 nor 260E has yielded a verified DTC.
