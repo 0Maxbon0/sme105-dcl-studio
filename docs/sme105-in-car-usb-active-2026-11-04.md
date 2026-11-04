@@ -312,3 +312,23 @@ All five are valid Ford 3-digit EEC-IV codes. Codes were **not cleared**,
 no KOEO/KOER self-test or actuator command was sent. Remaining caveats:
 `26 0E` vs `26 A4` semantics (memory vs on-demand) are not authenticated;
 no second independent read has been made yet.
+
+## Independent `READ_A4` confirmation after ignition cycle (2026-11-04 ~16:43)
+
+Owner cycled ignition OFF → ON (KOEO). Fresh ESP32 boot, `TX2_BENCH`
+4/4 PASS, `ARM_A4`, one `READ_A4`. Pad-verified
+`01B0 / FF5F / 26A4 / 00A0`, `END reason=16 ro_bytes=3970 ro_lost=0
+uart_errors=0 pad_verified=4`.
+
+| File under `captures/SME105_97AB/` | SHA-256 |
+| --- | --- |
+| `20261104T144256788073Z-usb-bridge.txt` | `abd8710acddedc75f0edb70442001b50d8aee6420441a3d29770d5d6cd01a308` |
+| `20261104T144256788073Z-usb-bridge.bin` | `cdb04f5800779c74931697c505b70d6f38888e96351258fb36c44ddcfb8b0c7c` |
+
+Response is identical to `READ_0E`: same parity-valid codes in the same
+order and frames — **122, 113 (frame 0), 214, 157 (frame 1), 452
+(frame 2)** — and the same status words `26E0 FFA0 1F40 FC90 … ADD0 3810`.
+Only the response frame period differs (≈17.5 ms for A4 vs ≈42.5 ms for
+0E), consistent with the 4- vs 14-data-slot counts in the two sources.
+Two independent ignition cycles and both B variants therefore agree on the
+stored code list. Codes were not cleared.
