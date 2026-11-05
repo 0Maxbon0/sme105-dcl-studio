@@ -6,7 +6,7 @@ import { STR } from "./strings.js";
 import { createRecording, listRecordings, recordingBlob } from "./recording.js";
 import { applyStaticStrings, confirmDialog, exportCsv, exportLog, movePinnedSensor, openSensorDetails, refreshDashboardCharts, render, renderEventHistory, renderWarningHistory, setSensorChartRange, showView, toggleSensorPin } from "./ui.js";
 import { closeDiagnosticRun, diagnosticSnapshot, recentDiagnosticEvents, recordDiagnosticEvent, recordDiagnosticWarning, setDiagnosticStorageErrorHandler, startDiagnosticRun } from "./diagnostics.js";
-import { exportDiagnosticZip, exportGroupCsv, exportSensorCsv } from "./exports.js";
+import { exportDiagnosticZip, exportGroupCsv, exportSensorCsv, saveOrShare } from "./exports.js";
 import { lookupCode } from "./codes-db.js";
 import { sensorFreshnessTransitions } from "./live-dashboard.js";
 
@@ -244,10 +244,7 @@ async function downloadSaved(kind) {
     if (!id) return;
     const blob = controller.state.archive?.id === id
       ? await controller.state.archive.export(kind) : await recordingBlob(id, kind);
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `eec-iv-${id.slice(0,19).replaceAll(":", "-")}.${kind === "csv" ? "csv" : "txt"}`;
-    link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    await saveOrShare(blob, `eec-iv-${id.slice(0,19).replaceAll(":", "-")}.${kind === "csv" ? "csv" : "txt"}`);
   } catch (error) {
     document.getElementById("recording-status").textContent = `Export failed: ${error.message}`;
   }

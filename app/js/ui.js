@@ -8,6 +8,7 @@ import { STR } from "./strings.js";
 import { readingReference, VEHICLE_PROFILE } from "./reference.js";
 import { LIVE_GROUP_HELP, LIVE_GROUP_TITLES, sensorsForGroup, sensorFreshness } from "./live-dashboard.js";
 import { redactDiagnostic } from "./diagnostics.js";
+import { saveOrShare } from "./exports.js";
 
 const $ = (id) => document.getElementById(id);
 const cardNodes = new Map();
@@ -742,19 +743,11 @@ export function renderEventHistory(events) {
 
 export async function exportLog(state) {
   const blob = state.archive ? await state.archive.export("raw") : new Blob([`${state.log.map(line => redactDiagnostic(line)).join("\n")}\n`], { type: "text/plain" });
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
-  link.download = "eec-iv-session.txt";
-  link.click();
-  URL.revokeObjectURL(link.href);
+  await saveOrShare(blob, "eec-iv-session.txt");
 }
 
 export async function exportCsv(state) {
   const rows = state.combined?.rows || state.cart?.snapshot().rows || state.lastSession?.rows || [];
   const blob = state.archive ? await state.archive.export("csv") : new Blob([rowsToCsv(rows, { unitSystem: unitSystem() })], { type: "text/csv" });
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
-  link.download = "eec-iv-live.csv";
-  link.click();
-  URL.revokeObjectURL(link.href);
+  await saveOrShare(blob, "eec-iv-live.csv");
 }
