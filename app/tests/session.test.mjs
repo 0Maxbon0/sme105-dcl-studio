@@ -68,6 +68,17 @@ test("stored-code captures require mode 26H and keep raw code provenance", () =>
   }
 });
 
+test("a corrupt DTC code word is counted and makes the stored read incomplete", () => {
+  const source = capture("20261104T143804949449Z-usb-bridge.txt");
+  const corrupted = source.replace("RX t_us=2566892 byte=B1", "RX t_us=2566892 byte=B0");
+  assert.notEqual(corrupted, source, "the fixture byte mutation must match exactly once");
+  const { session, cart } = decode(corrupted);
+  assert.equal(cart.codeParityRejects, 1);
+  const verdict = sessionVerdict(session, { variant: "0E", cart });
+  assert.equal(verdict.status, "INCOMPLETE");
+  assert.ok(verdict.reasons.some((reason) => reason.includes("failed parity verification")));
+});
+
 test("DTC mode mismatch, absent target response, and incomplete self-test fail closed", () => {
   const start = feed("EVENT session=READ_CANDIDATE\nEND reason=16 ro_bytes=0 ro_lost=0 uart_errors=0 pad_verified=0 words_started=0 ecu_verified=0 dtc_verified=0 DE=LOW");
   const storedWithMode25 = sessionVerdict(start, { variant: "0E", cart: {

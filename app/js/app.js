@@ -88,6 +88,7 @@ function auditState(state) {
     dtcVerified: session.dtcVerified, selfTestComplete: session.selfTestComplete,
     codes: session.codes, blocks25: session.blocks25, blocks26: session.blocks26,
     rx: session.verdict?.end?.rx ?? null, parityRejects: session.parityRejects,
+    codeParityRejects: session.codeParityRejects,
   };
   recordDiagnosticEvent("SESSION_RESULT", evidence, "session");
   if (!session.verdict?.valid) {
@@ -493,8 +494,12 @@ function wire() {
 
 async function boot() {
   setDiagnosticStorageErrorHandler(error => {
-    controller.state.message = `Diagnostic journal write failed: ${error.message}`;
-    if (wired) render(controller.state);
+    const message = `Diagnostic journal write failed: ${error.message}`;
+    if (controller.state.op || controller.state.combined?.active) controller.failRecording(message);
+    else {
+      controller.state.message = message;
+      if (wired) render(controller.state);
+    }
   });
   try {
     await startDiagnosticRun();

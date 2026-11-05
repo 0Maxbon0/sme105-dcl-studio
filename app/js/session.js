@@ -61,6 +61,9 @@ function diagnosticModeProblems(variant, cart) {
   if (cart.codes?.some((entry) => entry.mode !== spec.expected)) {
     reasons.push(`DTC code mode does not match ${variant}`);
   }
+  if (cart.codeParityRejects > 0) {
+    reasons.push(`${cart.codeParityRejects} DTC code word(s) failed parity verification`);
+  }
   if (spec.selfTest && !cart.selfTestComplete) {
     reasons.push(`missing Frame 7 self-test complete flag for ${variant}`);
   }

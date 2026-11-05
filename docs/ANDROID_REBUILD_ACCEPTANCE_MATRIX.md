@@ -542,8 +542,8 @@ Section 4 records the initial Phase 0 findings; this ledger supersedes those his
 | Requirement ID | Current disposition |
 | :--- | :--- |
 | **REQ-ORCH-01** | Codex owns implementation on the requested review branch; implementation work is complete to the extent listed below. |
-| **REQ-ORCH-02** | Exact AGY Gemini 3.8 Flash High review tool availability is unverified; one exact-model review attempt is still required. |
-| **REQ-ORCH-03** | Pending independent AGY review and any confirmed P0/P1 repairs; no approval claimed. |
+| **REQ-ORCH-02** | Exact-model AGY review attempted twice; both failed because the tunnel client had not been seen for 300 seconds. The reviewer is unavailable in this session. |
+| **REQ-ORCH-03** | Independent AGY review unavailable; self-review found and fixed DTC parity fail-open and per-row IndexedDB write overhead. No AGY approval claimed; final independent review remains unverified. |
 | **REQ-SAFE-01** | Verified on the requested branch; current implementation commits recorded in Section 7. |
 | **REQ-SAFE-02** | Verified: preserved repository captures and all six supplied Downloads files remain unchanged. |
 | **REQ-SAFE-03** | Verified: firmware v23 source and binaries unchanged. |
@@ -555,7 +555,7 @@ Section 4 records the initial Phase 0 findings; this ledger supersedes those his
 | **REQ-PLT-01** | Vehicle-profile limits and unverified signal interpretation retained; no new generic health bands. |
 | **REQ-PLT-02** | APK includes local assets and has no INTERNET permission; installed app launched with Wi-Fi enabled. Airplane-mode test not run. |
 | **REQ-PLT-03** | Native BLE picker discovered the bridge while phone Wi-Fi remained enabled; GATT session not independently confirmed. |
-| **REQ-PLT-04** | Verified: debug APK built and installed/launched on a physical Galaxy A52s. |
+| **REQ-PLT-04** | Latest debug APK built and installed on the physical Galaxy A52s; MainActivity resumed. Existing UI screenshot is `artifacts/screenshots/android-a52s-live-360dp.png`; a fresh UI screenshot was blocked by the phone lock/notification shade. |
 | **REQ-BLE-01** | Verified: Nordic UART service/RX/TX UUIDs match the v23 bridge. |
 | **REQ-BLE-02** | Native Android BLE scan/picker ran and listed SME105-DCL; full GATT exchange not confirmed. |
 | **REQ-BLE-03** | Phone already had an OS bond; app retains explicit bond/auth path. New pairing prompt was not observed. |
@@ -617,7 +617,7 @@ Section 4 records the initial Phase 0 findings; this ledger supersedes those his
 | **REQ-DTC-01** | Implemented; capture-backed tests and mode-mismatch tests pass; see `npm test` result in Section 7. |
 | **REQ-DTC-02** | Implemented; capture-backed tests and mode-mismatch tests pass; see `npm test` result in Section 7. |
 | **REQ-DTC-03** | Implemented; capture-backed tests and mode-mismatch tests pass; see `npm test` result in Section 7. |
-| **REQ-DTC-04** | Implemented; capture-backed tests and mode-mismatch tests pass; see `npm test` result in Section 7. |
+| **REQ-DTC-04** | Verified: invalid stored-code word parity is counted and forces `INCOMPLETE`; corruption injection plus mode, count, and pad mismatch cases pass (60-test suite). |
 | **REQ-DTC-05** | Implemented; capture-backed tests and mode-mismatch tests pass; see `npm test` result in Section 7. |
 | **REQ-DTC-06** | Implemented; capture-backed tests and mode-mismatch tests pass; see `npm test` result in Section 7. |
 | **REQ-DTC-07** | Implemented; capture-backed tests and mode-mismatch tests pass; see `npm test` result in Section 7. |
@@ -629,7 +629,7 @@ Section 4 records the initial Phase 0 findings; this ledger supersedes those his
 | **REQ-LOG-05** | Verified: replay ZIP contains 3,717 CSV sensor sample rows with PID, raw/scaled values, time, unit, and set. |
 | **REQ-LOG-06** | Verified by automated recovery test: an unclosed run becomes INCOMPLETE on next launch. |
 | **REQ-LOG-07** | Global JS error/rejection listeners write journal entries; native crash breadcrumbs are not provided/verified. |
-| **REQ-LOG-08** | Verified: recording blocks below 1 GB estimated free quota; write-failure and retained-queue tests pass. Diagnostic-store rotation is absent. |
+| **REQ-LOG-08** | Recording blocks below 1 GB estimated free quota. Diagnostic writes batch in IndexedDB; journal storage failure retains pending evidence in the export snapshot, marks it incomplete, and stops active capture. Diagnostic-store rotation is absent. |
 | **REQ-LOG-09** | Implemented: persistent warning panel, severity/sensor/date filters, evidence/source fields; DTC and session warning paths present. |
 | **REQ-LOG-10** | Verified: redaction unit test passes; no secret is emitted in the exported replay journal. |
 | **REQ-EXP-01** | Verified in browser: one-tap ZIP downloaded after internal integrity check; Android share-sheet behavior not verified. |
@@ -638,16 +638,16 @@ Section 4 records the initial Phase 0 findings; this ledger supersedes those his
 | **REQ-EXP-04** | Verified: all 27 ZIP file checksums matched the SHA-256 manifest. |
 | **REQ-EXP-05** | Implemented: per-sensor/group CSV export and per-sensor ZIP members; Android share sheet/device persistence not tested. |
 | **REQ-EXP-06** | Verified in app/README: Chrome PWA storage is separate; explicit export-before-removal guidance is present. |
-| **REQ-TEST-01** | Verified: `npm test` — 57 passed, 0 failed, 0 skipped. |
+| **REQ-TEST-01** | Verified after final fixes: `npm test` — 60 passed, 0 failed, 0 skipped. |
 | **REQ-TEST-02** | Verified: hostile 25H/26H mismatch and incomplete response tests pass. |
-| **REQ-TEST-03** | Verified: checked-in stored-code, KOEO, LIVE off/on, and ALL capture fixtures pass. Supplied files were inspected/replayed as described in Section 7. |
+| **REQ-TEST-03** | Verified: checked-in stored-code, KOEO, LIVE off/on, and ALL capture fixtures pass. Supplied session/CSV files were parsed and replayed/shape-checked as described in Section 7 and were not modified. |
 | **REQ-TEST-04** | Verified: simulated 3-hour decode crosses two uint32 clock wraps with bounded sample history. |
 | **REQ-TEST-05** | Verified: fragmented input line/chunk tests pass. |
 | **REQ-TEST-06** | Verified: privacy-redaction tests pass. |
 | **REQ-TEST-07** | Verified: no horizontal overflow at 360, 412, and 768 CSS px; screenshots saved in `artifacts/screenshots/`. |
-| **REQ-TEST-08** | Verified: Gradle debug APK build succeeded; physical ADB install and app launch succeeded. |
+| **REQ-TEST-08** | Verified: latest Gradle debug APK build succeeded and was installed with ADB; MainActivity resumed on the Galaxy A52s. Full native GATT workflow remains unverified. |
 | **REQ-TEST-09** | Intentionally not produced: owner signing credentials were not supplied; debug APK only. |
-| **REQ-PHYS-01** | Verified: APK installed/launched on Samsung Galaxy A52s (Android 14). |
+| **REQ-PHYS-01** | Latest debug APK installed on Samsung Galaxy A52s (Android 14); ADB confirmed MainActivity resumed. Phone UI remained at its lock/notification shade during the latest screenshot attempt. |
 | **REQ-PHYS-02** | Partial: picker found bridge and phone already had an OS bond; app GATT/authentication transaction not confirmed. |
 | **REQ-PHYS-03** | Not performed: no ECU command or vehicle test; remains unverified. |
 | **REQ-PHYS-04** | Not performed: no physical 0E/A4 read; remains unverified. |
@@ -659,7 +659,7 @@ Section 4 records the initial Phase 0 findings; this ledger supersedes those his
 | **REQ-SENSOR-03** | Verified: ALL map exposes 39 channels and hidden automatic PIDs remain in decoder/export paths. |
 | **REQ-WARN-01** | Partial: warnings carry rule/source/reason/evidence and sensor context; confidence/applicability schema is not uniform for every status. |
 | **REQ-LOG-11** | Partial: required main app/session fields are present; native permission outcomes and firmware-build provenance are incomplete. |
-| **REQ-LOG-12** | Verified in test: each event/raw/sample write persists incrementally and prior unclosed runs are flagged on startup. |
+| **REQ-LOG-12** | Verified: event/raw/sample writes are batched into one IndexedDB transaction for a 120-row burst; a simulated write failure retains queued evidence and marks the journal incomplete; unclosed runs are flagged on startup. |
 | **REQ-LOG-13** | Not met: no retention/rotation or owner-controlled export-before-cleanup workflow for diagnostic journal data. |
 | **REQ-EXPORT-01** | Verified for browser replay: archive includes required provenance and files; native sharing and Android permissions remain unverified. |
 | **REQ-EXPORT-02** | Implemented in source: recording, group, and sensor CSV paths; native share and detailed report presentation not verified. |
@@ -671,10 +671,10 @@ Section 4 records the initial Phase 0 findings; this ledger supersedes those his
 ### Current build and test evidence
 
 - Branch: `fix/live-rx-silence-evidence-20261105`; implementation commits and final working-tree state are listed in the completion report.
-- `npm test`: 57 passed, 0 failed, 0 skipped.
-- Android debug build: `BUILD SUCCESSFUL`; APK installed/launched on Galaxy A52s; package has no `INTERNET` permission.
+- `npm test`: 60 passed, 0 failed, 0 skipped (including parity-corruption fail-closed and diagnostic batching/storage-failure tests).
+- Latest Android debug build: `BUILD SUCCESSFUL`; APK at `android/app/build/outputs/apk/debug/app-debug.apk`, SHA-256 `51b2debf06440f14e3a6517e1f78ed27c1981a6aa1856dfbed34610d8f28c5e7`; installed over USB on Galaxy A52s; ADB confirmed MainActivity resumed. Manifest has no `INTERNET` permission. The current phone screen was locked/covered by the notification shade during screenshot capture, so no fresh screenshot of this APK is claimed.
 - Browser replay: supplied session capture reached `VALID`; captured live replay had 3,717 rows; ZIP contained 29,569 raw lines and 27 checksum entries, with 0 hash mismatches. No `APP_STATE_WARNING` was emitted for normal `CAPTURE_TIMEOUT`.
 - Owner-supplied `/home/maxim/Downloads/eec-iv-session (2).txt` replayed as valid mode-25 KOEO evidence. Supplied CSVs `(3)`–`(7)` parsed as numeric captures: `(3)` 2,857 rows/15 PIDs, `(4)` 8,768/39, `(5)` 12,501/39, `(6)` 2,649/15, `(7)` 4,178/15. These CSVs were inspected for parse/shape only, not injected into the native app.
 - Responsive checks: 360, 412, and 768 CSS-pixel layouts had equal viewport/document widths; screenshots are in `artifacts/screenshots/`.
 - No ECU command, code clear, firmware write, flash, or destructive operation was sent or performed.
-- AGY Gemini 3.8 Flash High review outcome and final re-review must be recorded before any acceptance claim.
+- AGY Gemini 3.8 Flash High exact-model review was attempted twice and both calls failed with `Tunnel-client has not been seen for 300 seconds`; independent review and final re-review are unavailable. The owner performed a read-only adversarial self-review and repaired its two confirmed P1 findings. No AGY approval or full acceptance claim is made.

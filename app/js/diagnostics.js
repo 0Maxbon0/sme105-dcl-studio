@@ -4,12 +4,20 @@ import { PIDS } from "./pids.js";
 
 const DB_NAME = "sme105-diagnostics";
 const DB_VERSION = 1;
+const WRITE_BATCH_SIZE = 128;
+const MAX_PENDING_WRITES = 4096;
+const WRITE_FLUSH_MS = 80;
 let database;
 let run = null;
 let sequence = 0;
-let writeChain = Promise.resolve();
+let pendingWrites = [];
+let flushTimer = null;
+let flushTask = null;
+let storageError = null;
 let onStorageError = () => {};
 const openedAt = globalThis.performance?.now?.() ?? Date.now();
+const unsaved = { events: [], raw: [], samples: [], warnings: [] };
+const PID_BY_NAME = new Map(Object.entries(PIDS).map(([pid, definition]) => [definition[0], pid]));
 
 export function redactDiagnostic(value, key = "") {
   if (/passkey|pairing.?code|pin.?code/i.test(key)) return "[REDACTED_PASSKEY]";
@@ -73,13 +81,85 @@ function common() {
 
 export function setDiagnosticStorageErrorHandler(handler = () => {}) { onStorageError = handler; }
 
-function enqueue(work) {
-  const result = writeChain.then(work);
-  writeChain = result.catch(error => { onStorageError(error); return false; });
-  return writeChain;
+function retainUnsaved(operation) {
+  for (const [store, values] of Object.entries(operation.fallback || {})) unsaved[store].push(...values);
+}
+
+function stopQueue(error, current = []) {
+  if (!storageError) {
+    storageError = error;
+    onStorageError(error);
+  }
+  for (const operation of [...current, ...pendingWrites]) {
+    retainUnsaved(operation);
+    operation.resolve?.(false);
+  }
+  pendingWrites = [];
+}
+
+function queueOperation(operation) {
+  if (!run || storageError) return Promise.resolve(false);
+  const result = new Promise(resolve => { operation.resolve = resolve; });
+  if (pendingWrites.length >= MAX_PENDING_WRITES) {
+    stopQueue(new Error(`Diagnostic journal backlog reached ${MAX_PENDING_WRITES} writes; capture stopped to protect readings.`), [operation]);
+    return result;
+  }
+  pendingWrites.push(operation);
+  if (pendingWrites.length >= WRITE_BATCH_SIZE) void flushDiagnosticQueue();
+  else if (!flushTimer) flushTimer = setTimeout(() => { flushTimer = null; void flushDiagnosticQueue(); }, WRITE_FLUSH_MS);
+  return result;
+}
+
+async function processWrites(batch) {
+  for (let index = 0; index < batch.length && !storageError;) {
+    const operation = batch[index];
+    if (!operation.stores) {
+      try { operation.resolve(await operation.run()); }
+      catch (error) { stopQueue(error, batch.slice(index)); return false; }
+      index += 1;
+      continue;
+    }
+
+    let end = index + 1;
+    const stores = new Set(operation.stores);
+    while (end < batch.length && batch[end].stores && end - index < WRITE_BATCH_SIZE) {
+      for (const store of batch[end].stores) stores.add(store);
+      end += 1;
+    }
+    const group = batch.slice(index, end);
+    try {
+      const transaction = (await db()).transaction([...stores], "readwrite");
+      for (const item of group) item.write(transaction);
+      await done(transaction);
+      group.forEach(item => item.resolve(true));
+    } catch (error) {
+      stopQueue(error, batch.slice(index));
+      return false;
+    }
+    index = end;
+  }
+  return !storageError;
+}
+
+function flushDiagnosticQueue() {
+  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+  if (flushTask) return flushTask;
+  if (!pendingWrites.length) return Promise.resolve(!storageError);
+  flushTask = (async () => {
+    while (pendingWrites.length && !storageError) {
+      const batch = pendingWrites.splice(0);
+      if (!await processWrites(batch)) break;
+    }
+    return !storageError;
+  })().finally(() => {
+    flushTask = null;
+    if (pendingWrites.length && !storageError) void flushDiagnosticQueue();
+  });
+  return flushTask;
 }
 
 export async function startDiagnosticRun() {
+  await flushDiagnosticQueue();
   const database = await db();
   const prior = await new Promise((resolve, reject) => {
     const request = database.transaction("runs").objectStore("runs").getAll();
@@ -96,6 +176,8 @@ export async function startDiagnosticRun() {
   }
   run = { id: crypto.randomUUID(), startedAt: Date.now(), closedAt: null, status: "OPEN", appBuild: APP_VERSION };
   sequence = 0;
+  storageError = null;
+  unsaved.events.length = unsaved.raw.length = unsaved.samples.length = unsaved.warnings.length = 0;
   const transaction = database.transaction("runs", "readwrite");
   transaction.objectStore("runs").add(run);
   await done(transaction);
@@ -105,49 +187,41 @@ export async function startDiagnosticRun() {
 
 export function recordDiagnosticEvent(type, detail = {}, category = "app") {
   if (!run) return Promise.resolve(false);
-  return enqueue(async () => {
-    const record = { ...common(), sequence: ++sequence, category, type, detail: redactDiagnostic(detail) };
-    const transaction = (await db()).transaction("events", "readwrite");
-    transaction.objectStore("events").add(record);
-    await done(transaction);
-    return record;
-  });
+  const record = { ...common(), sequence: ++sequence, category, type, detail: redactDiagnostic(detail) };
+  return queueOperation({ stores: ["events"], fallback: { events: [record] },
+    write(transaction) { transaction.objectStore("events").add(record); } });
 }
 
 export function recordBridgeRaw(line) {
   if (!run) return Promise.resolve(false);
-  return enqueue(async () => {
-    const database = await db();
-    const stamp = common();
-    const safeLine = redactDiagnostic(String(line));
-    const transaction = database.transaction(["raw", "events"], "readwrite");
-    transaction.objectStore("raw").add({ ...stamp, line: safeLine });
-    transaction.objectStore("events").add({ ...stamp, sequence: ++sequence, category: "bridge", type: "BRIDGE_RX", detail: { line: safeLine } });
-    await done(transaction);
-    return true;
-  });
+  const value = { ...common(), line: redactDiagnostic(String(line)) };
+  return queueOperation({ stores: ["raw"], fallback: { raw: [value] },
+    write(transaction) { transaction.objectStore("raw").add(value); } });
 }
 
 export function recordDiagnosticSample(sample, context = {}) {
   if (!run) return Promise.resolve(false);
-  return enqueue(async () => {
-    const pid = Object.entries(PIDS).find(([, definition]) => definition[0] === sample.name)?.[0];
-    const value = { ...common(), pid: pid ? `0x${Number(pid).toString(16).padStart(2, "0").toUpperCase()}` : "",
-      name: sample.name, variant: context.variant || "", t_s: sample.t, raw: sample.raw, value: sample.value, unit: sample.unit,
-      receivedAt: sample.receivedAt ?? Date.now(), validity: "received", timeBasis: "ECU-relative" };
-    const database = await db();
-    const transaction = database.transaction("samples", "readwrite");
-    transaction.objectStore("samples").add(value);
-    await done(transaction);
-    return true;
-  });
+  const pid = PID_BY_NAME.get(sample.name);
+  const value = { ...common(), pid: pid ? `0x${Number(pid).toString(16).padStart(2, "0").toUpperCase()}` : "",
+    name: sample.name, variant: context.variant || "", t_s: sample.t, raw: sample.raw, value: sample.value, unit: sample.unit,
+    receivedAt: sample.receivedAt ?? Date.now(), validity: "received", timeBasis: "ECU-relative" };
+  return queueOperation({ stores: ["samples"], fallback: { samples: [value] },
+    write(transaction) { transaction.objectStore("samples").add(value); } });
 }
 
 export async function recordDiagnosticWarning(key, active, warning) {
   if (!run) return false;
-  return enqueue(async () => {
+  const eventSequence = ++sequence;
+  const stamp = common();
+  const event = { ...stamp, sequence: eventSequence, category: "warning",
+    type: active ? "WARNING_TRIGGERED" : "WARNING_RESOLVED", detail: { key, active,
+      severity: warning?.severity || "", sensor: warning?.sensor || "", ruleId: warning?.ruleId || "",
+      reason: redactDiagnostic(warning?.reason || ""), source: redactDiagnostic(warning?.source || ""),
+      evidence: redactDiagnostic(warning?.evidence || {}) } };
+  return queueOperation({ fallback: { events: [event] }, run: async () => {
     const database = await db();
     const transaction = database.transaction(["events", "warnings"], "readwrite");
+    const completed = done(transaction);
     const warnings = transaction.objectStore("warnings");
     const matches = await new Promise((resolve, reject) => {
       const request = warnings.index("key").getAll(key);
@@ -155,27 +229,26 @@ export async function recordDiagnosticWarning(key, active, warning) {
       request.onerror = () => reject(request.error);
     });
     const previous = matches.find(item => item.active) || null;
-    if (active && previous) { await done(transaction); return previous; }
-    if (!active && !previous) { await done(transaction); return null; }
-    const stamp = common();
+    if (active && previous) { await completed; return previous; }
+    if (!active && !previous) { await completed; return null; }
+    const writeStamp = common();
     const item = active
-      ? { id: `${run.id}:${key}:${stamp.monotonic_us}`, ...stamp, triggeredRunId: run.id, key, active,
+      ? { id: `${run.id}:${key}:${writeStamp.monotonic_us}`, ...writeStamp, triggeredRunId: run.id, key, active,
         severity: warning.severity, sensor: warning.sensor || "", ruleId: warning.ruleId || "",
         reason: redactDiagnostic(warning.reason || ""), source: redactDiagnostic(warning.source || ""),
-        evidence: redactDiagnostic(warning.evidence || {}), triggeredAt: stamp.utc, resolvedAt: null }
-      : { ...previous, ...stamp, runId: run.id, resolvedRunId: run.id, active: false, resolvedAt: stamp.utc };
+        evidence: redactDiagnostic(warning.evidence || {}), triggeredAt: writeStamp.utc, resolvedAt: null }
+      : { ...previous, ...writeStamp, runId: run.id, resolvedRunId: run.id, active: false, resolvedAt: writeStamp.utc };
     warnings.put(item);
-    transaction.objectStore("events").add({ ...stamp, sequence: ++sequence, category: "warning",
-      type: active ? "WARNING_TRIGGERED" : "WARNING_RESOLVED", detail: item });
-    await done(transaction);
+    transaction.objectStore("events").add({ ...event, detail: item });
+    await completed;
     return item;
-  });
+  } });
 }
 
 export async function closeDiagnosticRun(reason = "pagehide") {
   if (!run || run.closedAt) return;
   await recordDiagnosticEvent("SESSION_CLOSE", { reason }, "lifecycle");
-  await writeChain;
+  await flushDiagnosticQueue();
   const closed = { ...run, closedAt: Date.now(), status: "CLOSED" };
   const transaction = (await db()).transaction("runs", "readwrite");
   transaction.objectStore("runs").put(closed);
@@ -193,6 +266,7 @@ async function byRun(store, runId) {
 }
 
 export async function diagnosticSnapshot() {
+  await flushDiagnosticQueue();
   const database = await db();
   const readAll = store => new Promise((resolve, reject) => {
     const request = database.transaction(store).objectStore(store).getAll();
@@ -202,13 +276,17 @@ export async function diagnosticSnapshot() {
   const [runs, warnings, events, raw, samples] = await Promise.all([
     readAll("runs"), readAll("warnings"), readAll("events"), readAll("raw"), readAll("samples"),
   ]);
-  return { run, runs, warnings: warnings.sort((a,b) => b.triggeredAt.localeCompare(a.triggeredAt)),
-    events: events.sort((a,b) => a.id - b.id), raw, samples };
+  return { run, runs, warnings: [...warnings, ...unsaved.warnings].sort((a,b) => (b.triggeredAt || "").localeCompare(a.triggeredAt || "")),
+    events: [...events, ...unsaved.events].sort((a,b) => (a.id || Number.MAX_SAFE_INTEGER) - (b.id || Number.MAX_SAFE_INTEGER) || (a.sequence || 0) - (b.sequence || 0)),
+    raw: [...raw, ...unsaved.raw], samples: [...samples, ...unsaved.samples],
+    storage: { complete: !storageError && pendingWrites.length === 0, error: storageError?.message || "",
+      pendingWrites: pendingWrites.length, unsaved: Object.fromEntries(Object.entries(unsaved).map(([key, values]) => [key, values.length])) } };
 }
 
 export async function recentDiagnosticEvents(limit = 100) {
+  await flushDiagnosticQueue();
   const database = await db();
-  return new Promise((resolve, reject) => {
+  const persisted = await new Promise((resolve, reject) => {
     const rows = [];
     const request = database.transaction("events").objectStore("events").openCursor(null, "prev");
     request.onsuccess = () => {
@@ -218,6 +296,8 @@ export async function recentDiagnosticEvents(limit = 100) {
     };
     request.onerror = () => reject(request.error);
   });
+  return [...persisted, ...unsaved.events].sort((a, b) =>
+    (b.utc || "").localeCompare(a.utc || "") || (b.sequence || 0) - (a.sequence || 0)).slice(0, limit);
 }
 
 export function currentDiagnosticRun() { return run; }

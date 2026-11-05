@@ -28,6 +28,7 @@ export function createCartDecoder(pidSet = null, { onSample = null, historyLimit
     t0: null,
     codes: [],
     codeSeen: new Set(),
+    codeParityRejects: 0,
     rom: null,
     frame7First: null,
     frame7Last: null,
@@ -87,7 +88,10 @@ export function createCartDecoder(pidSet = null, { onSample = null, historyLimit
       for (const slot of slots) {
         if (slot < 3) continue;
         const [b0, b1] = fr.slots[slot];
-        if (!parityOk(b0, b1)) continue;
+        if (!parityOk(b0, b1)) {
+          dec.codeParityRejects += 1;
+          continue;
+        }
         const code = formatCode(wordData(b0, b1));
         if (dec.codeSeen.has(code)) continue;
         dec.codeSeen.add(code);

@@ -101,6 +101,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       bridgeBlocks: state.op?.session?.bridgeBlocks ?? null,
       offlineQuietUs: state.op?.session?.offlineQuietUs ?? null,
       parityRejects: snap?.parityRejects || 0,
+      codeParityRejects: snap?.codeParityRejects || 0,
     };
   }
 

@@ -76,6 +76,7 @@ export async function exportDiagnosticZip({ activeArchive = null, unitSystem = "
       schema: "sme105-diagnostic-zip/v1", createdUtc: new Date().toISOString(), appBuild: snapshot.run?.appBuild || "unknown",
       currentRun: snapshot.run, runs: snapshot.runs, recordings,
       captureCount: recordings.length, sensorSampleCount: snapshot.samples.length, rawLineCount: snapshot.raw.length,
+      journalStorage: snapshot.storage,
       sources: ["SME105 real USB captures in captures/SME105_97AB", "Ford Escort 1.6 Zetec reference notes in docs/sensor-reference-verification-2026-11-05.md"],
       testContext: "Offline local export. Sensor rows preserve ECU-relative and receive timestamps, raw value, scaled value, PID, set, and validity.",
       sha256Manifest: "sha256-manifest.txt covers every file except itself.",
