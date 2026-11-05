@@ -96,7 +96,7 @@ constexpr uint32_t kOtaCurrentVersion = 1;
 // still be able to boot PENDING_VERIFY from an older accepted version and
 // prove their manifest before promoting ota_ver. On a VALID app with NO pending
 // ledger, a supervised physical USB flash may adopt this build baseline.
-constexpr uint32_t kUsbInstalledBuildVersion = 21;
+constexpr uint32_t kUsbInstalledBuildVersion = 22;
 constexpr size_t kOtaAppSlotMax = 0x140000; // default 4MB ESP32 OTA partition table
 constexpr char kOtaPublisherPublicPEM[] =
   "-----BEGIN PUBLIC KEY-----\n"

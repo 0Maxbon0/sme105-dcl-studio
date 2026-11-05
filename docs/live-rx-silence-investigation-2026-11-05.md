@@ -57,3 +57,45 @@ capture **receive-only** UART1 activity and an independent RX/RO electrical
 waveform during a stop, with the ECU safely stationary, to distinguish a
 vehicle protocol interruption from a receive-path problem. Any subsequent
 vehicle-side activity requires its own controlled authorization and evidence.
+
+## Authorized USB-only v22 installation (2026-11-05)
+
+The owner explicitly authorized flashing the connected USB ESP32 and reported
+that it was safe to flash. Installed-build number advanced from 21 to **22**;
+`kOtaCurrentVersion` was not raised. The work used the isolated review branch,
+not `main`.
+
+- Preflight direct CP2102 USB `HELLO/PINS/STATUS/OTA_STATUS`: fw21,
+  `stage=0 DE=LOW auto_tx=0 fault=0`, `running=app0 boot=app0`, and
+  `accepted_version=21 boot_health=VALID confirm_required=0`.
+- Built `esp32dev_ble` with PlatformIO Core 6.2.0, `espressif32@6.12.0` and
+  NimBLE 1.4.3: **SUCCESS**. Application size **1,085,312 bytes** within
+  the app0 partition (1,310,720 bytes); firmware image SHA256
+  `1201444e541f17d8313116a19d713c004559f3c8fa08f0b2c08802e76d5c9276`.
+  ESP32 image checksum and SHA validation passed.
+- Prior to writing, read private backups outside Git with mode 0600:
+  `0x00000..0x0ffff` (65,536 bytes) SHA256
+  `d7e63b9418ed85357dfa8c45008e7f73ff550e73e91d2e540af54e2bb8a22927`;
+  full `app0` `0x10000..0x14ffff` (1,310,720 bytes) SHA256
+  `56c0e62dc253f6b7aa5bf593d7140e7685e8b3fe6a32d8fdab58172ab8c05f76`.
+  Its prefix exactly matched the archived verified v21 image.
+- Live partition table independently confirmed NVS `0x9000`, otadata
+  `0xe000`, app0 `0x10000` size `0x140000`, app1 `0x150000` size `0x140000`.
+- Wrote **only** `app0` at `0x10000` with esptool at 115200 baud; 1,085,312
+  bytes written, **Hash of data verified**, hard reset. No bootloader,
+  partition table, NVS, otadata, or app1 image was directly flashed.
+- Read the 64-KB boot/settings region again: bootloader + partition table
+  (`0x0..0x8fff`) and otadata (`0xe000..0xffff`) byte-identical. NVS changed
+  naturally after fw22 accepted-version adoption; preflash private backup
+  retained.
+- Postflash `HELLO/PINS/STATUS/OTA_STATUS`: **fw22**, `stage=0 DE=LOW
+  auto_tx=0 gate4=1 fault=0`, `running=app0 boot=app0`,
+  `accepted_version=22 boot_health=VALID confirm_required=0`.
+- A DE-LOW, **no-ECU-TX** local `TX2_BENCH` passed all four GPIO17 pad
+  words and independent RMT witness: `result=PASS_LOCAL_PAD completed=4
+  DE=LOW ... ecu_tx=0`. Final status stayed idle, `DE=LOW`, `fault=0`,
+  `tx2_bench_pass=1`, no active read or OBSERVE request.
+
+No vehicle diagnostic command was sent as part of the flash/bench procedure.
+The v22 flash confirms installation and local health only; it **does not
+demonstrate that a live-data RX blackout has been repaired**.
