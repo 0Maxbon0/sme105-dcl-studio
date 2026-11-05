@@ -118,13 +118,19 @@ test("ALL sends one read, never rotates, and requires map plus all-channel evide
   }
 });
 
-test("each live selector has its own expandable description", async () => {
+test("the Live overview labels the four exact request scopes and six reading groups", async () => {
   const html = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
-  const { STR } = await import("../js/strings.js");
-  for (const [id,key] of [["all-live","liveAllHelp"],["live","liveEngineHelp"],["live2","liveFlagsHelp"],["live3","liveExtraHelp"]]) {
-    assert.match(html, new RegExp(`id="set-${id}"[^]*?</label>\\s*<details class="set-description">[^]*?data-str="${key}"`));
-    assert.ok(STR[key].length > 200);
-  }
+  const { LIVE_GROUP_TITLES } = await import("../js/live-dashboard.js");
+  const nav = html.match(/<nav>([^]*?)<\/nav>/)?.[1] || "";
+  assert.equal((nav.match(/data-view=/g) || []).length, 4);
+  assert.match(nav, /data-view="live" aria-current="page"/);
+  assert.match(html, /id="live-set"/);
+  assert.match(html, /value="LIVE">Quick LIVE/);
+  assert.match(html, /value="LIVE2"/);
+  assert.match(html, /value="LIVE3"/);
+  assert.match(html, /value="ALL"/);
+  assert.match(html, /<option value="advanced">Advanced · all 39<\/option>/);
+  assert.equal(Object.keys(LIVE_GROUP_TITLES).length, 6);
 });
 
 test("three hours of continuous decoding crosses two clock wraps with bounded history", () => {

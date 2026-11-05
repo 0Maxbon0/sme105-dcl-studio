@@ -1,5 +1,6 @@
 /** Chunked on-device recordings: retain every raw line and CSV row outside RAM. */
 import { rowsToCsv } from "./pids.js";
+import { redactDiagnostic } from "./diagnostics.js";
 
 const HEADER = rowsToCsv([]);
 let database;
@@ -44,7 +45,7 @@ export async function recordingBlob(id, kind, extras = []) {
   return new Blob([...parts, ...extras], { type: kind === "csv" ? "text/csv" : "text/plain" });
 }
 
-export async function createRecording(variant, onError = () => {}) {
+export async function createRecording(variant, onError = () => {}, unitSystem = "metric") {
   const database = await db();
   const estimate = await navigator.storage?.estimate?.();
   if (estimate && estimate.quota - estimate.usage < 1024 ** 3) {
@@ -53,7 +54,7 @@ export async function createRecording(variant, onError = () => {}) {
   // The browser decides whether persistence can be granted. No data is deleted.
   const persistent = await navigator.storage?.persist?.().catch(() => false) || false;
   const id = new Date().toISOString() + "-" + crypto.randomUUID();
-  const metadata = { id, variant, persistent, started: Date.now() };
+  const metadata = { id, variant, persistent, unitSystem, started: Date.now() };
   await new Promise((resolve, reject) => {
     const transaction = database.transaction("captures", "readwrite");
     transaction.objectStore("captures").add(metadata);
@@ -101,9 +102,12 @@ export async function createRecording(variant, onError = () => {}) {
   return {
     ...metadata,
     get error() { return failure?.message || ""; },
-    line(line) { raw.push(line + "\n"); checkBacklog(line.length + 1); },
+    line(line) {
+      const safeLine = redactDiagnostic(line);
+      raw.push(safeLine + "\n"); checkBacklog(safeLine.length + 1);
+    },
     sample(sample) {
-      const line = rowsToCsv([sample]).slice(HEADER.length);
+      const line = rowsToCsv([sample], { unitSystem }).slice(HEADER.length);
       csv.push(line); checkBacklog(line.length);
     },
     async finish(verdict) {

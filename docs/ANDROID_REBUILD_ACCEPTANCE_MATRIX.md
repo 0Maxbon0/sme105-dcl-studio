@@ -1,6 +1,6 @@
 # SME105 DCL Studio — Android Rebuild Acceptance Matrix
 
-**Document Version:** 1.0.0-PROPOSED (Phase 0 Baseline & Requirements Mapping)
+**Document Version:** 1.1.0 (Phase 0 baseline plus current verification ledger)
 **Date:** 2026-11-05
 **Target Vehicle:** 1998 Ford Escort 1.6 Zetec SME-105 (Catch Code `97AB-12A650-KA`), Manual Transmission
 **Repository:** `0Maxbon0/sme105-dcl-studio` (`/home/maxim/maximizotech/sme105-fw-review-FORupdGL`)
@@ -8,8 +8,7 @@
 **Sensor Reference Standard:** `docs/sensor-reference-verification-2026-11-05.md`
 **Governing Roles:**
 - **Lead Architect & Implementation Owner:** Codex GPT-6 Luna (MAX Reasoning)
-- **Planning & Verification Assistant (This Session):** AGY Gemini 3.8 Flash High
-- **Final Independent Reviewer:** Independent future review session
+- **Independent Reviewer:** AGY Gemini 3.8 Flash High requested; availability/review result recorded in Section 7. No approval is claimed.
 
 ---
 
@@ -273,7 +272,7 @@ flowchart LR
 ## 4. Comprehensive Requirement Acceptance Matrix
 
 ### Group 1: Orchestration, Governance & Safety Boundaries
-| Req ID | Requirement Obligation & Exact Acceptance Condition | Current State | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
+| Req ID | Requirement Obligation & Exact Acceptance Condition | Initial Phase 0 State (historical) | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
 | :--- | :--- | :--- | :--- | :---: | :--- |
 | **REQ-ORCH-01** | **Orchestration Roles:** Codex GPT-6 Luna in MAX reasoning is Lead Architect and Implementer. AGY Gemini 3.8 Flash High is Planning/QA reviewer. | Verified | Master spec `/home/maxim/maximizotech/.agent-prompts/...` | Phase 0 | Inspect session logs and commit metadata. Pass condition: Luna owns implementation; AGY reviews. |
 | **REQ-ORCH-02** | **No Silent Downgrade:** If required models or tools are unavailable, declare verified blocker; do not silently downgrade or simulate completion. | Verified | Environment inspection | Phase 0 | Check execution logs for explicit blocker declaration if tooling missing. |
@@ -290,7 +289,7 @@ flowchart LR
 ---
 
 ### Group 2: Target Platform, Offline Operation & Packaging
-| Req ID | Requirement Obligation & Exact Acceptance Condition | Current State | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
+| Req ID | Requirement Obligation & Exact Acceptance Condition | Initial Phase 0 State (historical) | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
 | :--- | :--- | :--- | :--- | :---: | :--- |
 | **REQ-PLT-01** | **Target Vehicle Calibration Profile:** Calibrated specifically for 1998 Ford Escort 1.6 Zetec SME105 manual (catch code `97AB-12A650-KA`). | Verified | `docs/sensor-reference-verification-2026-11-05.md` | Phase 2 | Inspect profile settings and sensor bounds. Pass condition: limits adhere strictly to documented 1.6 specs. |
 | **REQ-PLT-02** | **100% Offline Execution:** Application boots, renders, logs, and operates with zero network connectivity and no remote requests. | Known Defect (PWA SW relies on browser cache) | `app/sw.js`, `manifest.webmanifest` | Phase 4 | Run in airplane mode with Wi-Fi/cellular off. Pass condition: full app functionality available offline. |
@@ -300,7 +299,7 @@ flowchart LR
 ---
 
 ### Group 3: Native Bluetooth LE, Authentication & Lifecycle
-| Req ID | Requirement Obligation & Exact Acceptance Condition | Current State | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
+| Req ID | Requirement Obligation & Exact Acceptance Condition | Initial Phase 0 State (historical) | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
 | :--- | :--- | :--- | :--- | :---: | :--- |
 | **REQ-BLE-01** | **Nordic UART Service UUIDs:** Must target Service `6e400001-...`, RX `6e400002-...` (write), and TX `6e400003-...` (notify). | Verified | `app/js/protocol.js:5-7` | Phase 4 | Inspect BLE transport configuration. Pass condition: exact UUID constants match Nordic UART specification. |
 | **REQ-BLE-02** | **Capacitor Native BLE Bridge:** Replace Web Bluetooth with maintained Capacitor native BLE plugin (pinned stable version). | Missing (currently Web Bluetooth) | `app/js/ble.js:6` | Phase 4 | Audit package dependencies and wrapper code. Pass condition: plugin calls native Android Bluetooth APIs. |
@@ -315,7 +314,7 @@ flowchart LR
 ---
 
 ### Group 4: Navigation, Layout & Information Architecture
-| Req ID | Requirement Obligation & Exact Acceptance Condition | Current State | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
+| Req ID | Requirement Obligation & Exact Acceptance Condition | Initial Phase 0 State (historical) | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
 | :--- | :--- | :--- | :--- | :---: | :--- |
 | **REQ-NAV-01** | **Four-Tab Bottom Navigation:** Modern bottom navigation bar with 4 distinct tabs: Live (default), Faults, History, Settings/Tools. | Missing (Currently 6 top/inline tabs) | `app/index.html:14-21` | Phase 2 | Visual inspection and DOM query. Pass condition: 4 bottom tab buttons exist, Live active on initial boot. |
 | **REQ-NAV-02** | **Persistent Bridge/Auth Status Bar:** Compact always-visible header showing BLE connection state, pairing status, and bridge status. | Partially Implemented | `app/index.html:23-44` | Phase 2 | Inspect UI header during state transitions. Pass condition: status bar visible across all 4 tabs. |
@@ -327,7 +326,7 @@ flowchart LR
 ---
 
 ### Group 5: Live Dashboard, Hero Metrics & Grouping
-| Req ID | Requirement Obligation & Exact Acceptance Condition | Current State | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
+| Req ID | Requirement Obligation & Exact Acceptance Condition | Initial Phase 0 State (historical) | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
 | :--- | :--- | :--- | :--- | :---: | :--- |
 | **REQ-DASH-01** | **Hero Metric: Actual Engine RPM:** Large primary hero card displaying real-time engine RPM with microtrend sparkline. | Missing (Standard card format) | `app/js/ui.js:230` | Phase 2 | Replay `161814` live capture. Pass condition: RPM rendered in prominent hero container with sparkline. |
 | **REQ-DASH-02** | **Top Primary Metrics Grid:** Secondary prominent cards for Coolant (°C), ECU Battery (V), Throttle (ITP counts), and Load (%). | Partially Implemented | `app/js/ui.js:145-195` | Phase 2 | Inspect dashboard layout during live streaming. Pass condition: 4 metrics immediately visible above the fold. |
@@ -342,7 +341,7 @@ flowchart LR
 ---
 
 ### Group 6: Sensor Detail Drawer & Interactive Charts
-| Req ID | Requirement Obligation & Exact Acceptance Condition | Current State | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
+| Req ID | Requirement Obligation & Exact Acceptance Condition | Initial Phase 0 State (historical) | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
 | :--- | :--- | :--- | :--- | :---: | :--- |
 | **REQ-CHART-01** | **Sensor Detail Drawer:** Tapping any sensor card opens a bottom sheet / drawer showing full technical and historical details. | Missing | `app/js/ui.js` | Phase 2 | Tap RPM card in Live tab. Pass condition: drawer opens displaying PID hex, min/max/last, count, and chart. |
 | **REQ-CHART-02** | **True Time-Series Canvas Chart:** Real-time chart displaying true timestamps, real sample intervals, gaps, and stale markers (no fake interpolation). | Missing | `app/js/ui.js` | Phase 2 | Replay capture with irregular sample timing. Pass condition: chart reflects exact time gaps without interpolation. |
@@ -355,7 +354,7 @@ flowchart LR
 ---
 
 ### Group 7: Manual Transmission Channel Rules & Visibility
-| Req ID | Requirement Obligation & Exact Acceptance Condition | Current State | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
+| Req ID | Requirement Obligation & Exact Acceptance Condition | Initial Phase 0 State (historical) | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
 | :--- | :--- | :--- | :--- | :---: | :--- |
 | **REQ-MAN-01** | **Hide 6 Automatic Channels from GUI:** Hide `BCSDC`, `GR_CM`, `ETVOCM`, `TV_PRES`, `ITOT`, `PDL` from standard Live dashboard. | Partially Implemented (Cards shown with N/A) | `app/js/ui.js:160`, `pids.js:140` | Phase 2 | Inspect Live dashboard in ALL mode. Pass condition: 6 automatic channels hidden from main views. |
 | **REQ-MAN-02** | **Preserve Automatic PIDs in Pipeline:** Retain automatic transmission decoding in decoder, raw transcripts, and full export CSVs. | Verified | `app/js/pids.js:140-145` | Phase 2 | Export all-sensors CSV from ALL capture. Pass condition: all 6 automatic PIDs present in exported rows. |
@@ -370,7 +369,7 @@ flowchart LR
 ---
 
 ### Group 8: Sensor Interpretation, Normal Ranges & Color-Coding
-| Req ID | Requirement Obligation & Exact Acceptance Condition | Current State | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
+| Req ID | Requirement Obligation & Exact Acceptance Condition | Initial Phase 0 State (historical) | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
 | :--- | :--- | :--- | :--- | :---: | :--- |
 | **REQ-COLOR-01** | **No Fake Green "Healthy":** Green "verified normal" badge permitted ONLY for ECU-specific sourced ranges under confirmed conditions. | Known Defect (Historical code had generic greens) | `docs/sensor-reference-verification-2026-11-05.md:12` | Phase 2 | Audit all styling rules. Pass condition: no generic green assigned to uncalibrated PIDs (e.g. VBAT, ECT, ITP). |
 | **REQ-COLOR-02** | **Turquoise / Cyan Active Stream:** Use cyan/turquoise to signify active incoming data stream; explicitly indicate this is NOT proof of health. | Missing (Currently default dark/light card) | Master spec line 23 | Phase 2 | Inspect active streaming card style. Pass condition: cyan border/accent indicates fresh data flow, not mechanical pass. |
@@ -386,7 +385,7 @@ flowchart LR
 ---
 
 ### Group 9: Rendering Performance & Visual Smoothness
-| Req ID | Requirement Obligation & Exact Acceptance Condition | Current State | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
+| Req ID | Requirement Obligation & Exact Acceptance Condition | Initial Phase 0 State (historical) | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
 | :--- | :--- | :--- | :--- | :---: | :--- |
 | **REQ-PERF-01** | **Eliminate DOM Replacement (`replaceChildren`):** Remove all `replaceChildren` calls on live data paths; update stable DOM elements in-place. | Known Defect | `app/js/ui.js:201`, `ui.js:230` | Phase 2 | Profile DOM mutation events during live streaming. Pass condition: zero child node recreation during frames. |
 | **REQ-PERF-02** | **Fine-Grained Targeted Updates:** Updates dispatched directly to specific sensor card elements by PID key via `requestAnimationFrame`. | Missing | `app/js/ui.js` | Phase 2 | Inspect update loop. Pass condition: only cards receiving new samples in the current batch undergo DOM mutation. |
@@ -400,7 +399,7 @@ flowchart LR
 ---
 
 ### Group 10: DTC Stored / Self-Test Mode Discrimination & Integrity
-| Req ID | Requirement Obligation & Exact Acceptance Condition | Current State | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
+| Req ID | Requirement Obligation & Exact Acceptance Condition | Initial Phase 0 State (historical) | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
 | :--- | :--- | :--- | :--- | :---: | :--- |
 | **REQ-DTC-01** | **User-Selectable 0E vs A4 Reads:** UI provides explicit selection between standard `0E` and alternative `A4` stored-code reads; one selection issues one request. | Implemented; browser/device visual check pending | `app/index.html`, `app/js/app.js`, `app/tests/controller.test.mjs` | Phase 1 | Select A4 in the UI. Pass: confirmation names A4 and controller emits only `ARM_A4`, `READ_A4`. |
 | **REQ-DTC-02** | **Mode 26H Stored-Read Validation:** Stored DTC reads (`0E` and `A4`) mandate mode `26H` response; reject mode `25H` as `INCOMPLETE`. | Implemented and capture-tested | `app/js/session.js`, `app/tests/session.test.mjs` | Phase 1 | Feed synthetic mode 25 response to 0E/A4 read. Pass: session marked `INCOMPLETE` with mode error. |
@@ -414,7 +413,7 @@ flowchart LR
 ---
 
 ### Group 11: Per-Run Event Journaling & System Logging
-| Req ID | Requirement Obligation & Exact Acceptance Condition | Current State | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
+| Req ID | Requirement Obligation & Exact Acceptance Condition | Initial Phase 0 State (historical) | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
 | :--- | :--- | :--- | :--- | :---: | :--- |
 | **REQ-LOG-01** | **Structured JSONL Run Journal:** Append-only structured JSONL journal (`journal.jsonl`) generated per unique application run. | Missing | `app/js/recording.js` | Phase 3 | Launch app, execute session, inspect storage. Pass condition: valid JSONL file written with run UUID. |
 | **REQ-LOG-02** | **Mandatory Journal Fields:** Every event records UTC ISO time, monotonic microsecond timestamp, app build, run ID, and category. | Missing | Master spec line 32 | Phase 3 | Parse generated journal lines. Pass condition: all mandatory schema fields present in every record. |
@@ -430,7 +429,7 @@ flowchart LR
 ---
 
 ### Group 12: Forensic Export, ZIP Packaging & PWA Migration
-| Req ID | Requirement Obligation & Exact Acceptance Condition | Current State | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
+| Req ID | Requirement Obligation & Exact Acceptance Condition | Initial Phase 0 State (historical) | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
 | :--- | :--- | :--- | :--- | :---: | :--- |
 | **REQ-EXP-01** | **One-Tap Diagnostic ZIP Export:** Single action compiles full diagnostic archive and invokes Android Share sheet (`ACTION_SEND`). | Missing (Browser Blob download only) | `app/js/recording.js:117` | Phase 3 & 4 | Tap "Share Diagnostics" in UI. Pass condition: Android system share sheet appears with valid `.zip` attached. |
 | **REQ-EXP-02** | **Mandatory ZIP Archive Contents:** ZIP contains `run-manifest.json`, `journal.jsonl`, `bridge-raw.txt`, `all-sensors.csv`, DTC, warnings, hash. | Missing | Master spec line 33 | Phase 3 | Unzip exported diagnostic package. Pass condition: all specified files present, non-empty, and valid. |
@@ -442,7 +441,7 @@ flowchart LR
 ---
 
 ### Group 13: Test Suite, Fixture Verification & Build Delivery
-| Req ID | Requirement Obligation & Exact Acceptance Condition | Current State | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
+| Req ID | Requirement Obligation & Exact Acceptance Condition | Initial Phase 0 State (historical) | Source / Capture / Tooling Evidence | Planned Phase | Concrete Verification Procedure & Pass Condition |
 | :--- | :--- | :--- | :--- | :---: | :--- |
 | **REQ-TEST-01** | **Full Test Suite Clean Pass:** `node --test app/tests/*.test.mjs` must achieve 100% pass without failing or unhandled tests. | Phase 1 run: 51 pass, 0 fail, 0 skipped | `FAKE_INDEXEDDB_MODULE=/tmp/sme105-testdeps/node_modules/fake-indexeddb/build/esm/index.js node --test app/tests/*.test.mjs` | Phase 1 & 5 | Run complete suite with IndexedDB test dependency enabled. Pass: 0 fail and 0 skipped. |
 | **REQ-TEST-02** | **Hostile Mode Mismatch Tests:** Automated tests prove mode 25 response rejected during 0E/A4 read, and mode 26 rejected during KOEO. | Implemented and passing | `app/tests/session.test.mjs` | Phase 1 | Run DTC mode tests. Pass: both mismatches and absent required mode yield `INCOMPLETE`. |
@@ -535,3 +534,147 @@ This index maps every section and obligation of `/home/maxim/maximizotech/.agent
 
 **Phase 0 Status:** **COMPLETE; implementation and hardware validation remain pending**
 **Next Action:** Appoint Codex GPT-6 Luna to execute Phase 1 (DTC Fail-Closed Mode Guard & Stored Read Selection) in MAX reasoning mode.
+
+## 7. Current Verification Ledger (2026-11-05)
+
+Section 4 records the initial Phase 0 findings; this ledger supersedes those historical status cells. `Verified` means only the evidence named here. Physical ECU behavior, long-running phone performance, and the external review remain separate gates.
+
+| Requirement ID | Current disposition |
+| :--- | :--- |
+| **REQ-ORCH-01** | Codex owns implementation on the requested review branch; implementation work is complete to the extent listed below. |
+| **REQ-ORCH-02** | Exact AGY Gemini 3.8 Flash High review tool availability is unverified; one exact-model review attempt is still required. |
+| **REQ-ORCH-03** | Pending independent AGY review and any confirmed P0/P1 repairs; no approval claimed. |
+| **REQ-SAFE-01** | Verified on the requested branch; current implementation commits recorded in Section 7. |
+| **REQ-SAFE-02** | Verified: preserved repository captures and all six supplied Downloads files remain unchanged. |
+| **REQ-SAFE-03** | Verified: firmware v23 source and binaries unchanged. |
+| **REQ-SAFE-04** | Verified: automated suite uses fixtures/replay; no active ECU transmission. |
+| **REQ-SAFE-05** | Verified in source/UI: code clearing remains an explicit operator-confirmed action. |
+| **REQ-SAFE-06** | No USB commands or vehicle requests issued during this work; USB preflight was not exercised. |
+| **REQ-SAFE-07** | Verified: redaction tests pass for pairing codes, Wi-Fi secrets, device IDs, and local paths. |
+| **REQ-SAFE-08** | Browser mode loaded from the local app at 360/412 CSS px; PWA assets remain bundled and local. |
+| **REQ-PLT-01** | Vehicle-profile limits and unverified signal interpretation retained; no new generic health bands. |
+| **REQ-PLT-02** | APK includes local assets and has no INTERNET permission; installed app launched with Wi-Fi enabled. Airplane-mode test not run. |
+| **REQ-PLT-03** | Native BLE picker discovered the bridge while phone Wi-Fi remained enabled; GATT session not independently confirmed. |
+| **REQ-PLT-04** | Verified: debug APK built and installed/launched on a physical Galaxy A52s. |
+| **REQ-BLE-01** | Verified: Nordic UART service/RX/TX UUIDs match the v23 bridge. |
+| **REQ-BLE-02** | Native Android BLE scan/picker ran and listed SME105-DCL; full GATT exchange not confirmed. |
+| **REQ-BLE-03** | Phone already had an OS bond; app retains explicit bond/auth path. New pairing prompt was not observed. |
+| **REQ-BLE-04** | Negotiated MTU is surfaced by native transport; device-side negotiated MTU not observed in a completed GATT session. |
+| **REQ-BLE-05** | Verified in source and host tests: bounded line reassembly, ordered chunk writes, and 180-byte command chunking. |
+| **REQ-BLE-06** | Verified: Android BLE permissions are declared and runtime permissions were granted for the picker test. |
+| **REQ-BLE-07** | App requests Stop on background; no foreground-service streaming qualification. Long background operation not verified. |
+| **REQ-BLE-08** | Verified in controller/tests: no automatic read retry or re-arm after disconnect/incomplete response. |
+| **REQ-BLE-09** | Fail-closed preflight and explicit user actions retained; no vehicle operation started. |
+| **REQ-NAV-01** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
+| **REQ-NAV-02** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
+| **REQ-NAV-03** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
+| **REQ-NAV-04** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
+| **REQ-NAV-05** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
+| **REQ-NAV-06** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
+| **REQ-DASH-01** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
+| **REQ-DASH-02** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
+| **REQ-DASH-03** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
+| **REQ-DASH-04** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
+| **REQ-DASH-05** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
+| **REQ-DASH-06** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
+| **REQ-DASH-07** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
+| **REQ-DASH-08** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
+| **REQ-DASH-09** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
+| **REQ-CHART-01** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
+| **REQ-CHART-02** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
+| **REQ-CHART-03** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
+| **REQ-CHART-04** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
+| **REQ-CHART-05** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
+| **REQ-CHART-06** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
+| **REQ-CHART-07** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
+| **REQ-MAN-01** | Implemented; manual-vehicle visibility and unverified-signal rules retained in decoder/UI; capture/unit tests pass. |
+| **REQ-MAN-02** | Implemented; manual-vehicle visibility and unverified-signal rules retained in decoder/UI; capture/unit tests pass. |
+| **REQ-MAN-03** | Implemented; manual-vehicle visibility and unverified-signal rules retained in decoder/UI; capture/unit tests pass. |
+| **REQ-MAN-04** | Implemented; manual-vehicle visibility and unverified-signal rules retained in decoder/UI; capture/unit tests pass. |
+| **REQ-MAN-05** | Implemented; manual-vehicle visibility and unverified-signal rules retained in decoder/UI; capture/unit tests pass. |
+| **REQ-MAN-06** | Implemented; manual-vehicle visibility and unverified-signal rules retained in decoder/UI; capture/unit tests pass. |
+| **REQ-MAN-07** | Implemented; manual-vehicle visibility and unverified-signal rules retained in decoder/UI; capture/unit tests pass. |
+| **REQ-MAN-08** | Implemented; manual-vehicle visibility and unverified-signal rules retained in decoder/UI; capture/unit tests pass. |
+| **REQ-MAN-09** | Implemented; manual-vehicle visibility and unverified-signal rules retained in decoder/UI; capture/unit tests pass. |
+| **REQ-COLOR-01** | Implemented; evidence/context color rules and text labels in source; reference/controller tests pass. |
+| **REQ-COLOR-02** | Implemented; evidence/context color rules and text labels in source; reference/controller tests pass. |
+| **REQ-COLOR-03** | Implemented; evidence/context color rules and text labels in source; reference/controller tests pass. |
+| **REQ-COLOR-04** | Implemented; evidence/context color rules and text labels in source; reference/controller tests pass. |
+| **REQ-COLOR-05** | Implemented; evidence/context color rules and text labels in source; reference/controller tests pass. |
+| **REQ-COLOR-06** | Implemented; evidence/context color rules and text labels in source; reference/controller tests pass. |
+| **REQ-COLOR-07** | Implemented; evidence/context color rules and text labels in source; reference/controller tests pass. |
+| **REQ-COLOR-08** | Implemented; evidence/context color rules and text labels in source; reference/controller tests pass. |
+| **REQ-COLOR-09** | Implemented; evidence/context color rules and text labels in source; reference/controller tests pass. |
+| **REQ-COLOR-10** | Implemented; evidence/context color rules and text labels in source; reference/controller tests pass. |
+| **REQ-PERF-01** | Verified: live card nodes are keyed/stable across group changes; actual replay retained node identity. |
+| **REQ-PERF-02** | Verified in source and replay: keyed updates preserve sensor nodes; decoding does not rebuild the card list. |
+| **REQ-PERF-03** | Canvas charts use bounded real samples and requestAnimationFrame; no interpolated sensor data. |
+| **REQ-PERF-04** | Not measured against the <100 ms target on a physical stream. |
+| **REQ-PERF-05** | 60 fps scrolling/transition target not formally profiled. |
+| **REQ-PERF-06** | 39 PIDs are available in Advanced; DOM virtualization is not implemented/verified. |
+| **REQ-PERF-07** | Background capture is stopped; no native foreground service or 3-hour background claim. |
+| **REQ-PERF-08** | Verified by browser screenshots at 360/412 and installed dark-theme phone screenshot; 48 dp controls and reduced-motion preference are present. |
+| **REQ-DTC-01** | Implemented; capture-backed tests and mode-mismatch tests pass; see `npm test` result in Section 7. |
+| **REQ-DTC-02** | Implemented; capture-backed tests and mode-mismatch tests pass; see `npm test` result in Section 7. |
+| **REQ-DTC-03** | Implemented; capture-backed tests and mode-mismatch tests pass; see `npm test` result in Section 7. |
+| **REQ-DTC-04** | Implemented; capture-backed tests and mode-mismatch tests pass; see `npm test` result in Section 7. |
+| **REQ-DTC-05** | Implemented; capture-backed tests and mode-mismatch tests pass; see `npm test` result in Section 7. |
+| **REQ-DTC-06** | Implemented; capture-backed tests and mode-mismatch tests pass; see `npm test` result in Section 7. |
+| **REQ-DTC-07** | Implemented; capture-backed tests and mode-mismatch tests pass; see `npm test` result in Section 7. |
+| **REQ-DTC-08** | Implemented; capture-backed tests and mode-mismatch tests pass; see `npm test` result in Section 7. |
+| **REQ-LOG-01** | Verified: per-run structured journal exported as JSONL with run IDs. |
+| **REQ-LOG-02** | Verified by journal recovery test: UTC, monotonic microseconds, app build, run ID, category. |
+| **REQ-LOG-03** | Partial: app lifecycle, screens, operation/BLE state, raw replies, and actions are recorded; native permission/pairing breadcrumbs are incomplete. |
+| **REQ-LOG-04** | Verified: ZIP raw archive contained 29,569 timestamped bridge lines; archive hashes passed. |
+| **REQ-LOG-05** | Verified: replay ZIP contains 3,717 CSV sensor sample rows with PID, raw/scaled values, time, unit, and set. |
+| **REQ-LOG-06** | Verified by automated recovery test: an unclosed run becomes INCOMPLETE on next launch. |
+| **REQ-LOG-07** | Global JS error/rejection listeners write journal entries; native crash breadcrumbs are not provided/verified. |
+| **REQ-LOG-08** | Verified: recording blocks below 1 GB estimated free quota; write-failure and retained-queue tests pass. Diagnostic-store rotation is absent. |
+| **REQ-LOG-09** | Implemented: persistent warning panel, severity/sensor/date filters, evidence/source fields; DTC and session warning paths present. |
+| **REQ-LOG-10** | Verified: redaction unit test passes; no secret is emitted in the exported replay journal. |
+| **REQ-EXP-01** | Verified in browser: one-tap ZIP downloaded after internal integrity check; Android share-sheet behavior not verified. |
+| **REQ-EXP-02** | Verified: replay ZIP contains manifest, JSONL journal, raw text, samples, warning/DTC/error files, groups, sensors, and checksums. |
+| **REQ-EXP-03** | Partial: captured LIVE export retained all captured rows; an ALL 39-PID ZIP export was not generated in this run. |
+| **REQ-EXP-04** | Verified: all 27 ZIP file checksums matched the SHA-256 manifest. |
+| **REQ-EXP-05** | Implemented: per-sensor/group CSV export and per-sensor ZIP members; Android share sheet/device persistence not tested. |
+| **REQ-EXP-06** | Verified in app/README: Chrome PWA storage is separate; explicit export-before-removal guidance is present. |
+| **REQ-TEST-01** | Verified: `npm test` — 57 passed, 0 failed, 0 skipped. |
+| **REQ-TEST-02** | Verified: hostile 25H/26H mismatch and incomplete response tests pass. |
+| **REQ-TEST-03** | Verified: checked-in stored-code, KOEO, LIVE off/on, and ALL capture fixtures pass. Supplied files were inspected/replayed as described in Section 7. |
+| **REQ-TEST-04** | Verified: simulated 3-hour decode crosses two uint32 clock wraps with bounded sample history. |
+| **REQ-TEST-05** | Verified: fragmented input line/chunk tests pass. |
+| **REQ-TEST-06** | Verified: privacy-redaction tests pass. |
+| **REQ-TEST-07** | Verified: no horizontal overflow at 360, 412, and 768 CSS px; screenshots saved in `artifacts/screenshots/`. |
+| **REQ-TEST-08** | Verified: Gradle debug APK build succeeded; physical ADB install and app launch succeeded. |
+| **REQ-TEST-09** | Intentionally not produced: owner signing credentials were not supplied; debug APK only. |
+| **REQ-PHYS-01** | Verified: APK installed/launched on Samsung Galaxy A52s (Android 14). |
+| **REQ-PHYS-02** | Partial: picker found bridge and phone already had an OS bond; app GATT/authentication transaction not confirmed. |
+| **REQ-PHYS-03** | Not performed: no ECU command or vehicle test; remains unverified. |
+| **REQ-PHYS-04** | Not performed: no physical 0E/A4 read; remains unverified. |
+| **REQ-PHYS-05** | Not performed: no three-hour phone resource test. |
+| **REQ-UI-ORDER-01** | Implemented: pin/order controls persist locally; persistence across a fresh app process was not specifically tested. |
+| **REQ-DETAIL-01** | Verified in replay UI: sensor detail showed source reading, raw value, count, freshness, and chart; min/max/source fields present. |
+| **REQ-SENSOR-01** | Verified: DTC 157 asserts MAF meaning; PID 0x26 remains unverified raw counts, never MAP/g/s. |
+| **REQ-SENSOR-02** | Verified in reference/unit tests: KAMRF1 unity is 0% correction; uncalibrated signals retain raw counts. |
+| **REQ-SENSOR-03** | Verified: ALL map exposes 39 channels and hidden automatic PIDs remain in decoder/export paths. |
+| **REQ-WARN-01** | Partial: warnings carry rule/source/reason/evidence and sensor context; confidence/applicability schema is not uniform for every status. |
+| **REQ-LOG-11** | Partial: required main app/session fields are present; native permission outcomes and firmware-build provenance are incomplete. |
+| **REQ-LOG-12** | Verified in test: each event/raw/sample write persists incrementally and prior unclosed runs are flagged on startup. |
+| **REQ-LOG-13** | Not met: no retention/rotation or owner-controlled export-before-cleanup workflow for diagnostic journal data. |
+| **REQ-EXPORT-01** | Verified for browser replay: archive includes required provenance and files; native sharing and Android permissions remain unverified. |
+| **REQ-EXPORT-02** | Implemented in source: recording, group, and sensor CSV paths; native share and detailed report presentation not verified. |
+| **REQ-EXPORT-03** | Partial: recording persistence/export tests and archive verification pass; diagnostic export after native process restart not tested. |
+| **REQ-PERF-09** | Three-hour simulated decoder test passes with bounded sample history; phone memory, thermal, battery, and render latency unmeasured. |
+| **REQ-TEST-10** | Partial: fixture, fragmentation, 3-hour memory, screenshots/layout, and theme checks run; tablet native and frame-rate profiling not run. |
+| **REQ-BLE-10** | Host-side protocol and permission checks pass; physical authenticated GATT, MTU, and disconnect sequence remain unverified. |
+
+### Current build and test evidence
+
+- Branch: `fix/live-rx-silence-evidence-20261105`; implementation commits and final working-tree state are listed in the completion report.
+- `npm test`: 57 passed, 0 failed, 0 skipped.
+- Android debug build: `BUILD SUCCESSFUL`; APK installed/launched on Galaxy A52s; package has no `INTERNET` permission.
+- Browser replay: supplied session capture reached `VALID`; captured live replay had 3,717 rows; ZIP contained 29,569 raw lines and 27 checksum entries, with 0 hash mismatches. No `APP_STATE_WARNING` was emitted for normal `CAPTURE_TIMEOUT`.
+- Owner-supplied `/home/maxim/Downloads/eec-iv-session (2).txt` replayed as valid mode-25 KOEO evidence. Supplied CSVs `(3)`–`(7)` parsed as numeric captures: `(3)` 2,857 rows/15 PIDs, `(4)` 8,768/39, `(5)` 12,501/39, `(6)` 2,649/15, `(7)` 4,178/15. These CSVs were inspected for parse/shape only, not injected into the native app.
+- Responsive checks: 360, 412, and 768 CSS-pixel layouts had equal viewport/document widths; screenshots are in `artifacts/screenshots/`.
+- No ECU command, code clear, firmware write, flash, or destructive operation was sent or performed.
+- AGY Gemini 3.8 Flash High review outcome and final re-review must be recorded before any acceptance claim.

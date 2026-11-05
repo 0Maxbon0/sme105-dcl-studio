@@ -3,15 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'self'">
   <meta name="theme-color" content="#0e1116">
   <meta name="color-scheme" content="dark">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>SME105 EEC-IV Diagnostics</title>
+  <title>SME105 DCL Studio · EEC-IV</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=4">
+  <link rel="stylesheet" href="styles.css?v=7">
 </head>
 <body>
   <header class="top">
@@ -20,29 +21,79 @@
       <h1 data-str="appTitle"></h1>
     </div>
     <div class="top-actions">
-      <span id="link-pill" class="pill">Disconnected</span>
+      <span id="link-pill" class="pill" role="status">Disconnected</span>
+      <button id="connect-btn" type="button" class="connect-compact"></button>
       <button id="stop-btn" type="button" class="danger" disabled data-str="stop"></button>
     </div>
   </header>
   <p id="message" class="message" role="status"></p>
   <main>
-    <section id="view-connect" class="view">
-      <p id="secure-warning" class="banner warn" hidden></p>
-      <p id="bt-warning" class="banner warn" hidden></p>
-      <button id="connect-btn" type="button" class="primary"></button>
-      <dl class="facts">
-        <dt data-str="auth"></dt><dd id="auth-value"></dd>
-        <dt data-str="hello"></dt><dd id="hello-value"></dd>
-        <dt data-str="pins"></dt><dd id="pins-value"></dd>
-        <dt data-str="de"></dt><dd id="de-value"></dd>
-        <dt data-str="stage"></dt><dd id="stage-value"></dd>
-        <dt data-str="bench"></dt><dd id="bench-value"></dd>
-        <dt data-str="rom"></dt><dd id="rom-value"></dd>
-        <dt data-str="battery"></dt><dd id="battery-value"></dd>
-      </dl>
-      <pre id="status-raw" class="mono"></pre>
+    <section id="view-live" class="view">
+      <div id="onboarding" class="onboarding" hidden>
+        <div><span class="step-number">1</span><p><strong id="onboarding-connect-step">Connect</strong><br><span>Pair the bridge when prompted.</span></p></div>
+        <div><span class="step-number">2</span><p><strong>Choose data · tap Start</strong><br><span>No ECU read runs before Start.</span></p></div>
+        <button id="dismiss-onboarding" class="icon-button" type="button" aria-label="Dismiss setup tips">×</button>
+      </div>
+      <p id="live-banner" class="banner" hidden></p>
+      <div class="live-controls">
+        <label class="stack" for="live-set">Data set<select id="live-set">
+          <option value="LIVE">Quick LIVE · engine</option>
+          <option value="LIVE2">LIVE2 · idle and switches</option>
+          <option value="LIVE3">LIVE3 · extras</option>
+          <option value="ALL">ALL · 39 channels</option>
+        </select></label>
+        <button id="live-start" type="button" class="primary" data-str="startLive"></button>
+      </div>
+      <p id="live-set-help" class="help"></p>
+      <p id="live-meta" class="meta"></p>
+      <section id="dashboard-overview" class="dashboard-overview" aria-label="Live overview">
+        <article id="rpm-hero" class="rpm-hero sensor-hit" data-pid="N" tabindex="0" role="button" aria-label="Engine speed details">
+          <div class="hero-heading"><span>ENGINE SPEED</span><span id="rpm-state" class="state-label">NO SAMPLE</span></div>
+          <div class="hero-value"><strong id="rpm-value">—</strong><span>rpm</span></div>
+          <canvas id="rpm-trend" class="hero-trend" aria-label="Recent engine speed trend"></canvas>
+          <div class="hero-foot"><span id="rpm-age">Waiting for a sample</span><span id="idle-target" class="idle-target" hidden></span><span id="idle-result" class="idle-result" hidden></span></div>
+        </article>
+        <div class="metric-grid">
+          <button class="metric sensor-hit" data-pid="ECT" type="button"><span>COOLANT</span><strong id="metric-ect">—</strong><small id="state-ect">NO SAMPLE</small></button>
+          <button class="metric sensor-hit" data-pid="VBAT" type="button"><span>ECU VOLTAGE</span><strong id="metric-vbat">—</strong><small id="state-vbat">NO SAMPLE</small></button>
+          <button class="metric sensor-hit" data-pid="ITP" type="button"><span>THROTTLE SIGNAL</span><strong id="metric-itp">—</strong><small id="state-itp">NO SAMPLE · RAW COUNTS</small></button>
+          <button class="metric sensor-hit" data-pid="LOAD" type="button"><span>ENGINE LOAD</span><strong id="metric-load">—</strong><small id="state-load">NO SAMPLE</small></button>
+        </div>
+        <section id="pinned-section" class="pinned-section" hidden>
+          <div class="section-heading"><h2>Pinned readings</h2><span>Tap a reading for details</span></div>
+          <div id="pinned-readings" class="pinned-grid"></div>
+        </section>
+      </section>
+      <div class="group-heading"><h2 id="group-title">Overview</h2><div class="group-actions"><label class="group-picker">View<select id="live-group" aria-label="Live sensor group">
+        <option value="overview">Overview</option>
+        <option value="engine">Engine / Idle</option>
+        <option value="fuel">Fuel / Combustion</option>
+        <option value="temp">Temp / Air</option>
+        <option value="switches">Switches / Electrical</option>
+        <option value="advanced">Advanced · all 39</option>
+      </select></label><button id="export-group-btn" type="button">Export group CSV</button></div></div>
+      <p id="group-help" class="help group-help"></p>
+      <div id="live-cards" class="cards" aria-live="polite"></div>
+      <details class="conditions">
+        <summary>Vehicle conditions and display options</summary>
+        <label class="check"><input id="manual-gearbox" type="checkbox" checked> Manual gearbox profile</label>
+      <label class="check"><input id="idle-check" type="checkbox"> I confirm: fully warm, settled, stationary in neutral, pedal released, A/C and other loads off. Compare regulated idle to the sourced 825–925 rpm range.</label>
+        <p id="vehicle-profile" class="help"></p>
+        <p class="help">Freshness uses the observed interval for each signal in this capture; it is not a sensor-health verdict. Green appears only for a sourced range with confirmed test conditions. Gray means no sample, stale, hidden, unsupported or not applicable; the text explains which.</p>
+      </details>
+      <details class="recording-panel">
+        <summary>Recording and export</summary>
+        <label class="meter"><span>Capture progress</span><progress id="live-progress" max="100" value="0"></progress></label>
+        <button id="csv-btn" type="button" disabled>Export current capture CSV</button>
+        <label for="saved-recordings">Saved recording on this device</label>
+        <select id="saved-recordings"></select>
+        <button id="saved-csv" type="button" disabled>Export saved CSV</button>
+        <button id="saved-log" type="button" disabled>Export saved raw log</button>
+        <p id="recording-status" class="help">Recordings remain on this device. Interrupted sessions remain incomplete; saving does not certify diagnostic validity.</p>
+      </details>
     </section>
     <section id="view-codes" class="view" hidden>
+      <h2>Faults and self-tests</h2>
       <p id="codes-banner" class="banner" hidden></p>
       <label class="stack" for="stored-code-mode">Stored-code request (read only)
         <select id="stored-code-mode" aria-describedby="stored-code-mode-help">
@@ -58,40 +109,42 @@
       <label class="meter"><span data-str="koeoProgress"></span><progress id="codes-progress" max="100" value="0"></progress></label>
       <p id="codes-meta" class="meta"></p>
       <ul id="codes-list" class="results"></ul>
-    </section>
-    <section id="view-live" class="view" hidden>
-      <p id="live-banner" class="banner" hidden></p>
-      <fieldset class="choices">
-        <legend data-str="liveSet"></legend>
-        <label><input type="radio" name="pidset" id="set-all-live" value="ALL"> <span data-str="liveAll"></span></label>
-        <details class="set-description"><summary>What this set shows</summary><p data-str="liveAllHelp"></p></details>
-        <label><input type="radio" name="pidset" id="set-live" value="LIVE" checked> <span data-str="liveEngine"></span></label>
-        <details class="set-description"><summary>What this set shows</summary><p data-str="liveEngineHelp"></p></details>
-        <label><input type="radio" name="pidset" id="set-live2" value="LIVE2"> <span data-str="liveFlags"></span></label>
-        <details class="set-description"><summary>What this set shows</summary><p data-str="liveFlagsHelp"></p></details>
-        <label><input type="radio" name="pidset" id="set-live3" value="LIVE3"> <span data-str="liveExtra"></span></label>
-        <details class="set-description"><summary>What this set shows</summary><p data-str="liveExtraHelp"></p></details>
-      </fieldset>
-      <label class="check"><input id="manual-gearbox" type="checkbox" checked> Manual gearbox (keep automatic channels as technical data)</label>
-      <p id="vehicle-profile" class="help"></p>
-      <label class="check"><input id="idle-check" type="checkbox"> Compare regulated idle: fully warm, stationary in neutral, pedal released, A/C and other loads off</label>
-      <p class="help">Speed is shown in km/h. All channels and raw values are retained. “Samples received” means how many readings arrived, not a sensor value. Zero does not by itself mean a sensor is missing.</p>
-      <button id="live-start" type="button" class="primary" data-str="startLive"></button>
-      <label class="meter"><span data-str="startLive"></span><progress id="live-progress" max="100" value="0"></progress></label>
-      <p id="live-meta" class="meta"></p>
-      <div id="live-cards" class="cards"></div>
-      <button id="csv-btn" type="button" data-str="recordCsv" disabled></button>
-      <p class="help">Live capture has a 3-hour limit. Keep the app open and connected. Full readings and raw evidence are saved on this phone; graphs use recent history. This duration has not been validated on the car.</p>
-      <details class="set-description">
-        <summary>Saved recordings on this phone</summary>
-        <label for="saved-recordings">Recording</label>
-        <select id="saved-recordings"></select>
-        <button id="saved-csv" type="button" disabled>Export saved CSV</button>
-        <button id="saved-log" type="button" disabled>Export saved raw log</button>
-        <p id="recording-status" class="help">Recordings remain available after reopening this app. Export before clearing browser data. Interrupted recordings remain incomplete; saving data does not certify its validity.</p>
+      <details class="fmem-technical">
+        <summary>Failure-memory flags · technical detail</summary>
+        <p class="help">The app preserves both bytes and shows bit positions. Per-bit meanings are not verified for this ECU calibration; a set bit is not automatically a confirmed component fault.</p>
+        <div id="fmem-values"></div>
       </details>
     </section>
     <section id="view-tools" class="view" hidden>
+      <h2>Settings and tools</h2>
+      <p id="secure-warning" class="banner warn" hidden></p>
+      <p id="bt-warning" class="banner warn" hidden></p>
+      <details open>
+        <summary>Bridge and connection</summary>
+        <dl class="facts">
+          <dt data-str="auth"></dt><dd id="auth-value"></dd>
+          <dt data-str="hello"></dt><dd id="hello-value"></dd>
+          <dt data-str="pins"></dt><dd id="pins-value"></dd>
+          <dt data-str="de"></dt><dd id="de-value"></dd>
+          <dt data-str="stage"></dt><dd id="stage-value"></dd>
+          <dt data-str="bench"></dt><dd id="bench-value"></dd>
+          <dt data-str="rom"></dt><dd id="rom-value"></dd>
+          <dt data-str="battery"></dt><dd id="battery-value"></dd>
+        </dl>
+        <pre id="status-raw" class="mono"></pre>
+        <button id="connect-settings" type="button"></button>
+      </details>
+      <details>
+        <summary>Vehicle and display</summary>
+        <label class="check"><input id="manual-gearbox-settings" type="checkbox" checked> Manual gearbox profile</label>
+        <label class="check"><input id="idle-check-settings" type="checkbox"> I confirm the engine is fully warm, settled, stationary in neutral, pedal released, with A/C and other loads off before comparing idle</label>
+        <label class="stack" for="theme-mode">Color theme<select id="theme-mode"><option value="system">System</option><option value="dark">Dark</option><option value="light">Light</option></select></label>
+        <label class="stack" for="unit-system">Display units<select id="unit-system"><option value="metric">Metric · °C, km/h</option><option value="imperial">Imperial · °F, mph</option></select></label>
+        <label class="stack" for="font-size">Text size<select id="font-size"><option value="normal">Standard</option><option value="large">Large</option></select></label>
+        <label class="check"><input id="high-contrast" type="checkbox"> High contrast</label>
+        <label class="check"><input id="reduce-motion" type="checkbox"> Reduce motion</label>
+      </details>
+      <p class="help">Offline data is private to this installed app. Chrome PWA recordings use separate storage: export them in the old app, then import or retain the files separately. Nothing migrates automatically.</p>
       <button id="offline-btn" type="button" class="primary" data-str="offline"></button>
       <p class="help" data-str="offlineHelp"></p>
       <button id="bench-btn" type="button" data-str="selfTest"></button>
@@ -101,8 +154,31 @@
       <button id="clear-btn" type="button" class="danger" data-str="clearCodes"></button>
       <p class="help" data-str="confirmClearBody"></p>
       <button id="reboot-btn" type="button" data-str="reboot"></button>
+      <details>
+        <summary>Demo, about and safety</summary>
+        <p><span data-str="aboutVersion"></span> <strong id="about-version"></strong></p>
+        <h3 data-str="safetyTitle"></h3><p data-str="safetyBody"></p>
+        <h3 data-str="attributionTitle"></h3><p data-str="attributionBody"></p>
+        <label class="check"><input id="demo-toggle" type="checkbox"> <span data-str="demoOn"></span></label>
+        <button id="play-demo" type="button" class="primary" data-str="playDemo"></button>
+        <label class="stack"><span data-str="captureLabel"></span>
+          <select id="demo-capture"><option value="0E"></option><option value="KOEO"></option><option value="LIVE"></option></select>
+        </label>
+      </details>
     </section>
     <section id="view-log" class="view" hidden>
+      <h2>History and diagnostics</h2>
+      <section class="history-panel">
+        <div class="section-heading"><h3>Warnings</h3></div>
+        <div class="warning-filters">
+          <label>Severity<select id="warning-filter"><option value="all">All severities</option><option value="amber">Amber</option><option value="red">Red</option></select></label>
+          <label>Sensor<select id="warning-sensor-filter"><option value="all">All sensors</option></select></label>
+          <label>Date<input id="warning-date-filter" type="date"></label>
+        </div>
+        <div id="warning-history" class="warning-list"><p class="help">Loading saved warnings…</p></div>
+        <button id="export-diagnostics" type="button" class="primary">Save full diagnostic ZIP</button>
+      </section>
+      <details class="history-panel"><summary>Saved event journal · latest 100</summary><div id="event-history" class="event-list">Loading saved events…</div></details>
       <div class="row">
         <h2 data-str="sessionSummary"></h2>
         <button id="export-btn" type="button" data-str="exportLog"></button>
@@ -111,33 +187,29 @@
       <h2 data-str="rawLog"></h2>
       <pre id="log-pre" class="mono log"></pre>
     </section>
-    <section id="view-about" class="view" hidden>
-      <p><span data-str="aboutVersion"></span> <strong id="about-version"></strong></p>
-      <h2 data-str="safetyTitle"></h2>
-      <p data-str="safetyBody"></p>
-      <h2 data-str="attributionTitle"></h2>
-      <p data-str="attributionBody"></p>
-      <h2 data-str="demoTitle"></h2>
-      <p class="help" data-str="demoHelp"></p>
-      <label class="check"><input id="demo-toggle" type="checkbox"> <span data-str="demoOn"></span></label>
-      <button id="play-demo" type="button" class="primary" data-str="playDemo"></button>
-      <label class="stack"><span data-str="captureLabel"></span>
-        <select id="demo-capture">
-          <option value="0E"></option>
-          <option value="KOEO"></option>
-          <option value="LIVE"></option>
-        </select>
-      </label>
-    </section>
   </main>
   <nav>
-    <button type="button" data-view="connect" aria-current="page"></button>
+    <button type="button" data-view="live" aria-current="page"></button>
     <button type="button" data-view="codes"></button>
-    <button type="button" data-view="live"></button>
-    <button type="button" data-view="tools"></button>
     <button type="button" data-view="log"></button>
-    <button type="button" data-view="about"></button>
+    <button type="button" data-view="tools"></button>
   </nav>
+  <aside id="sensor-drawer" class="drawer-backdrop" hidden>
+    <section class="sensor-drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+      <button id="drawer-close" class="drawer-close" type="button" aria-label="Close sensor details">×</button>
+      <p id="drawer-group" class="eyebrow"></p><h2 id="drawer-title"></h2>
+      <p id="drawer-state" class="status-reason"></p>
+      <div class="drawer-value"><strong id="drawer-value">—</strong><span id="drawer-unit"></span></div>
+      <div class="drawer-stats"><div><span>Raw</span><strong id="drawer-raw">—</strong></div><div><span>Minimum</span><strong id="drawer-min">—</strong></div><div><span>Maximum</span><strong id="drawer-max">—</strong></div><div><span>Samples</span><strong id="drawer-count">0</strong></div></div>
+      <p id="drawer-time" class="meta"></p>
+      <div class="chart-range"><button type="button" data-range="30">30 s</button><button type="button" data-range="120">2 min</button><button type="button" data-range="full">Full</button></div>
+      <canvas id="sensor-chart" class="detail-chart"></canvas>
+      <p id="drawer-meaning" class="help"></p>
+      <details><summary>More · source and reference</summary><p id="drawer-reference" class="help"></p><p id="drawer-source" class="help"></p></details>
+      <button id="drawer-pin" type="button">Pin reading</button>
+      <button id="drawer-export-sensor" type="button">Export sensor CSV</button>
+    </section>
+  </aside>
   <div id="modal" class="modal" hidden>
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <h2 id="modal-title"></h2>
@@ -148,6 +220,7 @@
       </div>
     </div>
   </div>
-  <script type="module" src="js/app.js?v=11"></script>
+  <script src="vendor/jszip.min.js"></script>
+  <script type="module" src="js/app.js?v=14"></script>
 </body>
 </html>

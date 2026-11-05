@@ -11,3 +11,5 @@ build/
 captures/
 analysis/
 .pio/
+node_modules/
+android/local.properties

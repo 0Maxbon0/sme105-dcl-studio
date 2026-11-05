@@ -1,21 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as fake from "fake-indexeddb";
 import { createRecording, listRecordings, recordingBlob } from "../js/recording.js";
 
-// No browser/product dependency: point this to a temporary fake-indexeddb
-// installation to exercise native IndexedDB transactions under Node.
-const modulePath = process.env.FAKE_INDEXEDDB_MODULE;
-let fake;
-if (modulePath) {
-  fake = await import(modulePath);
-  globalThis.indexedDB = new fake.IDBFactory();
-  globalThis.IDBKeyRange = fake.IDBKeyRange;
-  Object.defineProperty(globalThis, "navigator", { configurable: true, value: { storage: {
-    estimate: async () => ({ quota: 10 * 1024 ** 3, usage: 0 }),
-    persist: async () => true,
-  } } });
-}
-const options = { skip: !modulePath && "Set FAKE_INDEXEDDB_MODULE to a temporary fake-indexeddb ESM installation" };
+globalThis.indexedDB = new fake.IDBFactory();
+globalThis.IDBKeyRange = fake.IDBKeyRange;
+Object.defineProperty(globalThis, "navigator", { configurable: true, value: { storage: {
+  estimate: async () => ({ quota: 10 * 1024 ** 3, usage: 0 }), persist: async () => true,
+} } });
+const options = {};
 
 test("recording chunks retain all rows/raw data, export while active, and survive reopening", options, async () => {
   const failures = [];

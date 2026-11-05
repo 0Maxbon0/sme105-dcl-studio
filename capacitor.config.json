@@ -1,0 +1,15 @@
+{
+  "appId": "com.maximizotech.sme105dclstudio",
+  "appName": "SME105 DCL Studio",
+  "webDir": "app",
+  "plugins": {
+    "BluetoothLe": {
+      "displayStrings": {
+        "scanning": "Finding SME105 bridge…",
+        "cancel": "Cancel",
+        "availableDevices": "Bluetooth bridges",
+        "noDeviceFound": "No bridge found"
+      }
+    }
+  }
+}

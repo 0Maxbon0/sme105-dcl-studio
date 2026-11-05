@@ -4,7 +4,11 @@ import { APP_VERSION, createLineBuffer } from "./protocol.js";
 import { createMockTransport, createReplay } from "./mock-transport.js";
 import { STR } from "./strings.js";
 import { createRecording, listRecordings, recordingBlob } from "./recording.js";
-import { applyStaticStrings, confirmDialog, exportCsv, exportLog, render, showView } from "./ui.js";
+import { applyStaticStrings, confirmDialog, exportCsv, exportLog, movePinnedSensor, openSensorDetails, refreshDashboardCharts, render, renderEventHistory, renderWarningHistory, setSensorChartRange, showView, toggleSensorPin } from "./ui.js";
+import { closeDiagnosticRun, diagnosticSnapshot, recentDiagnosticEvents, recordDiagnosticEvent, recordDiagnosticWarning, setDiagnosticStorageErrorHandler, startDiagnosticRun } from "./diagnostics.js";
+import { exportDiagnosticZip, exportGroupCsv, exportSensorCsv } from "./exports.js";
+import { lookupCode } from "./codes-db.js";
+import { sensorFreshnessTransitions } from "./live-dashboard.js";
 
 const DEMO_FILES = {
   "0E": "./demo/read-0e.txt",
@@ -14,6 +18,10 @@ const DEMO_FILES = {
 
 const buffer = createLineBuffer();
 let transport = null;
+let previousAudit = { link: null, phase: null, message: null };
+let previousSessionKey = "";
+const previousFreshness = new Map();
+let wired = false;
 
 const controller = createController({
   send(command) {
@@ -29,7 +37,11 @@ function acceptText(chunk) {
 const ble = new BleTransport({
   onLine(line) { controller.handleLine(line); },
   onDisconnect() { controller.onDisconnected(); },
-  onError(error) { controller.state.message = error?.message || String(error); },
+  onError(error) {
+    controller.onDisconnected();
+    controller.state.message = `Bluetooth transport failed: ${error?.message || String(error)}`;
+    render(controller.state);
+  },
 });
 
 function demoEnabled() {
@@ -38,6 +50,81 @@ function demoEnabled() {
 
 function demoKey() {
   return document.getElementById("demo-capture").value;
+}
+
+function refreshWarnings() {
+  return diagnosticSnapshot().then(snapshot => renderWarningHistory(snapshot.warnings))
+    .catch(error => { document.getElementById("warning-history").textContent = `Warning history unavailable: ${error.message}`; });
+}
+
+function refreshJournal() {
+  return recentDiagnosticEvents(100).then(renderEventHistory)
+    .catch(error => { document.getElementById("event-history").textContent = `Event journal unavailable: ${error.message}`; });
+}
+
+function auditState(state) {
+  if (state.link !== previousAudit.link) {
+    recordDiagnosticEvent("BLE_STATE", { state: state.link, transport: state.transport || "", deviceName: state.deviceName || "", auth: state.identity.auth || "" }, "bluetooth");
+    previousAudit.link = state.link;
+  }
+  if (state.phase !== previousAudit.phase) {
+    recordDiagnosticEvent("OPERATION_STATE", { phase: state.phase, variant: state.op?.variant || "" }, "state");
+    previousAudit.phase = state.phase;
+  }
+  if (state.message && state.message !== previousAudit.message) {
+    // CAPTURE_TIMEOUT (reason 16) is the expected end of a bounded live run.
+    const error = /failure|failed|error|denied|incomplete|timed out|storage/i.test(state.message);
+    recordDiagnosticEvent(error ? "APP_STATE_WARNING" : "APP_MESSAGE", { message: state.message }, error ? "error" : "state");
+    previousAudit.message = state.message;
+  }
+  const session = state.lastSession;
+  if (!session?.completedAt) return;
+  const key = `${session.variant}:${session.startedAt}:${session.completedAt}`;
+  if (key === previousSessionKey) return;
+  previousSessionKey = key;
+  const evidence = {
+    variant: session.variant, kind: session.kind, startedAt: session.startedAt, completedAt: session.completedAt,
+    verdict: session.verdict, requestedMode: session.requestedMode, observedModes: session.observedModes,
+    dtcVerified: session.dtcVerified, selfTestComplete: session.selfTestComplete,
+    codes: session.codes, blocks25: session.blocks25, blocks26: session.blocks26,
+    rx: session.verdict?.end?.rx ?? null, parityRejects: session.parityRejects,
+  };
+  recordDiagnosticEvent("SESSION_RESULT", evidence, "session");
+  if (!session.verdict?.valid) {
+    const failed = session.verdict?.status === "FAILED";
+    const warningKey = `session-${session.variant}-${session.completedAt}`;
+    recordDiagnosticWarning(warningKey, true, { severity: failed ? "red" : "amber", sensor: "Session",
+      ruleId: `SESSION-${session.verdict?.status || "INCOMPLETE"}`, reason: (session.verdict?.reasons || ["Session incomplete"]).join("; "),
+      source: `${session.variant} session validity checks`, evidence });
+  }
+  for (const code of session.codes || []) {
+    const description = lookupCode(code.code)?.description || "Description unavailable in the checked-in fault table.";
+    recordDiagnosticWarning(`stored-${code.code}`, true, { severity: "amber", sensor: `DTC ${code.code}`,
+      ruleId: `DTC-${code.code}`, reason: `${description} Observed in this capture; the bridge reports ECU verification separately.`,
+      source: `${session.variant} · requested mode ${code.requestedMode?.toString(16).toUpperCase() || "?"}H · observed ${code.mode?.toString(16).toUpperCase() || "?"}H`,
+      evidence: { ...code, verdict: session.verdict, dtcVerified: session.dtcVerified } });
+  }
+  if (session.verdict?.valid && ["0E", "A4"].includes(session.variant)) {
+    const found = new Set((session.codes || []).map(code => code.code));
+    diagnosticSnapshot().then(snapshot => snapshot.warnings.filter(item => item.active && item.key.startsWith("stored-") && !found.has(item.key.slice(7)))
+      .forEach(item => recordDiagnosticWarning(item.key, false, {}))).then(refreshWarnings);
+  } else refreshWarnings();
+}
+
+function auditFreshness(state) {
+  const snapshot = state.cart?.snapshot();
+  const changes = sensorFreshnessTransitions(snapshot?.pids || {}, previousFreshness, {
+    active: (state.op?.kind === "live" && state.phase === "read") || !!state.combined?.active,
+    now: Date.now(),
+  });
+  for (const change of changes) {
+    recordDiagnosticEvent("SENSOR_FRESHNESS_CHANGED", {
+      name: change.name, pid: change.pid, state: change.state, priorState: change.priorState,
+      sampleCount: change.sampleCount, sampleAgeMs: change.ageMs, expectedIntervalMs: change.intervalMs,
+      last: change.last,
+      variant: state.op?.variant || state.lastSession?.variant || "",
+    }, "sensor");
+  }
 }
 
 function readStorage(key) {
@@ -51,6 +138,7 @@ function writeStorage(key, value) {
 async function connect() {
   const button = document.getElementById("connect-btn");
   button.disabled = true;
+  recordDiagnosticEvent("BLE_CONNECT_REQUESTED", { demo: demoEnabled() }, "bluetooth");
   try {
     if (controller.state.link === "ready" || controller.state.link === "denied") {
       await transport?.disconnect();
@@ -65,15 +153,18 @@ async function connect() {
         onDisconnect() { controller.onDisconnected(); },
       });
       await transport.connect();
-      controller.onConnected("SME105-DCL demo");
+      controller.onConnected("SME105-DCL demo", "demo");
+      recordDiagnosticEvent("BLE_DEMO_CONNECTED", { transport: "mock" }, "bluetooth");
       return;
     }
     if (!window.isSecureContext) throw new Error(STR.secureWarning);
     transport = ble;
     const device = await ble.connect();
     controller.onConnected(device.name || "SME105");
+    recordDiagnosticEvent("BLE_CONNECTED", { transport: window.Capacitor?.isNativePlatform?.() ? "native" : "web-bluetooth", deviceName: device.name || "SME105", mtu: device.mtu ?? null }, "bluetooth");
   } catch (error) {
     controller.state.message = error?.message || String(error);
+    recordDiagnosticEvent("BLE_CONNECT_FAILED", { message: controller.state.message }, "error");
     render(controller.state);
   } finally {
     button.disabled = false;
@@ -85,6 +176,7 @@ async function ask(title, body, action) {
   if (controller.state.phase !== "idle") return;
   const ok = await confirmDialog(title, body);
   if (!ok) return;
+  recordDiagnosticEvent("OPERATOR_CONFIRMED_ACTION", { action: title }, "action");
   if (controller.state.phase !== "idle") return;
   const result = await action();
   if (result && result.ok === false) controller.state.message = result.error;
@@ -92,16 +184,30 @@ async function ask(title, body, action) {
 }
 
 function selectedLive() {
-  if (document.getElementById("set-all-live").checked) return "ALL";
-  if (document.getElementById("set-live3").checked) return "LIVE3";
-  if (document.getElementById("set-live2").checked) return "LIVE2";
-  return "LIVE";
+  const value = document.getElementById("live-set").value;
+  return ["LIVE", "LIVE2", "LIVE3", "ALL"].includes(value) ? value : "LIVE";
+}
+
+function chooseLiveSet(value) {
+  document.getElementById("live-set").value = value;
+  writeStorage("eeciv-live-set", value);
+}
+
+function applyDisplayPreferences() {
+  const theme = readStorage("eeciv-theme") || "system";
+  const effectiveTheme = theme === "system"
+    ? (window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark")
+    : theme;
+  document.body.dataset.theme = effectiveTheme;
+  document.body.classList.toggle("large-text", readStorage("eeciv-font-size") === "large");
+  document.body.classList.toggle("high-contrast", readStorage("eeciv-high-contrast") === "1");
+  document.body.classList.toggle("reduce-motion", readStorage("eeciv-reduce-motion") === "1");
 }
 
 async function startLive() {
   const variant = selectedLive();
   try {
-    const archive = await createRecording(variant, error => controller.failRecording(`Recording stopped: ${error.message}`));
+    const archive = await createRecording(variant, error => controller.failRecording(`Recording stopped: ${error.message}`), readStorage("eeciv-unit-system") || "metric");
     if (controller.state.phase !== "idle" || controller.state.link !== "ready") {
       await archive.finish({ valid: false, reasons: ["Connection changed while opening recording"] });
       return { ok: false, error: "Connect the bridge before starting a recording" };
@@ -146,6 +252,31 @@ async function downloadSaved(kind) {
   }
 }
 
+function currentUnits() { return readStorage("eeciv-unit-system") || "metric"; }
+
+async function saveFullDiagnostic() {
+  const button = document.getElementById("export-diagnostics");
+  button.disabled = true;
+  try {
+    const result = await exportDiagnosticZip({ activeArchive: controller.state.archive, unitSystem: currentUnits() });
+    controller.state.message = `Diagnostic ZIP integrity verified · ${result.size.toLocaleString()} bytes · SHA-256 ${result.sha256}`;
+    render(controller.state);
+  } catch (error) {
+    controller.state.message = `Diagnostic ZIP failed: ${error.message}`;
+    render(controller.state);
+  } finally { button.disabled = false; }
+}
+
+async function restoreLastDiagnosticResult() {
+  const snapshot = await diagnosticSnapshot();
+  const resultEvent = snapshot.events.filter(event => event.type === "SESSION_RESULT").at(-1);
+  if (!resultEvent?.detail) return;
+  const detail = resultEvent.detail;
+  controller.state.lastSession = { ...detail, rows: [], pids: {}, mem: {}, rom: null, totalRows: 0 };
+  controller.state.trust = detail.verdict?.valid ? "valid" : "untrusted";
+  previousSessionKey = `${detail.variant}:${detail.startedAt}:${detail.completedAt}`;
+}
+
 function wire() {
   applyStaticStrings();
   document.getElementById("about-version").textContent = APP_VERSION;
@@ -153,17 +284,64 @@ function wire() {
   document.getElementById("bt-warning").hidden = bluetoothAvailable() || demoEnabled();
   const storedDemo = readStorage("eeciv-demo") === "1";
   const storedCapture = readStorage("eeciv-demo-capture");
-  document.getElementById("manual-gearbox").checked = readStorage("eeciv-manual-gearbox") !== "0";
+  const manual = readStorage("eeciv-manual-gearbox") !== "0";
+  document.getElementById("manual-gearbox").checked = manual;
+  document.getElementById("manual-gearbox-settings").checked = manual;
+  const idleCheck = readStorage("eeciv-idle-check") === "1";
+  document.getElementById("idle-check").checked = idleCheck;
+  document.getElementById("idle-check-settings").checked = idleCheck;
+  const selectedSet = readStorage("eeciv-live-set");
+  if (["LIVE", "LIVE2", "LIVE3", "ALL"].includes(selectedSet)) chooseLiveSet(selectedSet);
+  const selectedGroup = readStorage("eeciv-live-group");
+  if (["overview", "engine", "fuel", "temp", "switches", "advanced"].includes(selectedGroup)) document.getElementById("live-group").value = selectedGroup;
+  document.getElementById("theme-mode").value = readStorage("eeciv-theme") || "system";
+  document.getElementById("unit-system").value = readStorage("eeciv-unit-system") || "metric";
+  document.getElementById("font-size").value = readStorage("eeciv-font-size") || "normal";
+  document.getElementById("high-contrast").checked = readStorage("eeciv-high-contrast") === "1";
+  document.getElementById("reduce-motion").checked = readStorage("eeciv-reduce-motion") === "1";
+  applyDisplayPreferences();
   const storedMode = readStorage("eeciv-stored-code-mode");
   if (storedMode === "0E" || storedMode === "A4") document.getElementById("stored-code-mode").value = storedMode;
   document.getElementById("stored-code-mode").addEventListener("change", (event) => {
     writeStorage("eeciv-stored-code-mode", event.target.value);
   });
-  document.getElementById("manual-gearbox").addEventListener("change", (event) => {
-    writeStorage("eeciv-manual-gearbox", event.target.checked ? "1" : "0");
+  for (const id of ["manual-gearbox", "manual-gearbox-settings"]) document.getElementById(id).addEventListener("change", (event) => {
+    const value = event.target.checked;
+    document.getElementById("manual-gearbox").checked = value;
+    document.getElementById("manual-gearbox-settings").checked = value;
+    writeStorage("eeciv-manual-gearbox", value ? "1" : "0");
     render(controller.state);
   });
-  document.getElementById("idle-check").addEventListener("change", () => render(controller.state));
+  for (const id of ["idle-check", "idle-check-settings"]) document.getElementById(id).addEventListener("change", (event) => {
+    const value = event.target.checked;
+    document.getElementById("idle-check").checked = value;
+    document.getElementById("idle-check-settings").checked = value;
+    writeStorage("eeciv-idle-check", value ? "1" : "0");
+    render(controller.state);
+  });
+  document.getElementById("live-set").addEventListener("change", (event) => writeStorage("eeciv-live-set", event.target.value));
+  document.getElementById("live-group").addEventListener("change", (event) => {
+    writeStorage("eeciv-live-group", event.target.value);
+    render(controller.state);
+  });
+  document.getElementById("theme-mode").addEventListener("change", (event) => {
+    writeStorage("eeciv-theme", event.target.value); applyDisplayPreferences();
+  });
+  document.getElementById("unit-system").addEventListener("change", (event) => {
+    writeStorage("eeciv-unit-system", event.target.value); render(controller.state);
+  });
+  document.getElementById("font-size").addEventListener("change", (event) => {
+    writeStorage("eeciv-font-size", event.target.value); applyDisplayPreferences();
+  });
+  document.getElementById("high-contrast").addEventListener("change", (event) => {
+    writeStorage("eeciv-high-contrast", event.target.checked ? "1" : "0"); applyDisplayPreferences();
+  });
+  document.getElementById("reduce-motion").addEventListener("change", (event) => {
+    writeStorage("eeciv-reduce-motion", event.target.checked ? "1" : "0"); applyDisplayPreferences();
+  });
+  document.getElementById("dismiss-onboarding").addEventListener("click", () => {
+    writeStorage("sme105-onboarding-dismissed", "1"); document.getElementById("onboarding").hidden = true;
+  });
   if (storedDemo) document.getElementById("demo-toggle").checked = true;
   if (storedCapture) document.getElementById("demo-capture").value = storedCapture;
   document.getElementById("bt-warning").hidden = bluetoothAvailable() || demoEnabled();
@@ -171,11 +349,57 @@ function wire() {
   document.querySelectorAll("nav button").forEach((button) => {
     button.addEventListener("click", () => {
       showView(button.dataset.view);
+      recordDiagnosticEvent("SCREEN_VIEW", { view: button.dataset.view }, "ui");
+      if (button.dataset.view === "log") { refreshWarnings(); refreshJournal(); }
       render(controller.state);
     });
   });
   document.getElementById("connect-btn").addEventListener("click", () => { connect(); });
+  document.getElementById("connect-settings").addEventListener("click", () => { connect(); });
   document.getElementById("stop-btn").addEventListener("click", () => controller.requestStop());
+  document.getElementById("view-live").addEventListener("click", (event) => {
+    const pinButton = event.target.closest("[data-pin-pid]");
+    if (pinButton) {
+      event.stopPropagation(); toggleSensorPin(pinButton.dataset.pinPid); render(controller.state); return;
+    }
+    const moveButton = event.target.closest("[data-move-pid]");
+    if (moveButton) {
+      event.stopPropagation(); movePinnedSensor(moveButton.dataset.movePid, Number(moveButton.dataset.direction)); render(controller.state); return;
+    }
+    const openButton = event.target.closest("[data-open-pid]");
+    const metric = event.target.closest(".sensor-hit[data-pid]");
+    const pid = openButton?.dataset.openPid || metric?.dataset.pid;
+    if (pid) openSensorDetails(controller.state, pid);
+  });
+  document.getElementById("drawer-close").addEventListener("click", () => {
+    document.getElementById("sensor-drawer").hidden = true;
+  });
+  document.getElementById("sensor-drawer").addEventListener("click", (event) => {
+    if (event.target.id === "sensor-drawer") event.currentTarget.hidden = true;
+    const rangeButton = event.target.closest("[data-range]");
+    if (rangeButton) {
+      for (const button of document.querySelectorAll("[data-range]")) button.setAttribute("aria-pressed", String(button === rangeButton));
+      setSensorChartRange(rangeButton.dataset.range);
+    }
+  });
+  document.getElementById("drawer-pin").addEventListener("click", (event) => {
+    toggleSensorPin(event.currentTarget.dataset.pinPid); render(controller.state);
+  });
+  document.getElementById("drawer-export-sensor").addEventListener("click", () => {
+    exportSensorCsv(document.getElementById("drawer-pin").dataset.pinPid, { unitSystem: currentUnits() })
+      .catch(error => { controller.state.message = `Sensor export failed: ${error.message}`; render(controller.state); });
+  });
+  document.getElementById("export-group-btn").addEventListener("click", () => {
+    exportGroupCsv(document.getElementById("live-group").value, { unitSystem: currentUnits(), manual: document.getElementById("manual-gearbox").checked })
+      .catch(error => { controller.state.message = `Group export failed: ${error.message}`; render(controller.state); });
+  });
+  for (const id of ["warning-filter", "warning-sensor-filter", "warning-date-filter"]) document.getElementById(id).addEventListener("change", refreshWarnings);
+  document.getElementById("export-diagnostics").addEventListener("click", saveFullDiagnostic);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !document.getElementById("sensor-drawer").hidden) {
+      document.getElementById("sensor-drawer").hidden = true;
+    }
+  });
   document.getElementById("read-codes-btn").addEventListener("click", () => {
     const variant = document.getElementById("stored-code-mode").value === "A4" ? "A4" : "0E";
     ask(`${STR.confirmStoredTitle} (${variant})`, `${STR.confirmStoredBody}\n\nSelected request: ${variant}; expected response mode: 26H.`, () => controller.requestVehicle(variant));
@@ -230,25 +454,68 @@ function wire() {
     await connect();
     showView(demoKey() === "LIVE" ? "live" : "codes");
   });
-  let dirty = true;
-  let lastPaint = 0;
-  controller.subscribe(() => { dirty = true; });
-  const paint = (timestamp) => {
-    if (dirty && timestamp - lastPaint >= 100) {
-      lastPaint = timestamp;
-      dirty = false;
+  let renderPending = false;
+  const scheduleRender = () => {
+    if (renderPending) return;
+    renderPending = true;
+    requestAnimationFrame(() => {
+      renderPending = false;
       render(controller.state);
-    }
-    requestAnimationFrame(paint);
+    });
   };
-  requestAnimationFrame(paint);
+  controller.subscribe(state => { scheduleRender(); auditState(state); });
   setInterval(() => controller.tick(), 250);
-  setInterval(() => { if (controller.state.combined || controller.state.op?.kind === "live") dirty = true; }, 1000);
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js").catch(() => {});
+  setInterval(() => {
+    if (controller.state.combined || controller.state.op?.kind === "live" || !document.getElementById("sensor-drawer").hidden) scheduleRender();
+    auditFreshness(controller.state);
+  }, 1000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) scheduleRender(); });
+  document.addEventListener("visibilitychange", () => {
+    recordDiagnosticEvent(document.hidden ? "APP_BACKGROUND" : "APP_FOREGROUND", { phase: controller.state.phase }, "lifecycle");
+    if (document.hidden && controller.state.phase !== "idle") {
+      recordDiagnosticEvent("BACKGROUND_CAPTURE_STOP_REQUESTED", { reason: "app left foreground" }, "lifecycle");
+      controller.requestStop();
+    }
+  });
+  window.addEventListener("resize", () => { scheduleRender(); requestAnimationFrame(refreshDashboardCharts); });
+  if ("serviceWorker" in navigator && !window.Capacitor?.isNativePlatform?.()) {
+    navigator.serviceWorker.register("./sw.js").catch((error) => {
+      controller.state.message = `Offline cache unavailable: ${error.message}`;
+      render(controller.state);
+    });
   }
-  showView("connect");
+  showView("live");
   render(controller.state);
+  wired = true;
+  auditState(controller.state);
+  refreshWarnings();
 }
 
-wire();
+async function boot() {
+  setDiagnosticStorageErrorHandler(error => {
+    controller.state.message = `Diagnostic journal write failed: ${error.message}`;
+    if (wired) render(controller.state);
+  });
+  try {
+    await startDiagnosticRun();
+    await restoreLastDiagnosticResult();
+  }
+  catch (error) { document.getElementById("message").textContent = `Diagnostic storage is unavailable: ${error.message}`; }
+  window.addEventListener("error", event => {
+    recordDiagnosticEvent("UNCAUGHT_ERROR", { message: event.message, source: event.filename, line: event.lineno, stack: event.error?.stack || "" }, "error");
+    controller.state.message = `Application error: ${event.message}`;
+    if (wired) render(controller.state);
+  });
+  window.addEventListener("unhandledrejection", event => {
+    const error = event.reason;
+    recordDiagnosticEvent("UNHANDLED_REJECTION", { message: error?.message || String(error), stack: error?.stack || "" }, "error");
+    controller.state.message = `Application task failed: ${error?.message || String(error)}`;
+    if (wired) render(controller.state);
+  });
+  window.addEventListener("pagehide", () => { closeDiagnosticRun("pagehide"); });
+  wire();
+}
+
+boot().catch(error => {
+  document.getElementById("message").textContent = `Startup failed: ${error.message}`;
+});

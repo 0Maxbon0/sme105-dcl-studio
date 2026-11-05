@@ -129,7 +129,7 @@ export const PID_TEXT = {
   IACT: ["Intake-air sensor, raw", "counts", "Unconverted sensor input. Open/short diagnosis needs applicable circuit limits, wiring checks and fault codes."],
   IECT: ["Coolant sensor, raw", "counts", "The raw coolant-sensor number, before it is converted to degrees."],
   ITP: ["Throttle sensor signal", "counts", "Should rise smoothly as the throttle opens. Counts are not throttle percent; percentage needs calibrated closed/open positions."],
-  VBAT: ["Battery voltage", "volts", "ECU supply voltage. Starting, charging and electrical loads affect it. Compare with a battery measurement before diagnosing the charging system."],
+  VBAT: ["Battery voltage", "V", "ECU supply voltage. Starting, charging and electrical loads affect it. Compare with a battery measurement before diagnosing the charging system."],
   BP: ["Barometric pressure", "inHg", "Absolute outside pressure; expected pressure depends on altitude and weather."],
   SAFTOT: ["Spark advance", "degrees", "How many degrees before top dead centre the spark plug fires."],
   FUELPW1: ["Injector pulse command", "ticks", "The protocol reports clock ticks. Milliseconds need a verified ECU clock conversion; no duration is guessed."],
@@ -155,7 +155,7 @@ export const PID_TEXT = {
   MAP_FREQ: ["MAP frequency", "Hz", "Frequency output of a MAP sensor, if fitted."],
   EGRDC: ["EGR valve command", "%", "Commanded electrical duty cycle if supported; this is not measured valve opening or exhaust flow."],
   VSBAR: ["Speed, filtered", "mph", "A filtered vehicle-speed value. Zero when stopped."],
-  MAF: ["PID 0x26 — possible airflow signal", "counts", "Some implementations call this MAF; the LHBH1 table marks 0x26 unused. Its meaning and physical scaling are unverified on this ECU."],
+  MAF: ["PID 0x26 — possible airflow-related raw signal (unverified)", "counts", "Some implementations call this MAF; the LHBH1 table marks 0x26 unused. Its meaning and physical scaling are unverified on this ECU."],
   BCSDC: ["Torque-converter clutch", "%", "Command to the transmission lock-up clutch, if this car has one."],
   GR_CM: ["Commanded gear", "", "The gear the ECU is commanding. Meaningless on a manual gearbox."],
   ETVOCM: ["Transmission overcurrent monitor", "volts", "Reference ETVOCM electrical monitor, if fitted; not a measurement of hydraulic pressure."],
@@ -170,8 +170,11 @@ const MPH_TO_KMH = 1.609344;
 export const AUTOMATIC_PIDS = new Set(["BCSDC", "GR_CM", "ETVOCM", "TV_PRES", "ITOT", "PDL"]);
 const RAW_SIGNALS = new Set(["IACT", "IECT", "ITP", "IEGO1", "RATCH", "INDS", "IOCC", "IVCAL", "IEGR", "MAF", "ITOT"]);
 
-export function displayReading(name, value) {
-  if (name === "VS" || name === "VSBAR") return { value: value * MPH_TO_KMH, unit: "km/h" };
+export function displayReading(name, value, { unitSystem = "metric" } = {}) {
+  if ((name === "ECT" || name === "ACT") && unitSystem === "imperial") return { value: value * 9 / 5 + 32, unit: "°F" };
+  if (name === "VS" || name === "VSBAR") return unitSystem === "imperial"
+    ? { value, unit: "mph" }
+    : { value: value * MPH_TO_KMH, unit: "km/h" };
   if (name === "KAMRF1") return { value: (value - 1) * 100, unit: "% correction" };
   const spec = Object.values(PIDS).find(([key]) => key === name);
   return { value, unit: PID_TEXT[name]?.[1] ?? spec?.[1] ?? "" };
@@ -245,13 +248,13 @@ export function formatValue(value) {
   return String(rounded);
 }
 
-export function rowsToCsv(rows) {
+export function rowsToCsv(rows, { unitSystem = "metric" } = {}) {
   const combined = rows.some((row) => row.segment != null);
   const lines = ["t_s,pid,raw,value,unit,display_value,display_unit" +
     (combined ? ",segment,group,segment_t_s,sample_status,time_basis" : "")];
   for (const row of rows) {
     const spec = Object.values(PIDS).find(([name]) => name === row.name);
-    const view = displayReading(row.name, row.value);
+    const view = displayReading(row.name, row.value, { unitSystem });
     lines.push(`${row.t},${row.name},${row.raw},${row.value},${spec?.[1] ?? ""},${formatValue(view.value)},${view.unit}` +
       (combined ? `,${row.segment},${row.variant},${row.source_t},${row.validity},host-arrival-aligned` : ""));
   }

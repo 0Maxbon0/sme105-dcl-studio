@@ -14,6 +14,14 @@ test("both Ford speed encodings display kilometres per hour", () => {
   }
 });
 
+test("user-selected imperial units convert only calibrated temperature and speed displays", () => {
+  assert.deepEqual(displayReading("ECT", 20, { unitSystem: "imperial" }), { value: 68, unit: "°F" });
+  assert.deepEqual(displayReading("VS", 100, { unitSystem: "imperial" }), { value: 100, unit: "mph" });
+  assert.deepEqual(displayReading("ITP", 159, { unitSystem: "imperial" }), { value: 159, unit: "counts" });
+  const csv = rowsToCsv([{ t: 1, name: "ECT", raw: 100, value: 20 }], { unitSystem: "imperial" });
+  assert.match(csv, /,20,degC,68,°F/);
+});
+
 test("fuel correction is a change from unity, not an air/fuel ratio", () => {
   assert.equal(displayReading("KAMRF1", 1).value, 0);
   assert.equal(displayReading("KAMRF1", 1.0625).value, 6.25);

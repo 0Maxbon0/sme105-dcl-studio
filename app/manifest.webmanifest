@@ -1,6 +1,6 @@
 {
-  "name": "SME105 EEC-IV Diagnostics",
-  "short_name": "EEC-IV",
+  "name": "SME105 DCL Studio · EEC-IV",
+  "short_name": "DCL Studio",
   "description": "Offline Bluetooth diagnostics for a 1998 European Ford Escort 1.6 Zetec EEC-IV ECU.",
   "start_url": "./index.html",
   "scope": "./",

@@ -10,6 +10,7 @@ import {
 } from "./protocol.js";
 import { createSession, noteSessionLine, sessionVerdict } from "./session.js";
 import { appendCombined, createCombined, finishCombinedSegment, GROUP_WINDOW_MS, LIVE_GROUPS, startCombinedSegment } from "./combined.js";
+import { recordBridgeRaw, recordDiagnosticSample } from "./diagnostics.js";
 
 function unique(list) {
   const out = [];
@@ -23,6 +24,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     link: "disconnected",
     phase: "idle",
     deviceName: "",
+    transport: "",
     identity: { auth: "", hello: "", helloOk: null, pins: "", pinsOk: null },
     status: null,
     bench: { result: "", pass: false },
@@ -76,6 +78,8 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     return {
       variant,
       kind: state.op?.kind || "",
+      startedAt: state.op?.startedAt || null,
+      completedAt: now(),
       verdict,
       requestedMode,
       observedModes: [
@@ -225,7 +229,11 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     if (parsed.type === "session_start") {
       state.cart = createCartDecoder(pidSetForVariant(state.op.variant), state.archive ? {
         historyLimit: 512,
-        onSample(sample) { sample.receivedAt = now(); state.archive.sample(sample); },
+        onSample(sample) {
+          sample.receivedAt = now();
+          state.archive.sample(sample);
+          recordDiagnosticSample(sample, { variant: state.op?.variant || "" });
+        },
       } : {});
     }
     noteSessionLine(state.op.session, parsed);
@@ -256,6 +264,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
 
   function handleLine(line) {
     const parsed = parseLine(line);
+    recordBridgeRaw(parsed.raw);
     state.archive?.line(parsed.raw);
     state.log.push(parsed.raw);
     if (state.archive && state.log.length > 2100) state.log.splice(0, state.log.length - 2000);
@@ -376,6 +385,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     if (state.phase !== "idle") return "busy";
     if (state.identity.helloOk !== true || state.identity.pinsOk !== true) return "bridge identity not verified";
     if (op.kind !== "live") state.archive = null;
+    op.startedAt = now();
     state.op = op;
     if (!op.manualBench || op.variant) {
       state.lastSession = null;
@@ -426,10 +436,11 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       return () => listeners.delete(fn);
     },
     handleLine,
-    onConnected(name = "") {
+    onConnected(name = "", transport = "ble") {
       const auth = state.identity.auth;
       state.link = "ready";
       state.deviceName = name;
+      state.transport = transport;
       state.log = [];
       state.archive = null;
       state.lastSession = null;
@@ -451,6 +462,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       const phase = state.phase;
       state.link = "disconnected";
       state.deviceName = "";
+      state.transport = "";
       if (phase === "idle") {
         state.message = "Disconnected";
         touch();

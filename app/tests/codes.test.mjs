@@ -17,6 +17,8 @@ test("fault database covers the European list and this car's notes", () => {
     assert.equal(hit.known, true, code);
     assert.ok(hit.note, code);
   }
+  assert.match(lookupCode("157").description, /mass air flow|MAF/i);
+  assert.doesNotMatch(lookupCode("157").description, /MAP/i);
   assert.equal(lookupCode("214").category, "ignition");
   assert.equal(lookupCode("111").category, "pass");
   assert.equal(lookupCode("010").category, "prompt");

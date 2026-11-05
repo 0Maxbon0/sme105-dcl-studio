@@ -2,9 +2,23 @@
 
 Offline, installable web app for a 1998 European Ford Escort 1.6 Zetec (Ford EEC-IV, DCL/CART). The phone talks Bluetooth Low Energy to the `SME105-DCL` ESP32 bridge. The bridge is the only thing that transmits on the car.
 
+## Android app
+
+The native Android app works offline after installation and uses authenticated BLE through the ESP32 bridge. It needs no phone Wi-Fi or network permission. Android WebView storage is private to this installed app; Chrome PWA recordings do not migrate automatically. Export the old PWA data before removing it.
+
+Build the debuggable APK from the repository root with Node.js, JDK 21, and Android SDK platform 36:
+
+```bash
+npm ci
+npm test
+npm run android:debug
+```
+
+The artifact is `android/app/build/outputs/apk/debug/app-debug.apk`. Install it with `adb install -r android/app/build/outputs/apk/debug/app-debug.apk`. The app connects only after you tap **Connect**; live capture and diagnostic reads require separate explicit actions. No background vehicle reads are started automatically. The browser PWA remains available from `app/index.html`.
+
 ## Continuous all-data monitoring
 
-**All live data** uses `ARM_ALL` / `READ_ALL` on bridge firmware v21 or newer.
+**All live data** uses `ARM_ALL` / `READ_ALL` on bridge firmware v23 or newer.
 It loads one mode-41 map with three words in each of frames 1–15, then repeats
 mode 21 without changing groups. The 45 slots contain all 39 requested channels
 and six repeated key readings. Frame length remains 6: the designed update
@@ -44,11 +58,8 @@ See [browser storage documentation](https://developer.mozilla.org/en-US/docs/Web
 
 Three hours of simulated ECU frames, including two clock wraps and more than
 1.3 million samples, pass decoder/bounded-memory checks. IndexedDB transaction
-and failure/export tests use a temporary fake-indexeddb installation:
-
-```bash
-FAKE_INDEXEDDB_MODULE=/tmp/sme105-v21-test-deps/node_modules/fake-indexeddb/build/esm/index.js node --test app/tests/recording.test.mjs
-```
+tests use the pinned, lockfile-managed fake-indexeddb development dependency;
+run all checks with `npm test`.
 
 These are software checks, not a real three-hour car or radio test. Local
 browser preview was blocked because permission was declined; UI interaction
@@ -84,7 +95,7 @@ Remove the flag when you are done. Prefer real HTTPS for anything you keep using
 
 ## Pairing
 
-The bridge characteristics require an encrypted link. The first time the app reads or writes them, Android shows the system PIN dialog. Enter the PIN there. This unit’s default PIN is **225367**. The app cannot see or store that PIN. If another controller already owns the bridge, the link answers `DENIED remote_busy`.
+The bridge characteristics require an encrypted link. If Android asks for a pairing code, enter the bridge owner-provided code in the operating-system dialog. The app cannot see or store that code. If another controller already owns the bridge, the link answers `DENIED remote_busy`.
 
 Device name filter: `SME105` (the bridge advertises `SME105-DCL`). Service: Nordic UART `6e400001-b5a3-f393-e0a9-e50e24dcca9e`.
 
