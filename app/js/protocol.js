@@ -1,6 +1,6 @@
 /** ASCII line protocol for the SME105 bridge. No DOM, no Bluetooth. */
 
-export const APP_VERSION = "1.6.0";
+export const APP_VERSION = "1.6.1";
 
 export const NUS_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
 export const NUS_RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
@@ -45,6 +45,7 @@ export const END_REASONS = {
   16: "CAPTURE_TIMEOUT",
   17: "TRANSPORT_BACKPRESSURE",
   18: "DE_MISSING",
+  19: "RX_SILENCE (no UART1 bytes for five seconds)",
 };
 
 /** Timeouts in milliseconds. Session timeouts start when READ is sent. */

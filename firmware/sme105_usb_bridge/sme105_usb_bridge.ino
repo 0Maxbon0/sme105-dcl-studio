@@ -113,7 +113,7 @@ enum Fault : uint8_t { NO_FAULT, BAD_IDLE, HSK_TX, HSK_TIMEOUT, HSK_ACK,
                        CART_INIT, CART_ERR, CART_HEADER, CART_PHASE,
                        CART_CADENCE, CART_TIMER, PAD_MISMATCH, PAD_FRAMING,
                        DE_TIMEOUT, RX_OVERFLOW, HOST_STOP, CAPTURE_TIMEOUT,
-                       TRANSPORT_BACKPRESSURE, DE_MISSING };
+                       TRANSPORT_BACKPRESSURE, DE_MISSING, RX_SILENCE };
 struct RxEvent { uint32_t at; uint8_t value; };
 struct HeaderByte { uint32_t at; uint8_t value; };
 struct CmdWord { uint8_t first; uint8_t second; };
@@ -2655,11 +2655,38 @@ void pollActive() {
         isLiveVariant(variant) ? kLiveCaptureMs :
         variant == kVariantOffline ? kOfflineCaptureMs : kCaptureMs;
     const uint32_t elapsed = millis() - captureStartedMs;
+    const uint32_t rxAgeUs = static_cast<uint32_t>(esp_timer_get_time()) - lastRxAtUs;
     if (isLiveVariant(variant) && stage == CART_READ && elapsed >= 5000 &&
-        static_cast<uint32_t>(esp_timer_get_time() - lastRxAtUs) >= 5000000UL) {
-      // Key-off or a broken ECU link must not leave a three-hour session
-      // appearing active. No automatic retry; retain an incomplete capture.
-      stopEverything(CART_HEADER);
+        rxAgeUs >= 5000000UL) {
+      // Distinguish silence at GPIO16/UART1 from a malformed CART header.
+      // The former had been reported as CART_HEADER (7), indistinguishable
+      // from an ISR framing failure. An RX-board LED is NOT proof that the
+      // ESP32 has received a byte. Preserve the fail-closed DE/TX shutdown:
+      // suppressing this stop would not restore missing live measurements.
+      const uint32_t received = rxTotal;
+      const uint32_t blocks = dpsBlocks;
+      const uint32_t lastRxUs = lastRxAtUs;
+      const uint8_t started = wordsStarted;
+      const uint8_t verified = wordsVerified;
+      const uint8_t nextFrame = nextId;
+      const uint8_t inFlight = slotInFlight ? 1 : 0;
+      const uint8_t pending = slotArmed ? 1 : 0;
+      const uint8_t uart2Busy = UART2.status.st_utx_out ? 1 : 0;
+      const uint8_t roHigh = digitalRead(kRO) == HIGH ? 1 : 0;
+      stopEverything(RX_SILENCE);
+      out.print(F("EVENT live_rx_silence elapsed_ms=")); out.print(elapsed);
+      out.print(F(" last_rx_age_us=")); out.print(rxAgeUs);
+      out.print(F(" last_rx_us=")); out.print(lastRxUs);
+      out.print(F(" ro_bytes=")); out.print(received);
+      out.print(F(" dps_blocks=")); out.print(blocks);
+      out.print(F(" words_started=")); out.print(started);
+      out.print(F(" words_verified=")); out.println(verified);
+      out.print(F("EVENT live_rx_stop_state next_frame=")); out.print(nextFrame);
+      out.print(F(" slot_in_flight=")); out.print(inFlight);
+      out.print(F(" slot_armed=")); out.print(pending);
+      out.print(F(" uart2_busy=")); out.print(uart2Busy);
+      out.print(F(" ro_pin_high=")); out.println(roHigh);
+      out.println(F("FAULT reason=19 cause=RX_SILENCE no_auto_retry=1 DE=LOW"));
       return;
     }
     if (elapsed >= limit) {

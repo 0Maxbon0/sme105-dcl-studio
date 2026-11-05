@@ -14,7 +14,7 @@ REARM = ("CAPTURE_TIMEOUT", "HOST_STOP", "BAD_IDLE", "HSK_TIMEOUT",
 LATCHED = ("PAD_MISMATCH", "PAD_FRAMING", "DE_MISSING", "DE_TIMEOUT",
            "CART_TIMER", "CART_HEADER", "CART_PHASE", "CART_ERR",
            "CART_CADENCE", "RX_OVERFLOW", "TRANSPORT_BACKPRESSURE")
-HOST_LATCHED = ("6", "7", "8", "9", "10", "11", "12", "13", "14", "17", "18")
+HOST_LATCHED = ("6", "7", "8", "9", "10", "11", "12", "13", "14", "17", "18", "19")
 
 
 def _between(text: str, start: str, end: str) -> str:

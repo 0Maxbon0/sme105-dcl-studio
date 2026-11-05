@@ -1,4 +1,5 @@
 /** Per-capture validity. A session is valid only when every check passes. */
+import { reasonText } from "./protocol.js";
 
 export function createSession() {
   return {
@@ -47,6 +48,13 @@ export function sessionVerdict(session, flags = {}) {
   if (session) reasons.push(...session.problems);
   if (!session?.end) reasons.push("no END line");
   else {
+    // END means the bridge stopped, NOT necessarily that a read completed.
+    // In v21 a five-second silence used END reason=7 (CART_HEADER) without
+    // emitting FAULT, so old LIVE views could wrongly display "Valid".
+    if (![15, 16].includes(session.end.reason)) {
+      reasons.push(`END reason=${session.end.reason} (${reasonText(session.end.reason)})`);
+    }
+    if (session.end.de !== "LOW") reasons.push(`END DE=${session.end.de || "missing"}`);
     if (session.end.ro_lost !== 0) reasons.push(`ro_lost=${session.end.ro_lost}`);
     if (session.end.uart_errors !== 0) reasons.push(`uart_errors=${session.end.uart_errors}`);
     if (session.rx !== session.end.ro_bytes) {

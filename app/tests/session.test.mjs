@@ -86,3 +86,23 @@ test("disconnect and timeout override a clean end", () => {
   assert.equal(verdict.valid, false);
   assert.ok(verdict.reasons.some((reason) => reason.includes("FAULT")));
 });
+
+test("v21 live RX silence cannot be misreported as a successful capture", () => {
+  // The in-car ALL log had matching RX count and zero UART errors/loss,
+  // but END reason=7 after the UART1 stream went silent. Older LIVE views
+  // missed this because they validated counters but not END reason.
+  for (const reason of [7, 19]) {
+    const session = feed([
+      "EVENT session=READ_CANDIDATE",
+      `END reason=${reason} ro_bytes=0 ro_lost=0 uart_errors=0 pad_verified=1 words_started=2 ecu_verified=0 dtc_verified=0 DE=LOW`,
+    ].join("\n"));
+    const verdict = sessionVerdict(session);
+    assert.equal(verdict.valid, false);
+    assert.equal(verdict.status, "INCOMPLETE");
+    assert.match(verdict.reasons.join("; "), new RegExp(`END reason=${reason}`));
+  }
+  assert.equal(sessionVerdict(feed([
+    "EVENT session=READ_CANDIDATE",
+    "END reason=16 ro_bytes=0 ro_lost=0 uart_errors=0 pad_verified=0 words_started=0 ecu_verified=0 dtc_verified=0 DE=LOW",
+  ].join("\n"))).valid, true);
+});
