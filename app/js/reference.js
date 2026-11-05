@@ -27,7 +27,7 @@ export const READING_REFERENCES = {
   ISCDTY: ["Duty-cycle command, nominally 0–100%; this is not a normal idle band.", "Higher means more electrical on-time, not measured valve opening. Load and warm-up can change the command; neither end alone establishes valve health."],
   EGRDC: ["Duty-cycle command, nominally 0–100%; this is not a normal operating band.", "If this equipment/channel is supported, the value describes electrical command rather than measured EGR flow. Zero can be expected in some conditions."],
   IEGR: [raw, "Confirm EGR equipment and channel identity first. A changing input does not establish EGR valve opening or exhaust flow."],
-  MAF: ["PID 0x26 identity and scaling unverified; no normal airflow band assigned.", "Changing counts show activity. They do not prove a MAF signal or establish g/s, sensor volts, or engine health."],
+  MAF: ["MAF sensor signal (PID 0x26), identified by the owner’s unplug/reconnect test. Physical scaling remains unverified; no normal airflow band assigned.", "The owner identified the tested connection as the MAF sensor. The ECU raw word is shown unchanged. This does not establish g/s, sensor volts, or engine health."],
   VS: ["Expected while stationary: 0 km/h. No universal healthy driving-speed band.", "Higher means faster travel. A stationary zero cannot verify road-speed calibration."],
   VSBAR: ["Expected while stationary: 0 km/h. Filtered speed may lag changes.", "Higher means faster travel; compare with VS and an independent speed reference before diagnosing a discrepancy."],
   FMEM_FLAGS: ["Bit flags, not a numeric normal range; bit meanings unverified for this ECU.", "A larger packed number is not more severe. Read individual bits with calibration-specific definitions and fault codes."],

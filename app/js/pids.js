@@ -124,25 +124,25 @@ export const PIDS = {
 /** Plain names. The short key stays the ECU identifier used in captures. */
 export const PID_TEXT = {
   N: ["Engine speed", "rpm", "How fast the crankshaft is turning. This stays at zero with the engine off."],
-  ACT: ["Intake air temperature", "°C", "The temperature the ECU is using; the reference strategy permits substituted or fixed fallback values. This is not always a direct sensor measurement."],
-  ECT: ["Coolant temperature", "°C", "Engine coolant temperature reported by the ECU. Warm-up, thermostat and fan operation determine expected temperature; a factory pass/fail band is not verified."],
-  IACT: ["Intake-air sensor, raw", "counts", "Unconverted sensor input. Open/short diagnosis needs applicable circuit limits, wiring checks and fault codes."],
-  IECT: ["Coolant sensor, raw", "counts", "The raw coolant-sensor number, before it is converted to degrees."],
-  ITP: ["Throttle sensor signal", "counts", "Should rise smoothly as the throttle opens. Counts are not throttle percent; percentage needs calibrated closed/open positions."],
-  VBAT: ["Battery voltage", "V", "ECU supply voltage. Starting, charging and electrical loads affect it. Compare with a battery measurement before diagnosing the charging system."],
+  ACT: ["Intake air temp", "°C", "The temperature the ECU is using; the reference strategy permits substituted or fixed fallback values. This is not always a direct sensor measurement."],
+  ECT: ["Coolant temp", "°C", "Engine coolant temperature reported by the ECU. Warm-up, thermostat and fan operation determine expected temperature; a factory pass/fail band is not verified."],
+  IACT: ["Air temperature input", "counts", "Unconverted sensor input. Open/short diagnosis needs applicable circuit limits, wiring checks and fault codes."],
+  IECT: ["Coolant sensor input", "counts", "The raw coolant-sensor number, before it is converted to degrees."],
+  ITP: ["Throttle signal", "counts", "Should rise smoothly as the throttle opens. Counts are not throttle percent; percentage needs calibrated closed/open positions."],
+  VBAT: ["ECU voltage", "V", "ECU supply voltage. Starting, charging and electrical loads affect it. Compare with a battery measurement before diagnosing the charging system."],
   BP: ["Barometric pressure", "inHg", "Absolute outside pressure; expected pressure depends on altitude and weather."],
   SAFTOT: ["Spark advance", "degrees", "How many degrees before top dead centre the spark plug fires."],
-  FUELPW1: ["Injector pulse command", "ticks", "The protocol reports clock ticks. Milliseconds need a verified ECU clock conversion; no duration is guessed."],
-  LAMBSE1: ["Target mixture", "lambda", "1.00 is the normal mixture. Below 1 is richer, which is normal when the engine is cold."],
-  IEGO1: ["Oxygen sensor feedback", "counts", "Switching is expected during closed-loop operation. Raw count direction and sensor voltage need verified input-circuit scaling; high counts do not by themselves mean rich exhaust."],
+  FUELPW1: ["Injector command", "ticks", "The protocol reports clock ticks. Milliseconds need a verified ECU clock conversion; no duration is guessed."],
+  LAMBSE1: ["Mixture command", "lambda", "1.00 is the normal mixture. Below 1 is richer, which is normal when the engine is cold."],
+  IEGO1: ["Oxygen sensor input", "counts", "Switching is expected during closed-loop operation. Raw count direction and sensor voltage need verified input-circuit scaling; high counts do not by themselves mean rich exhaust."],
   VS: ["Vehicle speed", "mph", "Speed from the vehicle speed sensor. Zero when the car is stopped."],
   LOAD: ["Engine load", "%", "How hard the engine is working. It rises when you press the pedal."],
-  KAMRF1: ["Learned fuel correction", "ratio", "The ECU's long-term fuel adjustment. 1.00 means no correction."],
+  KAMRF1: ["Fuel adaptation", "ratio", "The ECU's long-term fuel adjustment. 1.00 means no correction."],
   FMEM_FLAGS: ["Failure memory, byte 1", "", "A packed set of failure flags. Each line below is one flag. The exact meaning of each bit is not published for this ECU."],
   FMEM_FLAG2: ["Failure memory, byte 2", "", "A second packed set of failure flags. Same limitation as byte 1."],
-  RATCH: ["Learned closed throttle", "counts", "The throttle reading the ECU has learned as 'pedal released'."],
-  DSDRPM: ["Target idle speed", "rpm", "The idle speed the ECU is trying to hold."],
-  ISCDTY: ["Idle air valve command", "%", "Commanded electrical duty cycle, not measured valve opening. The ECU uses it to control idle speed."],
+  RATCH: ["Throttle reference", "counts", "The throttle reading the ECU has learned as 'pedal released'."],
+  DSDRPM: ["Idle target", "rpm", "The idle speed the ECU is trying to hold."],
+  ISCDTY: ["Idle valve command", "%", "Commanded electrical duty cycle, not measured valve opening. The ECU uses it to control idle speed."],
   BITMAP_0: ["Switches, group 1", "", "On/off inputs: gear position, fuel pump, canister purge and the air-conditioning clutch."],
   BITMAP_1: ["Switches, group 2", "", "On/off inputs: closed-loop fuel, power steering, air conditioning, and a few outputs."],
   INDS: ["Neutral / drive switch", "counts", "Whether the gearbox is in park/neutral or in gear."],
@@ -155,7 +155,7 @@ export const PID_TEXT = {
   MAP_FREQ: ["MAP frequency", "Hz", "Frequency output of a MAP sensor, if fitted."],
   EGRDC: ["EGR valve command", "%", "Commanded electrical duty cycle if supported; this is not measured valve opening or exhaust flow."],
   VSBAR: ["Speed, filtered", "mph", "A filtered vehicle-speed value. Zero when stopped."],
-  MAF: ["PID 0x26 — possible airflow-related raw signal (unverified)", "counts", "Some implementations call this MAF; the LHBH1 table marks 0x26 unused. Its meaning and physical scaling are unverified on this ECU."],
+  MAF: ["MAF sensor signal", "counts", "PID 0x26. The owner identified the unplugged/reconnected component as the MAF sensor. PID 0x26 is retained as raw ECU counts; physical scaling to g/s or volts remains unverified."],
   BCSDC: ["Torque-converter clutch", "%", "Command to the transmission lock-up clutch, if this car has one."],
   GR_CM: ["Commanded gear", "", "The gear the ECU is commanding. Meaningless on a manual gearbox."],
   ETVOCM: ["Transmission overcurrent monitor", "volts", "Reference ETVOCM electrical monitor, if fitted; not a measurement of hydraulic pressure."],
@@ -184,7 +184,7 @@ export function displayReading(name, value, { unitSystem = "metric" } = {}) {
 export function readingLabel(name, summary, { manual = true } = {}) {
   if (!summary) return "No reading yet";
   if (manual && AUTOMATIC_PIDS.has(name)) return "Not applicable — manual gearbox";
-  if (name === "MAF") return "Signal received — meaning unverified";
+  if (name === "MAF") return "MAF sensor signal — raw counts";
   if (name === "IECT") return "See coolant temperature in °C";
   if (name === "RATCH") return "Learned closed-throttle reference";
   if (RAW_SIGNALS.has(name)) return "Raw signal — see details";

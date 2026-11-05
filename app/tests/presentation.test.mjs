@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { displayReading, judgeReading, readingLabel, rowsToCsv, scaleWord } from "../js/pids.js";
+import { PID_TEXT, displayReading, judgeReading, readingLabel, rowsToCsv, scaleWord } from "../js/pids.js";
 
 test("both Ford speed encodings display kilometres per hour", () => {
   // Independent anchors: 100 mph = 160.9344 km/h; VS resolution 1/32 mph,
@@ -38,7 +38,8 @@ test("manual gearbox never interprets constant 2 as actual second gear", () => {
 test("unverified signals and tick duration do not acquire invented physical units", () => {
   const summary = { last: 1408, min: 1408, max: 1408, n: 40 };
   assert.equal(readingLabel("FUELPW1", summary), "Injector pulse commanded");
-  assert.match(readingLabel("MAF", summary), /unverified/);
+  assert.match(readingLabel("MAF", summary), /MAF sensor signal.*raw counts/);
+  assert.match(PID_TEXT.MAF[2], /scaling.*unverified/);
   assert.equal(displayReading("ITP", 159).unit, "counts");
   assert.equal(displayReading("IEGO1", 1023).unit, "counts");
   assert.equal(displayReading("FUELPW1", 1408).unit, "ticks");

@@ -125,11 +125,11 @@ test("the Live overview labels the four exact request scopes and six reading gro
   assert.equal((nav.match(/data-view=/g) || []).length, 4);
   assert.match(nav, /data-view="live" aria-current="page"/);
   assert.match(html, /id="live-set"/);
-  assert.match(html, /value="LIVE">Quick LIVE/);
+  assert.match(html, /value="LIVE">Engine/);
   assert.match(html, /value="LIVE2"/);
   assert.match(html, /value="LIVE3"/);
   assert.match(html, /value="ALL"/);
-  assert.match(html, /<option value="advanced">Advanced · all 39<\/option>/);
+  assert.match(html, /<option value="advanced">Technical inputs<\/option>/);
   assert.equal(Object.keys(LIVE_GROUP_TITLES).length, 6);
 });
 

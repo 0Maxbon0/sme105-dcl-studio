@@ -9,6 +9,9 @@ import { readingReference, VEHICLE_PROFILE } from "./reference.js";
 import { LIVE_GROUP_HELP, LIVE_GROUP_TITLES, sensorsForGroup, sensorFreshness } from "./live-dashboard.js";
 import { redactDiagnostic } from "./diagnostics.js";
 import { saveOrShare } from "./exports.js";
+import { listRecordings, recordingBlob } from "./recording.js";
+import { normalizeDashboardPrefs, dashboardSensors, dashboardChannels, reorderedPins } from "./dashboard-layout.js";
+import { chartPoints, chartEnvelope, chartBounds, chartClock, sensorSamplesFromCsv, dashboardSeriesFromCsv } from "./chart-series.js";
 
 const $ = (id) => document.getElementById(id);
 const cardNodes = new Map();
@@ -18,18 +21,20 @@ const fmemBitNodes = new Map();
 let detailPid = null;
 let detailRange = "30";
 let latestState = null;
-let lastHeroSamples = null;
+let arranging = false;
+let detailHistory = null;
+let detailLoad = 0;
+let chartProbe = null;
+const savedDashboards = new Map();
 let activeView = "live";
 
 const PREF_KEY = "sme105-dashboard-prefs-v1";
 
 function readPrefs() {
-  try {
-    const value = JSON.parse(localStorage.getItem(PREF_KEY) || "{}");
-    return { pins: Array.isArray(value.pins) ? value.pins.filter((x) => typeof x === "string") : [] };
-  } catch { return { pins: [] }; }
+  try { return normalizeDashboardPrefs(JSON.parse(localStorage.getItem(PREF_KEY) || "{}")); }
+  catch { return normalizeDashboardPrefs(); }
 }
-
+function dashboardSet() { return $("live-set")?.value || "ALL"; }
 function writePrefs(prefs) {
   try { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); } catch { /* Private browsing may disable storage. */ }
 }
@@ -40,23 +45,36 @@ function readStored(key) {
 
 function unitSystem() { return readStored("eeciv-unit-system") === "imperial" ? "imperial" : "metric"; }
 
-export function pinnedSensors() { return readPrefs().pins; }
-
+export function pinnedSensors() { return readPrefs().layouts[dashboardSet()] || []; }
 export function toggleSensorPin(name) {
-  const prefs = readPrefs();
-  prefs.pins = prefs.pins.includes(name) ? prefs.pins.filter((item) => item !== name) : [...prefs.pins, name];
+  if (!dashboardChannels(dashboardSet()).includes(name)) return pinnedSensors();
+  const prefs = readPrefs(), variant = dashboardSet();
+  const pins = prefs.layouts[variant];
+  prefs.layouts[variant] = pins.includes(name) ? pins.filter(item => item !== name) : [...pins, name];
   writePrefs(prefs);
-  return prefs.pins;
+  return prefs.layouts[variant];
 }
-
-export function movePinnedSensor(name, direction) {
-  const prefs = readPrefs();
-  const index = prefs.pins.indexOf(name);
-  const next = index + direction;
-  if (index < 0 || next < 0 || next >= prefs.pins.length) return prefs.pins;
-  [prefs.pins[index], prefs.pins[next]] = [prefs.pins[next], prefs.pins[index]];
+export function reorderPinnedSensor(name, target) {
+  const prefs = readPrefs(), variant = dashboardSet();
+  prefs.layouts[variant] = reorderedPins(prefs.layouts[variant], name, target);
   writePrefs(prefs);
-  return prefs.pins;
+}
+export function setDashboardDensity(value) {
+  const prefs = readPrefs(); prefs.density = value === "compact" ? "compact" : "comfortable"; writePrefs(prefs);
+}
+export function toggleDashboardArrangement() { arranging = !arranging; }
+export function isDashboardArranging() { return arranging; }
+
+function setReadingValue(node, name, summary, manual) {
+  let number = node.querySelector('.reading-number');
+  if (!number) {
+    number = document.createElement('span'); number.className = 'reading-number';
+    const unit = document.createElement('small'); unit.className = 'reading-unit'; node.append(number, unit);
+  }
+  const reading = summary ? displayReading(name, summary.last, { unitSystem: unitSystem() }) : null;
+  setText(number, reading ? formatValue(reading.value) : '—');
+  node.classList.toggle('long-number', number.textContent.length > 6);
+  setText(node.querySelector('.reading-unit'), reading ? reading.unit : '');
 }
 
 export function applyStaticStrings() {
@@ -172,7 +190,7 @@ function progressValue(state) {
 function sensorSeries(state, name) {
   const snap = activeSnap(state);
   const live = state.combined ? combinedSnapshot(state.combined) : null;
-  return live?.pids?.[name] || snap?.pids?.[name] || state.lastSession?.pids?.[name] || null;
+  return live?.pids?.[name] || snap?.pids?.[name] || state.lastSession?.pids?.[name] || savedDashboards.get(dashboardSet())?.pids?.[name] || null;
 }
 
 function activeStream(state) {
@@ -191,7 +209,7 @@ function setState(node, state) {
 
 const RAW_SIGNALS = new Set(["IACT", "IECT", "ITP", "IEGO1", "RATCH", "INDS", "IOCC", "IVCAL", "IEGR", "MAF", "ITOT"]);
 const SUPPORT_UNVERIFIED = new Set(["MAP", "MAP_FREQ", "EGRDC", "IEGR", "MAF"]);
-const DTC_SENSOR_LINKS = Object.freeze({ "113": ["ACT"], "122": ["ITP"], "157": ["MAF"], "214": ["N"], "452": ["VS"] });
+const DTC_SENSOR_LINKS = Object.freeze({ "113": ["ACT"], "122": ["ITP"], "214": ["N"], "452": ["VS"] });
 
 function sensorValue(name, summary, { manual = true } = {}) {
   if (!summary) return "—";
@@ -225,64 +243,66 @@ function sensorExplanation(name, summary, freshness, { manual = true, idleCheck 
   return "Signal received. This value alone is not a sensor-health verdict.";
 }
 
-function sampleTime(sample) {
-  if (Number.isFinite(sample?.receivedAt)) return sample.receivedAt;
-  if (Number.isFinite(sample?.t)) return sample.t * 1000;
-  return null;
-}
-
 function chartColor(state) {
   const token = state === "fresh" ? "--cyan" : "--gray";
   return getComputedStyle(document.body).getPropertyValue(token).trim() || (state === "fresh" ? "#4ad9e6" : "#95a2ac");
 }
 
 function drawTimeChart(canvas, samples, range = "30", color = "#42d9e8") {
-  if (!canvas) return;
   const rect = canvas.getBoundingClientRect();
-  if (rect.width <= 0) return;
+  if (!rect.width) return;
   const ratio = Math.max(1, window.devicePixelRatio || 1);
-  const width = Math.round(rect.width * ratio);
-  const height = Math.round(rect.height * ratio);
-  if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return;
-  ctx.clearRect(0, 0, width, height);
-  if (!samples?.length) return;
-
-  const points = samples.slice(-1200).map((sample) => ({ sample, time: sampleTime(sample), value: sample.value }))
-    .filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value));
-  if (!points.length) return;
-  const end = points.at(-1).time;
-  const spanMs = range === "full" ? Infinity : Number(range) * 1000;
-  const visible = points.filter((point) => end - point.time <= spanMs);
-  if (!visible.length) return;
-  let min = Math.min(...visible.map((point) => point.value));
-  let max = Math.max(...visible.map((point) => point.value));
-  if (min === max) { min -= 1; max += 1; }
-  const firstTime = visible[0].time;
-  const duration = Math.max(1, end - firstTime);
-  const gaps = [];
-  for (let i = 1; i < visible.length; i += 1) {
-    const gap = visible[i].time - visible[i - 1].time;
-    if (gap > 0) gaps.push(gap);
+  const key = `${detailPid}:${samples.length}:${samples.at(-1)?.t}:${samples.at(-1)?.value}:${range}:${unitSystem()}:${rect.width}:${rect.height}:${chartProbe}:${color}`;
+  if (canvas.dataset.chartKey === key) return;
+  canvas.dataset.chartKey = key;
+  canvas.width = Math.round(rect.width * ratio); canvas.height = Math.round(rect.height * ratio);
+  const ctx = canvas.getContext('2d'); if (!ctx) return;
+  ctx.scale(ratio, ratio);
+  const width = rect.width, height = rect.height;
+  const left = 52, right = width-14, top = 18, bottom = height-30;
+  ctx.clearRect(0,0,width,height);
+  const points = chartPoints(samples, detailPid, range, unitSystem());
+  const textColor = getComputedStyle(document.body).getPropertyValue('--muted').trim();
+  ctx.font = '11px sans-serif'; ctx.fillStyle = textColor;
+  if (!points.length) { ctx.fillText('No recorded samples for this reading', 16, height/2); return; }
+  const { min, max, step } = chartBounds(points, RAW_SIGNALS.has(detailPid) || ['N','DSDRPM','VS','VSBAR'].includes(detailPid));
+  const first=points[0].time, last=points.at(-1).time, duration=Math.max(1,last-first);
+  const x=time=>left+(time-first)/duration*(right-left);
+  const y=value=>bottom-(value-min)/(max-min)*(bottom-top);
+  ctx.strokeStyle=getComputedStyle(document.body).getPropertyValue('--line').trim();ctx.lineWidth=1;
+  for(let value=min;value<=max+step/100;value+=step) {
+    const yy=y(value);
+    ctx.beginPath();ctx.moveTo(left,yy);ctx.lineTo(right,yy);ctx.stroke();
+    ctx.textAlign='right';ctx.fillText(formatValue(value),left-7,yy+4);
   }
-  gaps.sort((a, b) => a - b);
-  const gapLimit = gaps.length ? gaps[Math.floor(gaps.length / 2)] * 3 : Infinity;
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 2 * ratio;
-  ctx.lineJoin = "round";
-  ctx.lineCap = "round";
-  ctx.beginPath();
-  let active = false;
-  for (let i = 0; i < visible.length; i += 1) {
-    const point = visible[i];
-    const x = 8 * ratio + ((point.time - firstTime) / duration) * (width - 16 * ratio);
-    const y = height - 8 * ratio - ((point.value - min) / (max - min)) * (height - 16 * ratio);
-    if (!active || (i > 0 && point.time - visible[i - 1].time > gapLimit)) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-    active = true;
+  for(let tick=0;tick<=2;tick++) {
+    const time=first+duration*tick/2;
+    ctx.textAlign=tick===0?'left':tick===2?'right':'center';ctx.fillText(chartClock(time),x(time),height-8);
   }
-  ctx.stroke();
+  const gaps=points.slice(1).map((point,index)=>point.time-points[index].time).filter(gap=>gap>0).sort((a,b)=>a-b);
+  const gapLimit=gaps.length?Math.max(gaps[Math.floor(gaps.length/2)]*3,1):Infinity;
+  const segments=[]; let segment=[];
+  for(const point of points) {
+    if(segment.length && point.time-segment.at(-1).time>gapLimit) { segments.push(segment); segment=[]; }
+    segment.push(point);
+  }
+  if(segment.length)segments.push(segment);
+  ctx.strokeStyle=color;ctx.lineWidth=2;ctx.lineJoin='round';
+  for(const segment of segments) {
+    ctx.beginPath();chartEnvelope(segment,Math.max(1,Math.floor(right-left))).forEach((point,index)=>{
+      if(index)ctx.lineTo(x(point.time),y(point.value));else ctx.moveTo(x(point.time),y(point.value));
+    });ctx.stroke();
+    if(segment.length===1) {ctx.fillStyle=color;ctx.beginPath();ctx.arc(x(segment[0].time),y(segment[0].value),2.5,0,Math.PI*2);ctx.fill();}
+  }
+  if(chartProbe!==null) {
+    const time=first+chartProbe*duration;
+    let low=0,high=points.length-1;
+    while(low<high){const mid=Math.floor((low+high)/2);if(points[mid].time<time)low=mid+1;else high=mid;}
+    const point=low>0&&Math.abs(points[low-1].time-time)<Math.abs(points[low].time-time)?points[low-1]:points[low];
+    ctx.strokeStyle=textColor;ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(x(point.time),top);ctx.lineTo(x(point.time),bottom);ctx.stroke();ctx.setLineDash([]);
+    ctx.fillStyle=color;ctx.beginPath();ctx.arc(x(point.time),y(point.value),4,0,Math.PI*2);ctx.fill();
+    setText($("chart-reading"),`${chartClock(point.time)} · ${formatValue(point.value)} ${displayReading(detailPid,0,{unitSystem:unitSystem()}).unit}`);
+  } else setText($("chart-reading"),'Drag across the chart to inspect a recorded sample.');
 }
 
 function makeSensorCard(name) {
@@ -298,17 +318,11 @@ function makeSensorCard(name) {
   const title = document.createElement("strong"); title.className = "sensor-title";
   const value = document.createElement("span"); value.className = "sensor-value";
   const status = document.createElement("span"); status.className = "state-label";
-  const note = document.createElement("span"); note.className = "sensor-reason";
-  open.append(title, value, status, note);
+  open.append(title, value, status);
   const pin = document.createElement("button");
   pin.type = "button"; pin.className = "pin-button"; pin.dataset.pinPid = name;
   head.append(open, pin);
-  const series = document.createElement("p"); series.className = "sensor-count";
-  const actions = document.createElement("div"); actions.className = "pin-order";
-  const up = document.createElement("button"); up.type = "button"; up.dataset.movePid = name; up.dataset.direction = "-1"; up.textContent = "Move up";
-  const down = document.createElement("button"); down.type = "button"; down.dataset.movePid = name; down.dataset.direction = "1"; down.textContent = "Move down";
-  actions.append(up, down);
-  card.append(head, series, actions);
+  card.append(head);
   return card;
 }
 
@@ -323,7 +337,7 @@ function syncChildren(container, nodes) {
 function sensorHealth(name, series, state, manual, idleCheck) {
   const samples = series?.samples || [];
   const summary = series?.summary || (samples.length ? summarizeSeries(samples) : null);
-  const freshness = sensorFreshness(samples, { active: activeStream(state), now: Date.now() });
+  const freshness = series?.saved ? { state:'historical', label:'Saved reading' } : sensorFreshness(samples, { active: activeStream(state), now: Date.now() });
   const dtc = state.lastSession?.verdict?.valid
     ? (state.lastSession.codes || []).find(code => (DTC_SENSOR_LINKS[code.code] || []).includes(name))
       ? { ...state.lastSession.codes.find(code => (DTC_SENSOR_LINKS[code.code] || []).includes(name)), variant: state.lastSession.variant,
@@ -353,7 +367,7 @@ function updateCard(card, sensor, state, manual, idleCheck, pins) {
   const [, , help] = PID_TEXT[name] || [title, unit, ""];
   setText(card.querySelector(".sensor-title"), title);
   const value = card.querySelector(".sensor-value");
-  setText(value, sensorValue(name, health.summary, { manual }));
+  setReadingValue(value, name, health.summary, manual);
   value.dataset.state = health.colorState;
   setState(card.querySelector(".state-label"), notApplicable ? "na" : health.colorState);
   const status = card.querySelector(".state-label");
@@ -361,97 +375,95 @@ function updateCard(card, sensor, state, manual, idleCheck, pins) {
   if (health.dtc) setText(status, `! DTC ${health.dtc.code} · ${health.dtc.variant} history`);
   else if (health.verdict?.level === "ok") setText(status, "✓ VERIFIED RANGE");
   else if (health.verdict?.level === "warn") setText(status, `! ${health.verdict.text}`);
-  setText(card.querySelector(".sensor-reason"), health.explanation || help);
-  setText(card.querySelector(".sensor-count"), health.summary
-    ? `${health.summary.n} samples · raw ${health.summary.rawLast} · ${health.summary.min === health.summary.max ? "unchanged in this capture" : "changing in this capture"}`
-    : "No sample in this data set");
+
+  status.hidden = !status.textContent;
   const pin = card.querySelector(".pin-button");
-  pin.textContent = pins.includes(name) ? "★" : "☆";
-  pin.setAttribute("aria-label", pins.includes(name) ? `Unpin ${title}` : `Pin ${title}`);
-  const pinned = pins.includes(name);
-  card.querySelector(".pin-order").hidden = !pinned;
+  pin.textContent = "☆";
+  pin.setAttribute("aria-label", `Pin ${title}`);
   card.classList.toggle("not-applicable", notApplicable);
   card.classList.toggle("stale", ["none", "stale", "historical", "unknown"].includes(health.freshness.state) || notApplicable);
   card.classList.toggle("warning", health.colorState === "warn");
   card.querySelector("[data-open-pid]").setAttribute("aria-label", `${title}, ${value.textContent}, ${status.textContent}. Open details.`);
 }
 
-function renderMetric(name, valueId, stateId, state, manual, idleCheck) {
-  const node = document.querySelector(`.metric[data-pid="${name}"]`);
-  const value = $(valueId);
-  const label = $(stateId);
-  const series = sensorSeries(state, name);
-  const health = sensorHealth(name, series, state, manual, idleCheck);
-  setText(value, sensorValue(name, health.summary, { manual }));
-  value.dataset.state = health.colorState;
-  setState(label, health.colorState);
-  setText(label, health.freshness.label);
-  node.classList.toggle("stale", ["none", "stale", "historical", "unknown"].includes(health.freshness.state));
-  node.setAttribute("aria-label", `${name}: ${value.textContent}; ${label.textContent}. Open details.`);
-}
-
-function renderHero(state, manual, idleCheck) {
-  const series = sensorSeries(state, "N");
-  const health = sensorHealth("N", series, state, manual, idleCheck);
-  const value = $("rpm-value");
-  setText(value, health.summary ? formatValue(health.summary.last) : "No sample");
-  value.dataset.state = health.colorState;
-  setState($("rpm-state"), health.colorState);
-  setText($("rpm-state"), health.freshness.label);
-  setText($("rpm-age"), health.summary
-    ? `${health.summary.n} samples · ${health.freshness.label.toLowerCase()}`
-    : "Waiting for a sample in the selected data set");
-  const idle = $("idle-result");
-  idle.hidden = !idleCheck || !health.verdict;
-  if (!idle.hidden) {
-    idle.dataset.state = health.verdict.level;
-    setText(idle, health.verdict.text);
-  }
-  const scope = state.combined ? "ALL" : state.op?.variant || state.lastSession?.variant || "";
-  const target = sensorSeries(state, "DSDRPM")?.samples || [];
-  const targetSeriesPresent = ["LIVE2", "ALL"].includes(scope) && health.samples.length > 0 && target.length > 0;
-  const targetNode = $("idle-target");
-  targetNode.hidden = !targetSeriesPresent;
-  if (targetSeriesPresent) setText(targetNode, `Target ${formatValue(target.at(-1).value)} rpm · same ${scope} capture`);
-  const samples = health.samples;
-  const last = samples.length ? `${samples.length}:${samples.at(-1).receivedAt ?? samples.at(-1).t}:${health.freshness.state}` : `none:${health.freshness.state}`;
-  if (last !== lastHeroSamples) {
-    drawTimeChart($("rpm-trend"), samples, "30", chartColor(health.freshness.state));
-    lastHeroSamples = last;
-  }
-  $("rpm-hero").classList.toggle("stale", ["none", "stale", "historical", "unknown"].includes(health.freshness.state));
-}
-
 function renderPinned(state, manual, idleCheck, pins) {
   const section = $("pinned-section");
-  section.hidden = !pins.length;
+  section.hidden = false;
+  $("dashboard-title").textContent = ({LIVE:'Engine', LIVE2:'Idle & switches', LIVE3:'Air sensor & spark', ALL:'My diagnostics'})[dashboardSet()];
+  $("dashboard-density").value = readPrefs().density;
+  $("arrange-dashboard").textContent = arranging ? 'Done' : 'Arrange';
+  $("arrange-dashboard").setAttribute('aria-pressed', String(arranging));
+  $("dashboard-hint").textContent = arranging ? 'Drag cards into order. Keyboard: focus a card and use the arrow keys. Tap Done when finished.' : pins.length ? 'Tap a reading for its chart. Star other readings below to add them.' : 'Star a reading below to build this dashboard.';
   const container = $("pinned-readings");
+  container.dataset.density = readPrefs().density;
+  container.classList.toggle("arranging", arranging);
   const desired = [];
   for (const name of pins) {
     let item = pinnedNodes.get(name);
     if (!item) {
-      item = document.createElement("div"); item.className = "pinned-card";
+      item = document.createElement("div"); item.className = "pinned-card"; item.dataset.pid = name;
       const open = document.createElement("button"); open.type = "button"; open.className = "pinned-open"; open.dataset.openPid = name;
       const title = document.createElement("span"); title.className = "pinned-title";
       const value = document.createElement("strong"); value.className = "pinned-value";
       const stateLabel = document.createElement("small"); stateLabel.className = "state-label";
       open.append(title, value, stateLabel);
-      const up = document.createElement("button"); up.type = "button"; up.dataset.movePid = name; up.dataset.direction = "-1"; up.setAttribute("aria-label", `Move ${name} earlier`); up.textContent = "↑";
-      const down = document.createElement("button"); down.type = "button"; down.dataset.movePid = name; down.dataset.direction = "1"; down.setAttribute("aria-label", `Move ${name} later`); down.textContent = "↓";
       const remove = document.createElement("button"); remove.type = "button"; remove.dataset.pinPid = name; remove.setAttribute("aria-label", `Unpin ${name}`); remove.textContent = "★";
-      item.append(open, up, down, remove); pinnedNodes.set(name, item);
+      item.append(open, remove); pinnedNodes.set(name, item);
     }
     const sensor = sensorsForGroup("advanced", { manual: false }).find((entry) => entry.name === name);
     if (!sensor) continue;
     const health = sensorHealth(name, sensorSeries(state, name), state, manual, idleCheck);
     setText(item.querySelector(".pinned-title"), sensor.title);
-    setText(item.querySelector(".pinned-value"), sensorValue(name, health.summary, { manual }));
+    setReadingValue(item.querySelector(".pinned-value"), name, health.summary, manual);
     setState(item.querySelector(".state-label"), health.colorState);
-    setText(item.querySelector(".state-label"), health.freshness.label);
+    setText(item.querySelector(".state-label"), health.dtc ? `DTC ${health.dtc.code} · saved` : health.verdict?.level === "warn" ? health.verdict.text : health.freshness.label);
+    item.querySelector(".state-label").hidden = !item.querySelector(".state-label").textContent;
+    item.tabIndex = arranging ? 0 : -1;
+    item.setAttribute('aria-label', `${sensor.title}${arranging ? ', drag to reorder' : ''}`);
     item.querySelector(".pinned-value").dataset.state = health.colorState;
     desired.push(item);
   }
   syncChildren(container, desired);
+}
+
+export async function restoreDashboardCapture(state) {
+  const variant = dashboardSet();
+  if (savedDashboards.has(variant)) return;
+  savedDashboards.set(variant, { loading:true, pids:{} });
+  try {
+    const capture = (await listRecordings()).find(entry => entry.variant === variant || entry.variant === 'ALL');
+    if (!capture) { savedDashboards.set(variant,{pids:{}}); return; }
+    const pids = await dashboardSeriesFromCsv(await recordingBlob(capture.id,'csv'),dashboardChannels(variant));
+    savedDashboards.set(variant,{ ...capture,pids });
+    if (latestState) render(latestState);
+  } catch (error) {
+    savedDashboards.set(variant,{pids:{},error:error.message});
+    if (latestState) render(latestState);
+  }
+}
+
+async function loadChartHistory(state, name) {
+  const token = ++detailLoad;
+  detailHistory = { name, samples: [], loading: true, message: 'Loading saved capture…' };
+  try {
+    const compatible = entry => entry.variant === dashboardSet() || entry.variant === 'ALL';
+    const received = sensorSeries(state, name);
+    const archive = state.archive && (compatible(state.archive) || (received && !received.saved && dashboardChannels(state.archive.variant).includes(name))) ? state.archive : null;
+    const metadata = archive || (await listRecordings()).find(compatible);
+    if (!metadata) {
+      if (token === detailLoad) { detailHistory.loading = false; detailHistory.message = 'Recent received samples; no saved capture available.'; }
+      return;
+    }
+    const blob = archive ? await archive.export('csv') : await recordingBlob(metadata.id, 'csv');
+    const samples = await sensorSamplesFromCsv(blob, name);
+    if (token !== detailLoad || detailPid !== name) return;
+    detailHistory = { name, id: metadata.id, samples, loading: false,
+      message: `Capture: ${new Date(metadata.started).toLocaleString()} · ${samples.length.toLocaleString()} recorded samples` };
+  } catch (error) {
+    if (token === detailLoad) { detailHistory.loading = false; detailHistory.message = `Saved chart unavailable: ${error.message}. Showing recent received samples.`; }
+  } finally {
+    if (token === detailLoad && latestState && !$("sensor-drawer").hidden) renderSensorDrawer(latestState);
+  }
 }
 
 function renderSensorDrawer(state) {
@@ -459,8 +471,22 @@ function renderSensorDrawer(state) {
   const sensor = sensorsForGroup("advanced", { manual: false }).find((entry) => entry.name === detailPid);
   if (!sensor) return;
   const { name, title, unit, pid } = sensor;
-  const series = sensorSeries(state, name);
+  const received = sensorSeries(state, name);
+  const saved = detailHistory?.name === name ? detailHistory : null;
+  const series = received || (saved?.samples.length ? { samples: saved.samples, summary: summarizeSeries(saved.samples) } : null);
   const health = sensorHealth(name, series, state, $("manual-gearbox").checked, $("idle-check").checked);
+  if (!received && saved?.samples.length) { health.freshness = { state: 'historical', label: 'Saved reading' }; health.colorState = 'historical'; health.explanation = 'Recorded values from the saved capture.'; }
+  let chartSamples = health.samples;
+  if (saved?.samples.length && (!received || received.saved || state.archive?.id === saved.id)) {
+    const lastTime = saved.samples.at(-1).t;
+    for (const sample of health.samples) if (sample.t > saved.samples.at(-1).t) saved.samples.push(sample);
+    chartSamples = saved.samples;
+    if (activeStream(state) && received?.samples.length > 2 && state.archive?.id === saved.id) {
+      const cadence = received.samples[1].t-received.samples[0].t;
+      if (!saved.loading && received.samples[0].t-lastTime > Math.max(cadence*3,1)) void loadChartHistory(state,name);
+    }
+  }
+  setText($("chart-history-note"), saved?.message || 'Recent received samples');
   const summary = health.summary;
   const reference = readingReference(name, { manual: $("manual-gearbox").checked });
   setText($("drawer-group"), [...Object.keys(LIVE_GROUP_TITLES)].find((group) => LIVE_GROUPSForUi(group).includes(name))
@@ -469,24 +495,22 @@ function renderSensorDrawer(state) {
   setText($("drawer-title"), title);
   setText($("drawer-state"), `${health.freshness.label} · ${health.explanation}`);
   $("drawer-state").dataset.state = health.colorState;
-  setText($("drawer-value"), sensorValue(name, summary, { manual: false }));
+  setText($("drawer-value"), summary ? formatValue(displayReading(name,summary.last,{unitSystem:unitSystem()}).value) : "—");
   $("drawer-value").dataset.state = health.colorState;
   setText($("drawer-unit"), RAW_SIGNALS.has(name) ? "raw ECU counts" : displayReading(name, summary?.last ?? 0, { unitSystem: unitSystem() }).unit);
-  setText($("drawer-raw"), summary ? `${summary.rawLast} (0x${hexByte(summary.rawLast & 0xff)})` : "No sample");
+  setText($("drawer-raw"), summary ? `${summary.rawLast} (0x${Math.trunc(summary.rawLast).toString(16).toUpperCase().padStart(3,"0")})` : "No sample");
   setText($("drawer-min"), summary ? formatValue(displayReading(name, summary.min, { unitSystem: unitSystem() }).value) : "—");
   setText($("drawer-max"), summary ? formatValue(displayReading(name, summary.max, { unitSystem: unitSystem() }).value) : "—");
   setText($("drawer-count"), summary?.n ?? 0);
   const latest = health.samples.at(-1);
-  setText($("drawer-time"), latest
-    ? `PID 0x${pid.toString(16).toUpperCase().padStart(2, "0")} · receive ${latest.receivedAt ? new Date(latest.receivedAt).toISOString() : "time unavailable"} · ECU sample t=${latest.t}s · ${health.freshness.label}`
-    : `PID 0x${pid.toString(16).toUpperCase().padStart(2, "0")} · no sample in this capture`);
+  setText($("drawer-time"), `PID 0x${pid.toString(16).toUpperCase().padStart(2, "0")}`);
   setText($("drawer-meaning"), health.explanation);
   setText($("drawer-reference"), reference.normal);
   setText($("drawer-source"), `${reference.meaning} ${reference.source ? `Source: ${reference.source}` : "No vehicle-specific limit source verified."}`);
   const pins = pinnedSensors();
   setText($("drawer-pin"), pins.includes(name) ? "Unpin reading" : "Pin reading");
   $("drawer-pin").dataset.pinPid = name;
-  drawTimeChart($("sensor-chart"), health.samples, detailRange, chartColor(health.freshness.state));
+  drawTimeChart($("sensor-chart"), chartSamples, detailRange, chartColor(health.freshness.state));
 }
 
 function LIVE_GROUPSForUi(group) {
@@ -496,13 +520,19 @@ function LIVE_GROUPSForUi(group) {
 export function openSensorDetails(state, name) {
   detailPid = name;
   detailRange = "30";
+  chartProbe = null;
+  detailHistory = null;
+  for (const button of document.querySelectorAll('[data-range]')) button.setAttribute('aria-pressed', String(button.dataset.range === '30'));
   $("sensor-drawer").hidden = false;
   renderSensorDrawer(state);
   $("drawer-close").focus();
+  void loadChartHistory(state, name);
 }
 
 export function closeSensorDetails() {
   detailPid = null;
+  detailLoad += 1;
+  detailHistory = null;
   $("sensor-drawer").hidden = true;
 }
 
@@ -547,7 +577,7 @@ export function render(state) {
   const actions = ["read-codes-btn", "koeo-btn", "koer-btn", "live-start", "offline-btn", "bench-btn", "reboot-btn", "clear-btn", "mem-btn"];
   for (const id of actions) $(id).disabled = !linked || busy || !!state.recovering;
   $("stored-code-mode").disabled = busy;
-  for (const id of ["live-set", "live-group"]) $(id).disabled = busy;
+  $("live-set").disabled = busy || !!state.recovering;
 
   const banner = (node) => {
     if (state.trust === "progress") { node.hidden = false; node.textContent = STR.inProgress; node.className = "banner"; }
@@ -618,30 +648,21 @@ export function render(state) {
   const idleCheck = $("idle-check").checked;
   $("manual-gearbox-settings").checked = manual;
   $("idle-check-settings").checked = idleCheck;
-  renderHero(state, manual, idleCheck);
-  renderMetric("ECT", "metric-ect", "state-ect", state, manual, idleCheck);
-  renderMetric("VBAT", "metric-vbat", "state-vbat", state, manual, idleCheck);
-  renderMetric("ITP", "metric-itp", "state-itp", state, manual, idleCheck);
-  renderMetric("LOAD", "metric-load", "state-load", state, manual, idleCheck);
+
   const pins = pinnedSensors();
   renderPinned(state, manual, idleCheck, pins);
 
+  const variantSet = dashboardSet();
+  for (const option of $("live-group").options) option.disabled = !dashboardSensors(option.value, variantSet).length;
+  if ($("live-group").selectedOptions[0]?.disabled) $("live-group").value = 'overview';
   const group = $("live-group").value;
-  setText($("group-title"), LIVE_GROUP_TITLES[group] || LIVE_GROUP_TITLES.overview);
-  const groupHelp = LIVE_GROUP_HELP[group] || LIVE_GROUP_HELP.overview;
-  setText($("group-help"), manual && group !== "advanced"
-    ? `${groupHelp} Automatic-only channels are hidden here; Advanced and raw exports retain them.`
-    : groupHelp);
-  const setHelp = {
-    LIVE: "15 engine, temperature and fuel channels.",
-    LIVE2: "15 idle-control, switch and failure-memory channels.",
-    LIVE3: "15 extra channels, including equipment-dependent and automatic-transmission signals.",
-    ALL: "All 39 channels in one map. Requires bridge firmware v21 or later; the ECU update rate is measured, not assumed.",
-  }[ $("live-set").value ] || "";
-  setText($("live-set-help"), setHelp);
+  setText($("group-title"), 'Add readings');
+  setText($("group-help"), 'Star a reading to move it to your dashboard.');
+  setText($("live-set-help"), `${dashboardChannels(variantSet).length} dashboard channels. Start records the selected set automatically.`);
   const cards = $("live-cards");
-  cards.hidden = group === "overview";
-  const sensors = group === "overview" ? [] : sensorsForGroup(group, { manual });
+  cards.hidden = false;
+  const sensors = dashboardSensors(group, variantSet).filter(sensor => !pins.includes(sensor.name));
+  if (!sensors.length) setText($('group-help'), 'These readings are already on your dashboard. Unstar a card to move it back here.');
   const nodes = sensors.map((sensor) => {
     let card = cardNodes.get(sensor.name);
     if (!card) { card = makeSensorCard(sensor.name); cardNodes.set(sensor.name, card); }
@@ -653,11 +674,9 @@ export function render(state) {
   const live = state.combined ? combinedSnapshot(state.combined) : (snap || result);
   const rows = live?.rows || [];
   $("csv-btn").disabled = rows.length === 0;
-  $("live-meta").textContent = state.combined
-    ? `Multi-set survey · ${state.combined.active ? "running" : "stopped"} · ${rows.length.toLocaleString()} readings · ${state.combined.segments.length} completed groups.${state.combined.error ? ` ${state.combined.error}` : ""}`
-    : variant === "ALL" || $("live-set").value === "ALL"
-      ? `All 39 channels · ${(live?.totalRows || rows.length).toLocaleString()} readings · one map; samples are sequential.`
-      : rows.length ? `${(live?.totalRows || rows.length).toLocaleString()} readings${state.archive ? " · saved on this device" : " received"}` : "";
+  const restoredCapture = savedDashboards.get(variantSet);
+  const captureTime = Object.keys(snap?.pids || {}).length ? state.archive?.started || result?.startedAt : restoredCapture?.started;
+  $("live-meta").textContent = activeStream(state) ? 'Recording automatically on this device' : captureTime ? `Saved capture · ${new Date(captureTime).toLocaleString()}` : restoredCapture?.loading ? 'Loading saved readings…' : '';
   $("recording-status").textContent = state.archive
     ? `Full bridge evidence and sensor rows are saved during this capture. ${state.archive.persistent ? "Persistent device storage was granted." : "Export the capture before clearing app storage."}${state.archive.error ? ` Storage error: ${state.archive.error}` : ""}`
     : "Recordings remain on this device. Interrupted sessions remain incomplete; saving does not certify diagnostic validity.";
@@ -689,15 +708,13 @@ export function render(state) {
 
 export function refreshDashboardCharts() {
   if (!latestState) return;
-  const heroSeries = sensorSeries(latestState, "N");
-  const status = sensorHealth("N", heroSeries, latestState, $("manual-gearbox").checked, $("idle-check").checked);
-  drawTimeChart($("rpm-trend"), heroSeries?.samples || [], "30", chartColor(status.freshness.state));
   renderSensorDrawer(latestState);
 }
 
 export function setSensorChartRange(range) {
   if (!["30", "120", "full"].includes(range)) return;
   detailRange = range;
+  chartProbe = null;
   refreshDashboardCharts();
 }
 
@@ -751,4 +768,10 @@ export async function exportCsv(state) {
   const rows = state.combined?.rows || state.cart?.snapshot().rows || state.lastSession?.rows || [];
   const blob = state.archive ? await state.archive.export("csv") : new Blob([rowsToCsv(rows, { unitSystem: unitSystem() })], { type: "text/csv" });
   await saveOrShare(blob, "eec-iv-live.csv");
+}
+
+export function inspectSensorChart(clientX) {
+  const rect = $("sensor-chart").getBoundingClientRect();
+  chartProbe = Math.max(0, Math.min(1, (clientX-rect.left-52)/Math.max(1,rect.width-66)));
+  refreshDashboardCharts();
 }

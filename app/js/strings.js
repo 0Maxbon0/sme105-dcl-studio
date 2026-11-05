@@ -5,7 +5,7 @@ export const STR = {
   shortTitle: "SME105 DCL STUDIO",
   tabs: {
     codes: "Faults",
-    live: "Live",
+    live: "Dashboard",
     tools: "Settings",
     log: "History",
   },
@@ -58,7 +58,7 @@ export const STR = {
   liveEngine: "Quick LIVE",
   liveFlags: "LIVE2 · idle",
   liveExtra: "LIVE3 · extras",
-  startLive: "Start live reading",
+  startLive: "Start & save",
   recordCsv: "Record CSV",
   min: "Min",
   max: "Max",

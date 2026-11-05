@@ -611,7 +611,7 @@ Section 4 records the initial Phase 0 findings; this ledger supersedes those his
 | **REQ-PERF-03** | Canvas charts use bounded real samples and requestAnimationFrame; no interpolated sensor data. |
 | **REQ-PERF-04** | Not measured against the <100 ms target on a physical stream. |
 | **REQ-PERF-05** | 60 fps scrolling/transition target not formally profiled. |
-| **REQ-PERF-06** | 39 PIDs are available in Advanced; DOM virtualization is not implemented/verified. |
+| **REQ-PERF-06** | Owner-requested dashboard filtering exposes 27 applicable ALL channels; unsupported/manual-only inputs are permanently hidden from dashboard suggestions. All 39 decoded channels remain in raw/grouped exports. Formal DOM virtualization is not claimed. |
 | **REQ-PERF-07** | Native foreground service and recording wake lock implemented and exercised. Browser/demo background captures still stop. No three-hour physical background qualification claimed. |
 | **REQ-PERF-08** | Verified by browser screenshots at 360/412 and installed dark-theme phone screenshot; 48 dp controls and reduced-motion preference are present. |
 | **REQ-DTC-01** | Implemented; capture-backed tests and mode-mismatch tests pass; see `npm test` result in Section 7. |
@@ -652,9 +652,9 @@ Section 4 records the initial Phase 0 findings; this ledger supersedes those his
 | **REQ-PHYS-03** | Not performed: no ECU command or vehicle test; remains unverified. |
 | **REQ-PHYS-04** | Not performed: no physical 0E/A4 read; remains unverified. |
 | **REQ-PHYS-05** | Not performed: no three-hour phone resource test. |
-| **REQ-UI-ORDER-01** | Implemented: pin/order controls persist locally; persistence across a fresh app process was not specifically tested. |
+| **REQ-UI-ORDER-01** | Verified on Galaxy A52s: touch drag order, star promotion without duplicates, Cards/List view, and persistence across an actual process restart. Owner preferences restored after testing. |
 | **REQ-DETAIL-01** | Verified in replay UI: sensor detail showed source reading, raw value, count, freshness, and chart; min/max/source fields present. |
-| **REQ-SENSOR-01** | Verified: DTC 157 asserts MAF meaning; PID 0x26 remains unverified raw counts, never MAP/g/s. |
+| **REQ-SENSOR-01** | PID 0x26 is now labelled MAF sensor signal following the owner’s explicit component identification. The raw word remains unchanged in counts; no g/s or volts conversion or normal band is claimed. |
 | **REQ-SENSOR-02** | Verified in reference/unit tests: KAMRF1 unity is 0% correction; uncalibrated signals retain raw counts. |
 | **REQ-SENSOR-03** | Verified: ALL map exposes 39 channels and hidden automatic PIDs remain in decoder/export paths. |
 | **REQ-WARN-01** | Partial: warnings carry rule/source/reason/evidence and sensor context; confidence/applicability schema is not uniform for every status. |
@@ -695,3 +695,15 @@ Section 4 records the initial Phase 0 findings; this ledger supersedes those his
 - Actual Galaxy A52s Android 14: native authenticated UART and MTU 247 observed; Home for eight seconds retained the link; five read-only STATUS commands executed while document.hidden was true, and all five replies were persisted. A forced native GATT disconnect recovered to BLE AUTH / Bridge idle after Home/return, without car/ESP power cycling. Simulated recording-service activation held and released the wake lock. Evidence: `artifacts/lifecycle-home-device-proof.json`.
 - Final build and install succeeded; 68 automated tests passed, zero failed/skipped. APK SHA-256: `0b5dd6e5ac504395801305dc16fcaa83302cc4b18b062a02f08d89622414f80d`.
 - No new vehicle command was issued. Continuous live capture across Home under actual engine load, long background endurance, and Android process termination during an active vehicle session remain unverified. No independent AGY approval claimed.
+
+### Owner-requested dashboard UX revision (2026-11-05)
+
+- Replaced the fixed RPM/metric duplicates with one configurable pinned dashboard per requested set. Engine, Idle/switches, and Air/spark select different applicable channel sets; ALL has a diagnostic default and retains the owner's custom selection/order. Changing the selector previews its channels without sending a vehicle command.
+- Names wrap without truncation; values are substantially larger and retain separate, readable units. A single star moves a reading between the dashboard and lower available list without duplicates. Arrange enables native touch dragging (with keyboard equivalents), replacing all arrow buttons. Cards/List presentation, ordered selections, selected set and group persist locally. Existing owner preferences are migrated and unsupported channels are removed from UI suggestions without deleting recordings or decoder channels.
+- Removed rapidly changing age/latency numbers and LIVE badges from readings. Missing, saved, and interrupted readings retain stable explanatory labels. Timing evidence remains in diagnostic logs. Recently saved values are restored from local recordings with explicit Saved reading/capture labels.
+- All automatic-only inputs and known unsupported MAP/EGR/neutral/octane channels are hidden permanently from this vehicle's dashboard, including its technical picker. Raw and grouped exports retain all original decoded channels.
+- Charts use ECU-relative timestamps, converted display units, labelled axes with readable bounds, gap-aware paths, extrema-preserving pixel reduction, and inspection of actual samples. Capture loads the complete saved signal rather than presenting the bounded 512-sample UI tail as a whole session. Raw-word details now show the complete hexadecimal word. No measured sample is smoothed or invented.
+- Owner clarification labels PID 0x26 MAF sensor signal; counts remain unchanged and uncalibrated. The saved test showed 1–624 counts across 1,429 samples; this is not a factory normal range.
+- Automated suite: 73 passed, zero failed/skipped; the affected dashboard/presentation checks passed after final axis/format refinements. Android build and data-preserving install succeeded. Browser preview access was declined, so new visual/touch verification used the actual Android APK rather than the denied browser route.
+- Galaxy A52s Android 14 checks: touch drag and restoration; starring/un-starring with no duplicates; distinct Engine/Idle/Air set memberships; full-width List view; layout/view/selection preserved across force-stop/relaunch; full MAF Capture chart with 1,429 rows, min 1/max 624 and exact sample inspection; no numeric millisecond labels. Evidence: `artifacts/dashboard-ux-device-proof.json` and `artifacts/screenshots/android-dashboard-redesign.png`, `artifacts/screenshots/android-dashboard-maf-chart.png`.
+- Final APK SHA-256: `489486b280b9ba7eea9fae3761a1267662a3be93947be027fc4851494b71ec4e`. Firmware, capture fixtures and original recorded/exported sample values are unchanged. No vehicle operation was started during UX verification. New tablet, prolonged background endurance, and formal frame-rate profiling are not claimed; no independent AGY approval is claimed.

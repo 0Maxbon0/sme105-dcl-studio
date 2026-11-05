@@ -37,41 +37,30 @@
       <p id="live-banner" class="banner" hidden></p>
       <div class="live-controls">
         <label class="stack" for="live-set">Data set<select id="live-set">
-          <option value="LIVE">Quick LIVE · engine</option>
-          <option value="LIVE2">LIVE2 · idle and switches</option>
-          <option value="LIVE3">LIVE3 · extras</option>
-          <option value="ALL">ALL · 39 channels</option>
+          <option value="LIVE">Engine</option>
+          <option value="LIVE2">Idle & switches</option>
+          <option value="LIVE3">Air sensor & spark</option>
+          <option value="ALL">My diagnostics · ALL</option>
         </select></label>
         <button id="live-start" type="button" class="primary" data-str="startLive"></button>
       </div>
       <p id="live-set-help" class="help"></p>
       <p id="live-meta" class="meta"></p>
-      <section id="dashboard-overview" class="dashboard-overview" aria-label="Live overview">
-        <article id="rpm-hero" class="rpm-hero sensor-hit" data-pid="N" tabindex="0" role="button" aria-label="Engine speed details">
-          <div class="hero-heading"><span>ENGINE SPEED</span><span id="rpm-state" class="state-label">NO SAMPLE</span></div>
-          <div class="hero-value"><strong id="rpm-value">—</strong><span>rpm</span></div>
-          <canvas id="rpm-trend" class="hero-trend" aria-label="Recent engine speed trend"></canvas>
-          <div class="hero-foot"><span id="rpm-age">Waiting for a sample</span><span id="idle-target" class="idle-target" hidden></span><span id="idle-result" class="idle-result" hidden></span></div>
-        </article>
-        <div class="metric-grid">
-          <button class="metric sensor-hit" data-pid="ECT" type="button"><span>COOLANT</span><strong id="metric-ect">—</strong><small id="state-ect">NO SAMPLE</small></button>
-          <button class="metric sensor-hit" data-pid="VBAT" type="button"><span>ECU VOLTAGE</span><strong id="metric-vbat">—</strong><small id="state-vbat">NO SAMPLE</small></button>
-          <button class="metric sensor-hit" data-pid="ITP" type="button"><span>THROTTLE SIGNAL</span><strong id="metric-itp">—</strong><small id="state-itp">NO SAMPLE · RAW COUNTS</small></button>
-          <button class="metric sensor-hit" data-pid="LOAD" type="button"><span>ENGINE LOAD</span><strong id="metric-load">—</strong><small id="state-load">NO SAMPLE</small></button>
-        </div>
-        <section id="pinned-section" class="pinned-section" hidden>
-          <div class="section-heading"><h2>Pinned readings</h2><span>Tap a reading for details</span></div>
+      <section id="dashboard-overview" class="dashboard-overview" aria-label="Selected dashboard">
+        <section id="pinned-section" class="pinned-section">
+          <div class="section-heading"><h2 id="dashboard-title">My diagnostics</h2><button id="arrange-dashboard" type="button" aria-pressed="false">Arrange</button></div>
+          <div class="dashboard-tools"><p id="dashboard-hint" class="help">Tap a reading for its chart. Star other readings below to add them.</p><label>View<select id="dashboard-density"><option value="comfortable">Cards</option><option value="compact">List</option></select></label></div>
           <div id="pinned-readings" class="pinned-grid"></div>
         </section>
       </section>
       <div class="group-heading"><h2 id="group-title">Overview</h2><div class="group-actions"><label class="group-picker">View<select id="live-group" aria-label="Live sensor group">
-        <option value="overview">Overview</option>
+        <option value="overview">All available</option>
         <option value="engine">Engine / Idle</option>
         <option value="fuel">Fuel / Combustion</option>
         <option value="temp">Temp / Air</option>
         <option value="switches">Switches / Electrical</option>
-        <option value="advanced">Advanced · all 39</option>
-      </select></label><button id="export-group-btn" type="button">Export group CSV</button></div></div>
+        <option value="advanced">Technical inputs</option>
+      </select></label><button id="export-group-btn" type="button">Export CSV</button></div></div>
       <p id="group-help" class="help group-help"></p>
       <div id="live-cards" class="cards" aria-live="polite"></div>
       <details class="conditions">
@@ -79,7 +68,7 @@
         <label class="check"><input id="manual-gearbox" type="checkbox" checked> Manual gearbox profile</label>
       <label class="check"><input id="idle-check" type="checkbox"> I confirm: fully warm, settled, stationary in neutral, pedal released, A/C and other loads off. Compare regulated idle to the sourced 825–925 rpm range.</label>
         <p id="vehicle-profile" class="help"></p>
-        <p class="help">Freshness uses the observed interval for each signal in this capture; it is not a sensor-health verdict. Green appears only for a sourced range with confirmed test conditions. Gray means no sample, stale, hidden, unsupported or not applicable; the text explains which.</p>
+        <p class="help">Colors describe the available evidence. Green requires a sourced range and confirmed conditions. Gray indicates a saved reading, missing sample, or interrupted signal. Timing details stay in the diagnostic logs.</p>
       </details>
       <details class="recording-panel">
         <summary>Recording and export</summary>
@@ -210,8 +199,10 @@
       <div class="drawer-value"><strong id="drawer-value">—</strong><span id="drawer-unit"></span></div>
       <div class="drawer-stats"><div><span>Raw</span><strong id="drawer-raw">—</strong></div><div><span>Minimum</span><strong id="drawer-min">—</strong></div><div><span>Maximum</span><strong id="drawer-max">—</strong></div><div><span>Samples</span><strong id="drawer-count">0</strong></div></div>
       <p id="drawer-time" class="meta"></p>
-      <div class="chart-range"><button type="button" data-range="30">30 s</button><button type="button" data-range="120">2 min</button><button type="button" data-range="full">Full</button></div>
-      <canvas id="sensor-chart" class="detail-chart"></canvas>
+      <div class="chart-range"><button type="button" data-range="30" aria-pressed="true">30 s</button><button type="button" data-range="120">2 min</button><button type="button" data-range="full">Capture</button></div>
+      <canvas id="sensor-chart" class="detail-chart" aria-label="Recorded sensor values over elapsed capture time"></canvas>
+      <p id="chart-reading" class="chart-reading">Drag across the chart to inspect a recorded sample.</p>
+      <p id="chart-history-note" class="help"></p>
       <p id="drawer-meaning" class="help"></p>
       <details><summary>More · source and reference</summary><p id="drawer-reference" class="help"></p><p id="drawer-source" class="help"></p></details>
       <button id="drawer-pin" type="button">Pin reading</button>

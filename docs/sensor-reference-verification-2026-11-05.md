@@ -121,3 +121,7 @@ factory health thresholds. JavaScript syntax and diff whitespace checks pass.
 The two previously established unrelated broader-suite failures remain:
 missing temporary DTC fixture and the old KOEO-label expectation. No firmware
 flash, physical car measurement, deployment, commit or push was performed.
+
+## Owner identification update — 2026-11-05 dashboard revision
+
+The owner subsequently identified the unplugged component as the MAF sensor. The UI therefore labels the existing `MAF` / PID `0x26` channel **MAF sensor signal**, retaining the protocol word unchanged in **counts**. The owner's 18:54:18 ALL recording contains 1,429 samples for this channel, ranging from 1 to 624; this is an observed capture range, not a normal band. Exact conversion to airflow in g/s or sensor voltage remains unverified. The historical disagreement between reference PID maps is retained above; the new label records owner identification and does not invent a factory transfer function. Original decoder keys and export values are preserved.

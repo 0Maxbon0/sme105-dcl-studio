@@ -4,7 +4,7 @@ import { APP_VERSION, createLineBuffer } from "./protocol.js";
 import { createMockTransport, createReplay } from "./mock-transport.js";
 import { STR } from "./strings.js";
 import { createRecording, listRecordings, recordingBlob } from "./recording.js";
-import { applyStaticStrings, confirmDialog, exportCsv, exportLog, movePinnedSensor, openSensorDetails, refreshDashboardCharts, render, renderEventHistory, renderWarningHistory, setSensorChartRange, showView, toggleSensorPin } from "./ui.js";
+import { applyStaticStrings, confirmDialog, exportCsv, exportLog, reorderPinnedSensor, pinnedSensors, isDashboardArranging, toggleDashboardArrangement, setDashboardDensity, inspectSensorChart, closeSensorDetails, restoreDashboardCapture, openSensorDetails, refreshDashboardCharts, render, renderEventHistory, renderWarningHistory, setSensorChartRange, showView, toggleSensorPin } from "./ui.js";
 import { closeDiagnosticRun, flushDiagnosticQueue, diagnosticSnapshot, recentDiagnosticEvents, recordDiagnosticEvent, recordDiagnosticWarning, setDiagnosticStorageErrorHandler, startDiagnosticRun } from "./diagnostics.js";
 import { exportDiagnosticZip, exportGroupCsv, exportSensorCsv, saveOrShare } from "./exports.js";
 import { lookupCode } from "./codes-db.js";
@@ -392,7 +392,51 @@ function wire() {
     writeStorage("eeciv-idle-check", value ? "1" : "0");
     render(controller.state);
   });
-  document.getElementById("live-set").addEventListener("change", (event) => writeStorage("eeciv-live-set", event.target.value));
+  document.getElementById("live-set").addEventListener("change", event => {
+    writeStorage("eeciv-live-set", event.target.value); closeSensorDetails(); render(controller.state); void restoreDashboardCapture(controller.state);
+  });
+  document.getElementById("dashboard-density").addEventListener("change", event => {
+    setDashboardDensity(event.target.value); render(controller.state);
+  });
+  document.getElementById("arrange-dashboard").addEventListener("click", () => {
+    toggleDashboardArrangement(); render(controller.state);
+  });
+  const pinnedGrid = document.getElementById('pinned-readings');
+  let dragging = null;
+  pinnedGrid.addEventListener('pointerdown', event => {
+    const card = event.target.closest('.pinned-card');
+    if (!isDashboardArranging() || !card || event.target.closest('[data-pin-pid]')) return;
+    event.preventDefault();
+    dragging = { pid: card.dataset.pid, pointer: event.pointerId };
+    pinnedGrid.setPointerCapture(event.pointerId); card.classList.add('dragging');
+  });
+  pinnedGrid.addEventListener('pointermove', event => {
+    if (!dragging || event.pointerId !== dragging.pointer) return;
+    event.preventDefault();
+    const target = document.elementFromPoint(event.clientX,event.clientY)?.closest('.pinned-card');
+    if (target && target.dataset.pid !== dragging.pid) {
+      reorderPinnedSensor(dragging.pid, target.dataset.pid); render(controller.state);
+    }
+  });
+  const endDrag = () => {
+    if (!dragging) return;
+    pinnedGrid.querySelectorAll('.dragging').forEach(card => card.classList.remove('dragging'));
+    if (pinnedGrid.hasPointerCapture(dragging.pointer)) pinnedGrid.releasePointerCapture(dragging.pointer);
+    dragging = null;
+  };
+  pinnedGrid.addEventListener('pointerup', endDrag);
+  pinnedGrid.addEventListener('pointercancel', endDrag);
+  pinnedGrid.addEventListener('keydown', event => {
+    if (!isDashboardArranging() || !event.target.matches('.pinned-card')) return;
+    const offset = ['ArrowLeft','ArrowUp'].includes(event.key) ? -1 : ['ArrowRight','ArrowDown'].includes(event.key) ? 1 : 0;
+    if (!offset) return;
+    event.preventDefault();
+    const pins = pinnedSensors(), name = event.target.dataset.pid, target = pins[pins.indexOf(name)+offset];
+    if (target) { reorderPinnedSensor(name,target); render(controller.state); event.target.focus(); }
+  });
+  const sensorChart = document.getElementById('sensor-chart');
+  sensorChart.addEventListener('pointerdown', event => { sensorChart.setPointerCapture(event.pointerId); inspectSensorChart(event.clientX); });
+  sensorChart.addEventListener('pointermove', event => { if (event.buttons || event.pointerType === 'mouse') inspectSensorChart(event.clientX); });
   document.getElementById("live-group").addEventListener("change", (event) => {
     writeStorage("eeciv-live-group", event.target.value);
     render(controller.state);
@@ -436,20 +480,17 @@ function wire() {
     if (pinButton) {
       event.stopPropagation(); toggleSensorPin(pinButton.dataset.pinPid); render(controller.state); return;
     }
-    const moveButton = event.target.closest("[data-move-pid]");
-    if (moveButton) {
-      event.stopPropagation(); movePinnedSensor(moveButton.dataset.movePid, Number(moveButton.dataset.direction)); render(controller.state); return;
-    }
+    if (isDashboardArranging() && event.target.closest('#pinned-readings')) return;
     const openButton = event.target.closest("[data-open-pid]");
     const metric = event.target.closest(".sensor-hit[data-pid]");
     const pid = openButton?.dataset.openPid || metric?.dataset.pid;
     if (pid) openSensorDetails(controller.state, pid);
   });
   document.getElementById("drawer-close").addEventListener("click", () => {
-    document.getElementById("sensor-drawer").hidden = true;
+    closeSensorDetails();
   });
   document.getElementById("sensor-drawer").addEventListener("click", (event) => {
-    if (event.target.id === "sensor-drawer") event.currentTarget.hidden = true;
+    if (event.target.id === "sensor-drawer") closeSensorDetails();
     const rangeButton = event.target.closest("[data-range]");
     if (rangeButton) {
       for (const button of document.querySelectorAll("[data-range]")) button.setAttribute("aria-pressed", String(button === rangeButton));
@@ -471,7 +512,7 @@ function wire() {
   document.getElementById("export-diagnostics").addEventListener("click", saveFullDiagnostic);
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !document.getElementById("sensor-drawer").hidden) {
-      document.getElementById("sensor-drawer").hidden = true;
+      closeSensorDetails();
     }
   });
   document.getElementById("read-codes-btn").addEventListener("click", () => {
@@ -512,6 +553,7 @@ function wire() {
   document.getElementById("saved-log").addEventListener("click", () => downloadSaved("raw"));
   refreshRecordings();
   refreshTestHistory();
+  void restoreDashboardCapture(controller.state);
   document.getElementById("saved-tests").addEventListener("change", showSavedTest);
   document.getElementById("export-saved-test").addEventListener("click", () => exportSavedTests());
   document.getElementById("export-all-tests").addEventListener("click", () => exportSavedTests(true));

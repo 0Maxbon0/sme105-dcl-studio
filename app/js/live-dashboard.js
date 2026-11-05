@@ -10,12 +10,12 @@ export const LIVE_GROUPS = Object.freeze({
 });
 
 export const LIVE_GROUP_TITLES = Object.freeze({
-  overview: "Overview",
+  overview: "All available",
   engine: "Engine / Idle",
   fuel: "Fuel / Combustion",
   temp: "Temp / Air",
   switches: "Switches / Electrical",
-  advanced: "Advanced · all 39 channels",
+  advanced: "Technical inputs",
 });
 
 export const LIVE_GROUP_HELP = Object.freeze({
@@ -48,7 +48,7 @@ export function sensorFreshness(samples, { active = false, now = Date.now() } = 
   const latest = timed.at(-1);
   if (!latest) return { state: "unknown", label: "TIME NOT RECORDED", ageMs: null, intervalMs: null };
   const ageMs = Math.max(0, now - latest.receivedAt);
-  if (!active) return { state: "historical", label: `LAST CAPTURE · ${formatAge(ageMs)}`, ageMs, intervalMs: null };
+  if (!active) return { state: "historical", label: "Saved reading", ageMs, intervalMs: null };
 
   const intervals = [];
   for (let index = 1; index < timed.length; index += 1) {
@@ -56,14 +56,14 @@ export function sensorFreshness(samples, { active = false, now = Date.now() } = 
     if (delta > 0 && delta <= 60_000) intervals.push(delta);
   }
   if (intervals.length < 2) {
-    return { state: "learning", label: "CADENCE NOT ESTABLISHED", ageMs, intervalMs: null };
+    return { state: "learning", label: "", ageMs, intervalMs: null };
   }
   intervals.sort((a, b) => a - b);
   const intervalMs = intervals[Math.floor(intervals.length / 2)];
   const limitMs = Math.max(intervalMs * 3, intervalMs + 250);
   return ageMs <= limitMs
-    ? { state: "fresh", label: `LIVE · ${formatAge(ageMs)}`, ageMs, intervalMs, limitMs }
-    : { state: "stale", label: `STALE · ${formatAge(ageMs)}`, ageMs, intervalMs, limitMs };
+    ? { state: "fresh", label: "", ageMs, intervalMs, limitMs }
+    : { state: "stale", label: "Waiting for signal", ageMs, intervalMs, limitMs };
 }
 
 /** Return only observed freshness state changes so the run journal stays useful and bounded. */
@@ -85,9 +85,5 @@ export function sensorFreshnessTransitions(pids, previous = new Map(), options =
     }
   }
   return changes;
-}
-
-function formatAge(ms) {
-  return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
 }
 

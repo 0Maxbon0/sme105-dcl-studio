@@ -1,0 +1,73 @@
+{
+  "initialOrder": [
+    "ACT",
+    "VS",
+    "DSDRPM",
+    "MAF",
+    "ISCDTY"
+  ],
+  "afterTouchDrag": [
+    "VS",
+    "ACT",
+    "DSDRPM",
+    "MAF",
+    "ISCDTY"
+  ],
+  "restoredOrder": [
+    "ACT",
+    "VS",
+    "DSDRPM",
+    "MAF",
+    "ISCDTY"
+  ],
+  "touchDragPassed": true,
+  "starMovesWithoutDuplicate": true,
+  "profiles": {
+    "Engine": [
+      "ECT",
+      "VBAT",
+      "ITP",
+      "ACT",
+      "LOAD",
+      "IEGO1",
+      "FUELPW1",
+      "N"
+    ],
+    "Idle & switches": [
+      "N",
+      "DSDRPM",
+      "ISCDTY",
+      "ITP",
+      "RATCH",
+      "VBAT"
+    ],
+    "Air sensor & spark": [
+      "N",
+      "MAF",
+      "VBAT",
+      "SAFTOT",
+      "VSBAR"
+    ]
+  },
+  "listViewFullWidth": true,
+  "layoutAndViewPersistAfterProcessRestart": true,
+  "chartNote": "Capture: 11/5/2026, 6:54:18 PM \u00b7 1,429 recorded samples",
+  "chartMin": "1",
+  "chartMax": "624",
+  "inspectedSample": "8:32 \u00b7 188 counts",
+  "noNumericLatencyLabels": true,
+  "ownerLayoutRestored": true,
+  "device": "Samsung Galaxy A52s, Android 14",
+  "automatedTests": {
+    "passed": 73,
+    "failed": 0,
+    "skipped": 0
+  },
+  "finalRawChartAxis": {
+    "min": 0,
+    "max": 800,
+    "step": 200
+  },
+  "apkSha256": "489486b280b9ba7eea9fae3761a1267662a3be93947be027fc4851494b71ec4e",
+  "vehicleOperationStartedForTesting": false
+}
