@@ -63,7 +63,7 @@ export function createCartDecoder(pidSet = null, { onSample = null, historyLimit
       const word = fr.slots[2];
       if (!word) continue;
       if (fr.fid === 4) mode = word[0];
-      if (fr.fid === 7) {
+      if (mode === 0x25 && fr.fid === 7) {
         if (dec.frame7First === null) dec.frame7First = word[0];
         dec.frame7Last = word[0];
         if (word[0] & 0x40) dec.selfTestComplete = true;
@@ -91,7 +91,15 @@ export function createCartDecoder(pidSet = null, { onSample = null, historyLimit
         const code = formatCode(wordData(b0, b1));
         if (dec.codeSeen.has(code)) continue;
         dec.codeSeen.add(code);
-        dec.codes.push({ code, mode, frame: fr.fid, slot });
+        dec.codes.push({
+          code,
+          mode,
+          frame: fr.fid,
+          slot,
+          rawBytes: [b0, b1],
+          rawData: wordData(b0, b1),
+          rxTimeUs: fr.t,
+        });
       }
     }
   }

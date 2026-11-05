@@ -44,6 +44,13 @@
     </section>
     <section id="view-codes" class="view" hidden>
       <p id="codes-banner" class="banner" hidden></p>
+      <label class="stack" for="stored-code-mode">Stored-code request (read only)
+        <select id="stored-code-mode" aria-describedby="stored-code-mode-help">
+          <option value="0E">0E request · expected response mode 26H</option>
+          <option value="A4">A4 request · expected response mode 26H</option>
+        </select>
+      </label>
+      <p id="stored-code-mode-help" class="help">Choose one request for this read. The app will not try the other mode automatically. Decoded response bytes are not ECU verified unless the bridge explicitly reports that verification.</p>
       <button id="read-codes-btn" type="button" class="primary" data-str="readStored"></button>
       <button id="koeo-btn" type="button" data-str="runKoeo"></button>
       <button id="koer-btn" type="button" data-str="runKoer"></button>

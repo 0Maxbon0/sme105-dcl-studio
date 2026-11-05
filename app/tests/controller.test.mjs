@@ -81,6 +81,10 @@ test("KOEO demo replay keeps code 113 and the firmware block count", () => {
   assert.equal(result.verdict.valid, true);
   assert.deepEqual(result.codes.map((entry) => entry.code), ["113"]);
   assert.equal(result.codes[0].source, "KOEO");
+  assert.equal(result.requestedMode, 0x25);
+  assert.equal(result.codes[0].mode, 0x25);
+  assert.equal(result.codes[0].rawBytes.length, 2);
+  assert.ok(Number.isFinite(result.codes[0].rxTimeUs));
   assert.equal(result.bridgeBlocks, 89);
   assert.equal(result.frame7First, 0xac);
   assert.equal(result.frame7Last, 0xec);
@@ -134,4 +138,7 @@ test("an already-passed bench is not repeated before ARM", () => {
   controller.handleLine("STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0");
   assert.equal(sent.includes("TX2_BENCH"), false);
   assert.equal(sent.at(-1), "ARM_A4");
+  controller.handleLine("EVENT read_armed variant=A4 valid_ms=15000 no_tx_yet=1");
+  assert.equal(sent.at(-1), "READ_A4");
+  assert.deepEqual(sent.filter((command) => command.startsWith("ARM_") || command.startsWith("READ_")), ["ARM_A4", "READ_A4"]);
 });

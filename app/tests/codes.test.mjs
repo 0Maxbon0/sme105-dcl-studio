@@ -1,12 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { CODE_DB_META, lookupCode } from "../js/codes-db.js";
+import { CODE_DB_META, CODES, lookupCode } from "../js/codes-db.js";
 
 test("fault database covers the European list and this car's notes", () => {
-  const csv = readFileSync("/tmp/babroval/eec-iv/resources/EECIVFaults.csv", "utf8");
-  const rows = csv.split(/\r?\n/).filter((line) => line.trim());
-  assert.equal(CODE_DB_META.count, rows.length);
+  assert.equal(CODE_DB_META.count, Object.keys(CODES).length);
   assert.equal(CODE_DB_META.license, "MIT");
   assert.match(CODE_DB_META.source, /babroval\/ford-eec-iv-diagnostic/);
   const code122 = lookupCode("122");

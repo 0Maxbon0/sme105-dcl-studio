@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { createCartDecoder } from "../js/cart.js";
 import { parseLine } from "../js/protocol.js";
 import { createSession, noteSessionLine, sessionVerdict } from "../js/session.js";
 
@@ -19,6 +20,20 @@ function feed(text) {
   return session;
 }
 
+function decode(text) {
+  const lines = linesOf(text);
+  const start = lines.findIndex((line) => line.startsWith("EVENT session="));
+  const end = lines.findIndex((line, index) => index > start && line.startsWith("END "));
+  const cart = createCartDecoder();
+  const session = createSession();
+  for (const line of lines.slice(start, end + 1)) {
+    const parsed = parseLine(line);
+    noteSessionLine(session, parsed);
+    if (parsed.type === "rx") cart.pushRx(parsed.t_us, parsed.byte);
+  }
+  return { session, cart: cart.finish() };
+}
+
 function sliceSession(text, kind) {
   const lines = linesOf(text);
   const start = lines.findIndex((line) => line.startsWith("EVENT session=") && (!kind || line.includes(`session=${kind}`)));
@@ -29,12 +44,63 @@ function sliceSession(text, kind) {
 test("READ_0E capture meets the validity rules", () => {
   const text = capture("20261104T143804949449Z-usb-bridge.txt");
   const session = feed(sliceSession(text, "READ_CANDIDATE"));
-  const verdict = sessionVerdict(session);
+  const { cart } = decode(text);
+  const verdict = sessionVerdict(session, { variant: "0E", cart });
   assert.equal(verdict.valid, true);
   assert.equal(verdict.status, "VALID");
   assert.equal(session.rx, 3810);
   assert.equal(session.end.ro_lost, 0);
   assert.equal(session.pads.length, 4);
+});
+
+test("stored-code captures require mode 26H and keep raw code provenance", () => {
+  for (const [name, variant] of [
+    ["20261104T143804949449Z-usb-bridge.txt", "0E"],
+    ["20261104T144256788073Z-usb-bridge.txt", "A4"],
+  ]) {
+    const { session, cart } = decode(capture(name));
+    const verdict = sessionVerdict(session, { variant, cart });
+    assert.equal(verdict.valid, true, variant);
+    assert.equal(cart.blocks26 > 0, true, variant);
+    assert.equal(cart.codes[0].mode, 0x26, variant);
+    assert.equal(cart.codes[0].rawBytes.length, 2, variant);
+    assert.ok(Number.isFinite(cart.codes[0].rxTimeUs), variant);
+  }
+});
+
+test("DTC mode mismatch, absent target response, and incomplete self-test fail closed", () => {
+  const start = feed("EVENT session=READ_CANDIDATE\nEND reason=16 ro_bytes=0 ro_lost=0 uart_errors=0 pad_verified=0 words_started=0 ecu_verified=0 dtc_verified=0 DE=LOW");
+  const storedWithMode25 = sessionVerdict(start, { variant: "0E", cart: {
+    blocks25: 1, blocks26: 0, codes: [{ code: "113", mode: 0x25 }], selfTestComplete: true,
+  } });
+  assert.equal(storedWithMode25.status, "INCOMPLETE");
+  assert.ok(storedWithMode25.reasons.some((reason) => reason.includes("mode 26H")));
+  assert.ok(storedWithMode25.reasons.some((reason) => reason.includes("unexpected mode 25H")));
+
+  const selfTestWithMode26 = sessionVerdict(start, { variant: "KOEO", cart: {
+    blocks25: 0, blocks26: 1, codes: [{ code: "113", mode: 0x26 }], selfTestComplete: true,
+  } });
+  assert.equal(selfTestWithMode26.status, "INCOMPLETE");
+  assert.ok(selfTestWithMode26.reasons.some((reason) => reason.includes("mode 25H")));
+  assert.ok(selfTestWithMode26.reasons.some((reason) => reason.includes("unexpected mode 26H")));
+
+  const missingMode = sessionVerdict(start, { variant: "A4", cart: { blocks25: 0, blocks26: 0, codes: [] } });
+  assert.equal(missingMode.status, "INCOMPLETE");
+  assert.ok(missingMode.reasons.some((reason) => reason.includes("missing mode 26H")));
+
+  const noFlag = sessionVerdict(start, { variant: "KOER", cart: {
+    blocks25: 1, blocks26: 0, codes: [], selfTestComplete: false,
+  } });
+  assert.equal(noFlag.status, "INCOMPLETE");
+  assert.ok(noFlag.reasons.some((reason) => reason.includes("self-test complete flag")));
+});
+
+test("KOEO capture satisfies mode 25H and Frame 7 completion checks", () => {
+  const { session, cart } = decode(capture("20261104T154903976737Z-usb-bridge.txt"));
+  const verdict = sessionVerdict(session, { variant: "KOEO", cart });
+  assert.equal(verdict.valid, true);
+  assert.equal(cart.blocks25, 88);
+  assert.equal(cart.selfTestComplete, true);
 });
 
 test("a dropped RX byte or a pad mismatch is incomplete", () => {

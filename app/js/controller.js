@@ -53,12 +53,19 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       for (let i = snap.rows.length - 1; i >= 0 && snap.rows[i].receivedAt == null; --i) snap.rows[i].receivedAt = now();
     }
     const variant = state.op?.variant || state.lastSession?.variant || "";
+    const requestedMode = variant === "0E" || variant === "A4" ? 0x26
+      : variant === "KOEO" || variant === "KOER" ? 0x25 : null;
     const codes = (snap?.codes || []).map((entry) => ({
       code: entry.code,
       mode: entry.mode,
-      source: entry.mode === 0x25 ? (variant === "KOER" ? "engine running" : "engine off") : "stored",
+      requestedMode,
+      requestedVariant: variant,
+      source: entry.mode === 0x25 ? variant : `stored request ${variant}`,
       frame: entry.frame,
       slot: entry.slot,
+      rawBytes: entry.rawBytes,
+      rawData: entry.rawData,
+      rxTimeUs: entry.rxTimeUs,
     }));
     const pids = {};
     if (snap) {
@@ -70,6 +77,12 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       variant,
       kind: state.op?.kind || "",
       verdict,
+      requestedMode,
+      observedModes: [
+        ...((snap?.blocks25 || 0) > 0 ? [0x25] : []),
+        ...((snap?.blocks26 || 0) > 0 ? [0x26] : []),
+      ],
+      dtcVerified: state.op?.session?.end?.fields?.dtc_verified === "1",
       codes,
       pids,
       rows: snap?.rows || [],
@@ -90,7 +103,10 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
   function finalize(override) {
     if (state.cart && !state.cart.snapshot().closed) state.cart.finish();
     const session = state.op?.session || null;
-    let verdict = session ? sessionVerdict(session, {}) : null;
+    let verdict = session ? sessionVerdict(session, {
+      variant: state.op?.variant,
+      cart: state.cart?.snapshot() || null,
+    }) : null;
     if (override) {
       verdict = {
         valid: false,
@@ -140,8 +156,11 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     state.phase = "idle";
     state.deadline = null;
     state.op = null;
+    const diagnosticRead = ["codes", "koeo", "koer"].includes(state.lastSession.kind);
     state.message = verdict.valid
-      ? `Valid — ${verdict.end ? reasonText(verdict.end.reason) : "complete"}`
+      ? diagnosticRead
+        ? `Capture integrity checks passed — ECU DTC verification ${state.lastSession.dtcVerified ? "reported" : "not reported"}.`
+        : `Valid — ${verdict.end ? reasonText(verdict.end.reason) : "complete"}`
       : `${verdict.status}: ${verdict.reasons.join("; ")}`;
     if (combined?.error) state.message = combined.error;
     touch();

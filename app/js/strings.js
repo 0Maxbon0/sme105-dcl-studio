@@ -88,7 +88,7 @@ export const STR = {
   cancel: "Cancel",
   proceed: "Send command",
   confirmStoredTitle: "Read stored codes",
-  confirmStoredBody: "Ignition ON. This reads stored codes once and does not clear them. Gear in P/N. The app will not retry.",
+  confirmStoredBody: "Ignition ON, car parked in neutral. This sends the selected read-only request once. It does not erase codes and will not try the alternate request. The decoded bytes remain unverified unless the bridge reports ECU DTC verification.",
   confirmKoeoTitle: "KOEO self-test",
   confirmKoeoBody: "Ignition ON, engine OFF, gear in P/N, feet off the pedals. The test takes about 60 seconds. The app sends one request and does not retry.",
   confirmKoerTitle: "Engine-running test",

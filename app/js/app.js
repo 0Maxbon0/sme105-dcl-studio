@@ -154,6 +154,11 @@ function wire() {
   const storedDemo = readStorage("eeciv-demo") === "1";
   const storedCapture = readStorage("eeciv-demo-capture");
   document.getElementById("manual-gearbox").checked = readStorage("eeciv-manual-gearbox") !== "0";
+  const storedMode = readStorage("eeciv-stored-code-mode");
+  if (storedMode === "0E" || storedMode === "A4") document.getElementById("stored-code-mode").value = storedMode;
+  document.getElementById("stored-code-mode").addEventListener("change", (event) => {
+    writeStorage("eeciv-stored-code-mode", event.target.value);
+  });
   document.getElementById("manual-gearbox").addEventListener("change", (event) => {
     writeStorage("eeciv-manual-gearbox", event.target.checked ? "1" : "0");
     render(controller.state);
@@ -171,9 +176,10 @@ function wire() {
   });
   document.getElementById("connect-btn").addEventListener("click", () => { connect(); });
   document.getElementById("stop-btn").addEventListener("click", () => controller.requestStop());
-  document.getElementById("read-codes-btn").addEventListener("click", () => ask(
-    STR.confirmStoredTitle, STR.confirmStoredBody, () => controller.requestVehicle("0E"),
-  ));
+  document.getElementById("read-codes-btn").addEventListener("click", () => {
+    const variant = document.getElementById("stored-code-mode").value === "A4" ? "A4" : "0E";
+    ask(`${STR.confirmStoredTitle} (${variant})`, `${STR.confirmStoredBody}\n\nSelected request: ${variant}; expected response mode: 26H.`, () => controller.requestVehicle(variant));
+  });
   document.getElementById("koeo-btn").addEventListener("click", () => ask(
     STR.confirmKoeoTitle, STR.confirmKoeoBody, () => controller.requestVehicle("KOEO"),
   ));

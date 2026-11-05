@@ -67,10 +67,11 @@ function hexByte(value) {
 function activeCodes(state) {
   if (state.trust === "progress" && state.cart) {
     return state.cart.snapshot().codes.map((entry) => ({
+      ...entry,
       code: entry.code,
       source: entry.mode === 0x25
-        ? ((state.op?.variant || state.lastSession?.variant) === "KOER" ? "engine running" : "engine off")
-        : "stored",
+        ? (state.op?.variant || state.lastSession?.variant || "self-test")
+        : `stored request ${state.op?.variant || state.lastSession?.variant || "unknown"}`,
     }));
   }
   return state.lastSession?.codes || [];
@@ -160,6 +161,7 @@ export function render(state) {
 
   const actions = ["read-codes-btn", "koeo-btn", "koer-btn", "live-start", "offline-btn", "bench-btn", "reboot-btn", "clear-btn", "mem-btn"];
   for (const id of actions) $(id).disabled = !linked || busy;
+  $("stored-code-mode").disabled = busy;
   $("set-live").disabled = busy;
   $("set-live2").disabled = busy;
   $("set-live3").disabled = busy;
@@ -169,7 +171,7 @@ export function render(state) {
   banner($("live-banner"), state);
   const pct = progressValue(state);
   const variant = state.op?.variant || state.lastSession?.variant;
-  $("codes-progress").value = variant === "KOEO" || variant === "KOER" || variant === "0E" ? pct : 0;
+  $("codes-progress").value = variant === "KOEO" || variant === "KOER" || variant === "0E" || variant === "A4" ? pct : 0;
   const prompt = (activeCodes(state).find((entry) => entry.code === "010" || entry.code === "020" || entry.code === "030"));
   const promptBox = $("koer-prompt");
   if (prompt && state.trust === "progress") {
@@ -183,17 +185,26 @@ export function render(state) {
 
   const snap = activeSnap(state);
   const result = state.lastSession;
-  const flag = snap?.selfTestComplete || result?.selfTestComplete;
-  const frame7 = snap?.frame7Last ?? result?.frame7Last;
-  const bridgeBlocks = state.op?.session?.bridgeBlocks ?? result?.bridgeBlocks;
-  const decodedBlocks = (snap?.blocks25 || 0) + (snap?.blocks26 || 0)
-    || ((result?.blocks25 || 0) + (result?.blocks26 || 0));
-  const blocks = bridgeBlocks ?? decodedBlocks;
-  $("codes-meta").textContent = [
-    `${STR.blocks}: ${blocks || 0}`,
-    `${STR.selfTestFlag}: ${flag ? STR.flagSet : STR.flagClear}`,
-    `${STR.frame7}: ${frame7 == null ? STR.notKnown : hexByte(frame7)}`,
-  ].join(" · ");
+  const diagnosticVariant = state.op?.variant || result?.variant || "";
+  const expectedMode = diagnosticVariant === "0E" || diagnosticVariant === "A4" ? 0x26
+    : diagnosticVariant === "KOEO" || diagnosticVariant === "KOER" ? 0x25 : null;
+  const observedModes = result?.observedModes || [
+    ...((snap?.blocks25 || 0) > 0 ? [0x25] : []),
+    ...((snap?.blocks26 || 0) > 0 ? [0x26] : []),
+  ];
+  const codeMeta = expectedMode == null ? [] : [
+    `Requested mode: ${expectedMode.toString(16).toUpperCase()}H`,
+    `Observed mode: ${observedModes.length ? observedModes.map((mode) => `${mode.toString(16).toUpperCase()}H`).join(", ") : "not yet seen"}`,
+    `Codes decoded: ${activeCodes(state).length}`,
+    `Bridge ECU DTC verification: ${result ? (result.dtcVerified ? "reported" : "not reported") : "pending"}`,
+  ];
+  if (expectedMode === 0x25) {
+    const flag = snap?.selfTestComplete ?? result?.selfTestComplete;
+    const frame7 = snap?.frame7Last ?? result?.frame7Last;
+    codeMeta.push(`${STR.selfTestFlag}: ${flag ? STR.flagSet : STR.flagClear}`);
+    codeMeta.push(`${STR.frame7}: ${frame7 == null ? STR.notKnown : hexByte(frame7)}`);
+  }
+  $("codes-meta").textContent = codeMeta.join(" · ");
 
   const list = $("codes-list");
   const codes = activeCodes(state);
@@ -201,19 +212,27 @@ export function render(state) {
   list.replaceChildren();
   if (!codes.length) {
     const empty = document.createElement("li");
-    empty.textContent = STR.noCodes;
+    empty.textContent = state.trust === "progress"
+      ? "Waiting for response words."
+      : state.trust === "valid"
+        ? "No code words decoded in this complete capture; this does not certify ECU code status."
+        : result?.verdict ? "No code words decoded; capture incomplete or failed. Review the validity details above."
+          : STR.noCodes;
     list.append(empty);
   } else {
     for (const entry of codes) {
       const info = lookupCode(entry.code);
       const item = document.createElement("li");
-      item.innerHTML = `<div class="code"></div><div></div><div class="tag"></div><div class="tag"></div><p class="help"></p>`;
+      item.innerHTML = `<div class="code"></div><div></div><div class="tag"></div><div class="tag"></div><p class="help"></p><p class="help raw-provenance"></p>`;
       item.children[0].textContent = info.code;
       item.children[1].textContent = info.description;
       item.children[2].textContent = info.category || STR.category;
       item.children[3].textContent = `${STR.source}: ${entry.source}`;
       item.children[4].textContent = info.note;
       item.children[4].hidden = !info.note;
+      const raw = entry.rawBytes ? entry.rawBytes.map(hexByte).join(" ") : "not retained";
+      const mode = entry.mode == null ? "unknown" : `${entry.mode.toString(16).toUpperCase()}H`;
+      item.children[5].textContent = `Observed mode ${mode} · raw bytes ${raw} · frame ${entry.frame ?? "?"}, slot ${entry.slot ?? "?"} · RX time ${entry.rxTimeUs ?? "?"} µs`;
       list.append(item);
     }
   }

@@ -40,12 +40,40 @@ export function noteSessionLine(session, parsed) {
   return session;
 }
 
+function diagnosticModeProblems(variant, cart) {
+  const spec = {
+    "0E": { expected: 0x26, expectedBlocks: "blocks26", otherBlocks: "blocks25" },
+    A4: { expected: 0x26, expectedBlocks: "blocks26", otherBlocks: "blocks25" },
+    KOEO: { expected: 0x25, expectedBlocks: "blocks25", otherBlocks: "blocks26", selfTest: true },
+    KOER: { expected: 0x25, expectedBlocks: "blocks25", otherBlocks: "blocks26", selfTest: true },
+  }[variant];
+  if (!spec) return [];
+  if (!cart) return [`missing decoded response for ${variant}`];
+
+  const reasons = [];
+  if (!(cart[spec.expectedBlocks] > 0)) {
+    reasons.push(`missing mode ${spec.expected.toString(16).toUpperCase()}H response for ${variant}`);
+  }
+  if (cart[spec.otherBlocks] > 0) {
+    const unexpected = spec.expected === 0x26 ? 0x25 : 0x26;
+    reasons.push(`unexpected mode ${unexpected.toString(16).toUpperCase()}H response during ${variant}`);
+  }
+  if (cart.codes?.some((entry) => entry.mode !== spec.expected)) {
+    reasons.push(`DTC code mode does not match ${variant}`);
+  }
+  if (spec.selfTest && !cart.selfTestComplete) {
+    reasons.push(`missing Frame 7 self-test complete flag for ${variant}`);
+  }
+  return reasons;
+}
+
 export function sessionVerdict(session, flags = {}) {
   const reasons = [];
   if (flags.disconnect) reasons.push("link lost");
   if (flags.timeout) reasons.push("timed out");
   if (!session || !session.started) reasons.push("session did not start");
   if (session) reasons.push(...session.problems);
+  reasons.push(...diagnosticModeProblems(flags.variant, flags.cart));
   if (!session?.end) reasons.push("no END line");
   else {
     // END means the bridge stopped, NOT necessarily that a read completed.
