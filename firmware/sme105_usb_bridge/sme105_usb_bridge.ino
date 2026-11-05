@@ -96,7 +96,7 @@ constexpr uint32_t kOtaCurrentVersion = 1;
 // still be able to boot PENDING_VERIFY from an older accepted version and
 // prove their manifest before promoting ota_ver. On a VALID app with NO pending
 // ledger, a supervised physical USB flash may adopt this build baseline.
-constexpr uint32_t kUsbInstalledBuildVersion = 22;
+constexpr uint32_t kUsbInstalledBuildVersion = 23;
 constexpr size_t kOtaAppSlotMax = 0x140000; // default 4MB ESP32 OTA partition table
 constexpr char kOtaPublisherPublicPEM[] =
   "-----BEGIN PUBLIC KEY-----\n"
@@ -2655,7 +2655,12 @@ void pollActive() {
         isLiveVariant(variant) ? kLiveCaptureMs :
         variant == kVariantOffline ? kOfflineCaptureMs : kCaptureMs;
     const uint32_t elapsed = millis() - captureStartedMs;
-    const uint32_t rxAgeUs = static_cast<uint32_t>(esp_timer_get_time()) - lastRxAtUs;
+    // Read the ISR timestamp BEFORE sampling now, in separate sequenced
+    // statements. An interrupt may update lastRxAtUs at any point, but cannot
+    // put this local snapshot ahead of the later clock sample. Keep unsigned
+    // subtraction for the legitimate 32-bit microsecond wrap (~71 minutes).
+    const uint32_t lastRxUs = lastRxAtUs;
+    const uint32_t rxAgeUs = static_cast<uint32_t>(esp_timer_get_time()) - lastRxUs;
     if (isLiveVariant(variant) && stage == CART_READ && elapsed >= 5000 &&
         rxAgeUs >= 5000000UL) {
       // Distinguish silence at GPIO16/UART1 from a malformed CART header.
@@ -2665,7 +2670,6 @@ void pollActive() {
       // suppressing this stop would not restore missing live measurements.
       const uint32_t received = rxTotal;
       const uint32_t blocks = dpsBlocks;
-      const uint32_t lastRxUs = lastRxAtUs;
       const uint8_t started = wordsStarted;
       const uint8_t verified = wordsVerified;
       const uint8_t nextFrame = nextId;

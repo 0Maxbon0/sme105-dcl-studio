@@ -28,6 +28,7 @@ HARNESS = r"""
 #include <vector>
 #define IRAM_ATTR
 #define DRAM_ATTR
+#include "live_all_map.h"
 enum Stage : uint8_t { IDLE, QUIET, ECHO_TX, ACK_WAIT, GO_TX,
                        CART_PASSIVE, CART_READ, FINISHING, FAULTED };
 enum Fault : uint8_t { NO_FAULT, BAD_IDLE, HSK_TX, HSK_TIMEOUT, HSK_ACK,
@@ -43,7 +44,7 @@ volatile Stage stage = CART_READ;
 volatile uint8_t variant = %(variant)s;
 volatile bool extraArmed = false, extraInFlight = false;
 volatile uint32_t extraTargetUs = 0, extraStartUs = 0;
-volatile uint8_t extraGate = 0, extraFrame = 0;
+volatile uint8_t extraGate = 0, extraFrame = 0, extraColumn = 0;
 volatile uint8_t pidWordsStarted = 0, pidWordsVerified = 0;
 CmdWord extraWord = {0, 0};
 volatile Fault failure = NO_FAULT;
@@ -150,7 +151,8 @@ class CartJoinParserReplay(unittest.TestCase):
             src = Path(tmp) / "replay.cpp"
             exe = Path(tmp) / "replay"
             src.write_text(code, encoding="utf-8")
-            subprocess.run(["g++", "-std=c++17", "-O1", "-o", str(exe), str(src)],
+            subprocess.run(["g++", "-std=c++17", "-O1", "-I", str(SKETCH.parent),
+                            "-o", str(exe), str(src)],
                            check=True, capture_output=True, text=True)
             out = subprocess.run([str(exe)], check=True, capture_output=True, text=True).stdout
         result = re.search(r"RESULT (.*)", out)

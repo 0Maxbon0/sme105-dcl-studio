@@ -1,5 +1,11 @@
 # v21 live capture: received bytes end before watchdog termination
 
+**Updated finding:** the later v22 event with `last_rx_age_us=4294967294`
+proves a watchdog timestamp race, not ECU silence. See
+[the v23 repair and installation evidence](sme105-rx-watchdog-v23-2026-11-05.md).
+The historical capture observations below do not establish that the ECU
+stopped transmitting.
+
 Evidence: owner-provided `eec-iv-session.txt` (346 lines, not committed here).
 This report does **not** claim a vehicle-side repair or an independent electrical
 measurement. Analysis is against GitHub `main` at `5138c67a` and compares the
