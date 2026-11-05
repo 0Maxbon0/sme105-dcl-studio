@@ -383,10 +383,8 @@ function wire() {
   const storedDemo = readStorage("eeciv-demo") === "1";
   const storedCapture = readStorage("eeciv-demo-capture");
   const manual = readStorage("eeciv-manual-gearbox") !== "0";
-  document.getElementById("manual-gearbox").checked = manual;
   document.getElementById("manual-gearbox-settings").checked = manual;
   const idleCheck = readStorage("eeciv-idle-check") === "1";
-  document.getElementById("idle-check").checked = idleCheck;
   document.getElementById("idle-check-settings").checked = idleCheck;
   const selectedSet = readStorage("eeciv-live-set");
   if (["LIVE", "LIVE2", "LIVE3", "ALL"].includes(selectedSet)) chooseLiveSet(selectedSet);
@@ -409,16 +407,14 @@ function wire() {
   document.getElementById("stored-code-mode").addEventListener("change", (event) => {
     writeStorage("eeciv-stored-code-mode", event.target.value);
   });
-  for (const id of ["manual-gearbox", "manual-gearbox-settings"]) document.getElementById(id).addEventListener("change", (event) => {
+  for (const id of ["manual-gearbox-settings"]) document.getElementById(id).addEventListener("change", (event) => {
     const value = event.target.checked;
-    document.getElementById("manual-gearbox").checked = value;
     document.getElementById("manual-gearbox-settings").checked = value;
     writeStorage("eeciv-manual-gearbox", value ? "1" : "0");
     render(controller.state);
   });
-  for (const id of ["idle-check", "idle-check-settings"]) document.getElementById(id).addEventListener("change", (event) => {
+  for (const id of ["idle-check-settings"]) document.getElementById(id).addEventListener("change", (event) => {
     const value = event.target.checked;
-    document.getElementById("idle-check").checked = value;
     document.getElementById("idle-check-settings").checked = value;
     writeStorage("eeciv-idle-check", value ? "1" : "0");
     render(controller.state);
@@ -536,7 +532,7 @@ function wire() {
       .catch(error => { controller.state.message = `Sensor export failed: ${error.message}`; render(controller.state); });
   });
   document.getElementById("export-group-btn").addEventListener("click", () => {
-    exportGroupCsv(document.getElementById("live-group").value, { unitSystem: currentUnits(), manual: document.getElementById("manual-gearbox").checked })
+    exportGroupCsv(document.getElementById("live-group").value, { unitSystem: currentUnits(), manual: document.getElementById("manual-gearbox-settings").checked })
       .catch(error => { controller.state.message = `Group export failed: ${error.message}`; render(controller.state); });
   });
   for (const id of ["warning-filter", "warning-sensor-filter", "warning-date-filter"]) document.getElementById(id).addEventListener("change", refreshWarnings);

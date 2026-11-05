@@ -474,7 +474,7 @@ function renderSensorDrawer(state) {
   const received = sensorSeries(state, name);
   const saved = detailHistory?.name === name ? detailHistory : null;
   const series = received || (saved?.samples.length ? { samples: saved.samples, summary: summarizeSeries(saved.samples) } : null);
-  const health = sensorHealth(name, series, state, $("manual-gearbox").checked, $("idle-check").checked);
+  const health = sensorHealth(name, series, state, $("manual-gearbox-settings").checked, $("idle-check-settings").checked);
   if (!received && saved?.samples.length) { health.freshness = { state: 'historical', label: 'Saved reading' }; health.colorState = 'historical'; health.explanation = 'Recorded values from the saved capture.'; }
   let chartSamples = health.samples;
   if (saved?.samples.length && (!received || received.saved || state.archive?.id === saved.id)) {
@@ -488,7 +488,7 @@ function renderSensorDrawer(state) {
   }
   setText($("chart-history-note"), saved?.message || 'Recent received samples');
   const summary = health.summary;
-  const reference = readingReference(name, { manual: $("manual-gearbox").checked });
+  const reference = readingReference(name, { manual: $("manual-gearbox-settings").checked });
   setText($("drawer-group"), [...Object.keys(LIVE_GROUP_TITLES)].find((group) => LIVE_GROUPSForUi(group).includes(name))
     ? LIVE_GROUP_TITLES[Object.keys(LIVE_GROUP_TITLES).find((group) => LIVE_GROUPSForUi(group).includes(name))]
     : "Advanced");
@@ -647,8 +647,8 @@ export function render(state) {
   renderFailureMemory(state);
   }
 
-  const manual = $("manual-gearbox").checked;
-  const idleCheck = $("idle-check").checked;
+  const manual = $("manual-gearbox-settings").checked;
+  const idleCheck = $("idle-check-settings").checked;
   $("manual-gearbox-settings").checked = manual;
   $("idle-check-settings").checked = idleCheck;
 
@@ -680,9 +680,9 @@ export function render(state) {
   const restoredCapture = savedDashboards.get(variantSet);
   const captureTime = Object.keys(snap?.pids || {}).length ? state.archive?.started || result?.startedAt : restoredCapture?.started;
   $("live-meta").textContent = activeStream(state) ? 'Recording automatically on this device' : captureTime ? `Saved capture · ${new Date(captureTime).toLocaleString()}` : restoredCapture?.loading ? 'Loading saved readings…' : '';
-  $("recording-status").textContent = state.archive
-    ? `Full bridge evidence and sensor rows are saved during this capture. ${state.archive.persistent ? "Persistent device storage was granted." : "Export the capture before clearing app storage."}${state.archive.error ? ` Storage error: ${state.archive.error}` : ""}`
-    : "Recordings remain on this device. Interrupted sessions remain incomplete; saving does not certify diagnostic validity.";
+  $("recording-status").textContent = state.archive?.error
+    ? `Saving needs attention: ${state.archive.error}`
+    : `${activeStream(state) ? "Recording and saving automatically. Stop ends this session. " : "Saved sessions remain on this phone. "}Exports save to Downloads/SME105 DCL Studio, then open the share sheet.`;
 
   const mem = snap?.mem || result?.mem || {};
   const memLines = Object.keys(mem).sort((a, b) => a - b).map((key) => `byte ${key}: ${mem[key].toString(16).toUpperCase().padStart(2, "0")}`);

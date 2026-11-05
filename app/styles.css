@@ -134,7 +134,7 @@ main { display: grid; gap: 16px; max-width: 1024px; margin: 0 auto; padding-top:
 .pin-order { display: flex; gap: 4px; padding-top: 5px; }
 .pin-order[hidden] { display: none; }
 .pin-order button { min-height: 34px; width: 50%; padding: 4px; color: var(--muted); font-size: .65rem; }
-.conditions, .recording-panel, .view > details, .history-panel { display: grid; gap: 9px; padding: 12px; border: 1px solid var(--line); border-radius: 15px; background: var(--surface); }
+.recording-panel, .view > details, .history-panel { display: grid; gap: 9px; padding: 12px; border: 1px solid var(--line); border-radius: 15px; background: var(--surface); }
 details > summary { min-height: 34px; display: flex; align-items: center; cursor: pointer; color: var(--text); font-size: .82rem; font-weight: 700; }
 .check { display: flex; align-items: center; gap: 9px; min-height: 44px; color: var(--muted); font-size: .8rem; }
 .check input { width: 18px; height: 18px; accent-color: var(--cyan); }
@@ -251,3 +251,18 @@ body.reduce-motion *, body.reduce-motion *::before, body.reduce-motion *::after 
 .reading-number { min-width:0; max-width:100%; }
 .pinned-value.long-number { font-size:1.55rem; }
 .sensor-value.long-number { font-size:1.35rem; }
+
+/* Keep long warning history inside its own accessible touch/keyboard viewport. */
+.warning-list { max-height: clamp(16rem, 43dvh, 28rem); overflow-y: auto; overscroll-behavior-y: contain; scrollbar-gutter: stable; scrollbar-width: auto; scrollbar-color: var(--muted) var(--bg); padding-right: 6px; }
+.warning-list::-webkit-scrollbar { width: 10px; }
+.warning-list::-webkit-scrollbar-track { background: var(--bg); border-radius: 8px; }
+.warning-list::-webkit-scrollbar-thumb { background: var(--muted); border-radius: 8px; border: 2px solid var(--bg); }
+.warning-list:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+.recording-panel { gap: 14px; }
+.recording-panel h2 { margin: 0; font-size: 1rem; }
+.recording-intro { margin: 0; }
+.saved-recording-controls { display: grid; gap: 10px; padding-top: 14px; border-top: 1px solid var(--line); }
+.saved-recording-controls select { width: 100%; min-width: 0; }
+.recording-export-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.recording-export-actions button { min-width: 0; padding-inline: 8px; }
+.recording-progress { border-top: 1px solid var(--line); padding-top: 6px; }

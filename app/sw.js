@@ -1,14 +1,14 @@
-const CACHE = "eeciv-v1.8.0";
+const CACHE = "eeciv-v1.8.1";
 const FILES = [
   "./",
   "./index.html",
-  "./styles.css?v=8",
+  "./styles.css?v=9",
   "./manifest.webmanifest",
   "./sw.js",
   "./icons/icon.svg",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
-  "./js/app.js?v=15",
+  "./js/app.js?v=16",
   "./js/ui.js",
   "./js/strings.js",
   "./js/protocol.js",

@@ -12,7 +12,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=8">
+  <link rel="stylesheet" href="styles.css?v=9">
 </head>
 <body>
   <header class="top">
@@ -63,23 +63,17 @@
       </select></label><button id="export-group-btn" type="button">Export CSV</button></div></div>
       <p id="group-help" class="help group-help"></p>
       <div id="live-cards" class="cards" aria-live="polite"></div>
-      <details class="conditions">
-        <summary>Vehicle conditions and display options</summary>
-        <label class="check"><input id="manual-gearbox" type="checkbox" checked> Manual gearbox profile</label>
-      <label class="check"><input id="idle-check" type="checkbox"> I confirm: fully warm, settled, stationary in neutral, pedal released, A/C and other loads off. Compare regulated idle to the sourced 825–925 rpm range.</label>
-        <p id="vehicle-profile" class="help"></p>
-        <p class="help">Colors describe the available evidence. Green requires a sourced range and confirmed conditions. Gray indicates a saved reading, missing sample, or interrupted signal. Timing details stay in the diagnostic logs.</p>
-      </details>
-      <details class="recording-panel">
-        <summary>Recording and export</summary>
-        <label class="meter"><span>Capture progress</span><progress id="live-progress" max="100" value="0"></progress></label>
-        <button id="csv-btn" type="button" disabled>Export current capture CSV</button>
-        <label for="saved-recordings">Saved recording on this device</label>
-        <select id="saved-recordings"></select>
-        <button id="saved-csv" type="button" disabled>Export saved CSV</button>
-        <button id="saved-log" type="button" disabled>Export saved raw log</button>
-        <p id="recording-status" class="help">Recordings remain on this device. Interrupted sessions remain incomplete; saving does not certify diagnostic validity.</p>
-      </details>
+      <section class="recording-panel" aria-labelledby="recordings-title">
+        <div class="section-heading"><h2 id="recordings-title">Recordings &amp; exports</h2><span class="tag">On this phone</span></div>
+        <p class="help recording-intro">Start &amp; save records automatically. Saved sessions stay available after you close the app.</p>
+        <button id="csv-btn" type="button" class="primary" disabled>Export current session · CSV</button>
+        <div class="saved-recording-controls">
+          <label class="stack" for="saved-recordings">Choose a saved session<select id="saved-recordings"></select></label>
+          <div class="recording-export-actions"><button id="saved-csv" type="button" disabled>Readings · CSV</button><button id="saved-log" type="button" disabled>Raw log · TXT</button></div>
+        </div>
+        <p id="recording-status" class="help">Files save to Downloads/SME105 DCL Studio, then open the share sheet.</p>
+        <details class="recording-progress"><summary>Capture progress</summary><progress id="live-progress" max="100" value="0" aria-label="Capture progress"></progress></details>
+      </section>
     </section>
     <section id="view-codes" class="view" hidden>
       <h2>Faults and self-tests</h2>
@@ -162,6 +156,7 @@
       </details>
       <details>
         <summary>Vehicle and display</summary>
+        <p id="vehicle-profile" class="help"></p>
         <label class="check"><input id="manual-gearbox-settings" type="checkbox" checked> Manual gearbox profile</label>
         <label class="check"><input id="idle-check-settings" type="checkbox"> I confirm the engine is fully warm, settled, stationary in neutral, pedal released, with A/C and other loads off before comparing idle</label>
         <label class="stack" for="theme-mode">Color theme<select id="theme-mode"><option value="system">System</option><option value="dark">Dark</option><option value="light">Light</option></select></label>
@@ -201,7 +196,7 @@
           <label>Sensor<select id="warning-sensor-filter"><option value="all">All sensors</option></select></label>
           <label>Date<input id="warning-date-filter" type="date"></label>
         </div>
-        <div id="warning-history" class="warning-list"><p class="help">Loading saved warnings…</p></div>
+        <div id="warning-history" class="warning-list" role="region" aria-label="Saved warnings — scroll to review" tabindex="0"><p class="help">Loading saved warnings…</p></div>
         <button id="export-diagnostics" type="button" class="primary">Save full diagnostic ZIP</button>
       </section>
       <details class="history-panel"><summary>Saved event journal · latest 100</summary><div id="event-history" class="event-list">Loading saved events…</div></details>
@@ -250,6 +245,6 @@
     </div>
   </div>
   <script src="vendor/jszip.min.js"></script>
-  <script type="module" src="js/app.js?v=15"></script>
+  <script type="module" src="js/app.js?v=16"></script>
 </body>
 </html>
