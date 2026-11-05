@@ -10,6 +10,8 @@ import { exportDiagnosticZip, exportGroupCsv, exportSensorCsv, saveOrShare } fro
 import { lookupCode } from "./codes-db.js";
 import { sensorFreshnessTransitions } from "./live-dashboard.js";
 
+import { savedDiagnosticTests, diagnosticTestReport } from "./test-history.js";
+
 const DEMO_FILES = {
   "0E": "./demo/read-0e.txt",
   KOEO: "./demo/koeo.txt",
@@ -90,7 +92,7 @@ function auditState(state) {
     rx: session.verdict?.end?.rx ?? null, parityRejects: session.parityRejects,
     codeParityRejects: session.codeParityRejects,
   };
-  recordDiagnosticEvent("SESSION_RESULT", evidence, "session");
+  recordDiagnosticEvent("SESSION_RESULT", evidence, "session").then(refreshTestHistory);
   if (!session.verdict?.valid) {
     const failed = session.verdict?.status === "FAILED";
     const warningKey = `session-${session.variant}-${session.completedAt}`;
@@ -265,6 +267,41 @@ async function saveFullDiagnostic() {
   } finally { button.disabled = false; }
 }
 
+let savedTests = [];
+function showSavedTest() {
+  const event = savedTests[Number(document.getElementById("saved-tests").value)];
+  document.getElementById("saved-test-detail").textContent = event
+    ? diagnosticTestReport(event).split("\nOriginal saved evidence:")[0] : "No saved diagnostic tests yet.";
+}
+async function refreshTestHistory() {
+  try {
+    const snapshot = await diagnosticSnapshot();
+    const select = document.getElementById("saved-tests");
+    const prior = savedTests[Number(select.value)];
+    savedTests = savedDiagnosticTests(snapshot.events);
+    select.replaceChildren(...savedTests.map((event, index) => new Option(
+      `${new Date(event.detail.completedAt).toLocaleString()} · ${event.detail.variant} · ${event.detail.codes?.length || 0} codes · ${event.detail.verdict?.status || "UNKNOWN"}`, index)));
+    const index = prior ? savedTests.findIndex(event => event.id === prior.id && event.runId === prior.runId) : -1;
+    if (index >= 0) select.value = String(index);
+    document.getElementById("export-saved-test").disabled = !savedTests.length;
+    document.getElementById("export-all-tests").disabled = !savedTests.length;
+    showSavedTest();
+  } catch (error) {
+    document.getElementById("saved-test-detail").textContent = `Saved tests unavailable: ${error.message}`;
+  }
+}
+async function exportSavedTests(all = false) {
+  const selected = all ? savedTests : [savedTests[Number(document.getElementById("saved-tests").value)]].filter(Boolean);
+  if (!selected.length) return;
+  const stamp = new Date(all ? Date.now() : selected[0].detail.completedAt).toISOString().replaceAll(":", "-");
+  try {
+    await saveOrShare(new Blob([selected.map(diagnosticTestReport).join("\n\n")], { type: "text/plain" }), `sme105-${all ? "all-tests" : selected[0].detail.variant}-codes-${stamp}.txt`);
+  } catch (error) {
+    controller.state.message = `Code export failed: ${error.message}`;
+    render(controller.state);
+  }
+}
+
 async function restoreLastDiagnosticResult() {
   const snapshot = await diagnosticSnapshot();
   const resultEvent = snapshot.events.filter(event => event.type === "SESSION_RESULT").at(-1);
@@ -348,6 +385,7 @@ function wire() {
     button.addEventListener("click", () => {
       showView(button.dataset.view);
       recordDiagnosticEvent("SCREEN_VIEW", { view: button.dataset.view }, "ui");
+      if (button.dataset.view === "codes") refreshTestHistory();
       if (button.dataset.view === "log") { refreshWarnings(); refreshJournal(); }
       render(controller.state);
     });
@@ -435,6 +473,10 @@ function wire() {
   document.getElementById("saved-csv").addEventListener("click", () => downloadSaved("csv"));
   document.getElementById("saved-log").addEventListener("click", () => downloadSaved("raw"));
   refreshRecordings();
+  refreshTestHistory();
+  document.getElementById("saved-tests").addEventListener("change", showSavedTest);
+  document.getElementById("export-saved-test").addEventListener("click", () => exportSavedTests());
+  document.getElementById("export-all-tests").addEventListener("click", () => exportSavedTests(true));
   document.getElementById("demo-toggle").addEventListener("change", () => {
     writeStorage("eeciv-demo", demoEnabled() ? "1" : "0");
     document.getElementById("bt-warning").hidden = bluetoothAvailable() || demoEnabled();

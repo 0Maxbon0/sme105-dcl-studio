@@ -109,6 +109,14 @@
       <label class="meter"><span data-str="koeoProgress"></span><progress id="codes-progress" max="100" value="0"></progress></label>
       <p id="codes-meta" class="meta"></p>
       <ul id="codes-list" class="results"></ul>
+      <section class="history-panel" aria-label="Saved fault tests">
+        <h3>Saved fault searches and self-tests</h3>
+        <p class="help">Every completed stored-code search, KOEO, and KOER test is saved automatically with its date, time, decoded codes, and capture status.</p>
+        <label class="stack" for="saved-tests">Saved test<select id="saved-tests"></select></label>
+        <button id="export-saved-test" type="button" disabled>Export selected codes</button>
+        <button id="export-all-tests" type="button" disabled>Export all saved tests</button>
+        <pre id="saved-test-detail" class="mono" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+      </section>
       <details class="fmem-technical">
         <summary>Failure-memory flags · technical detail</summary>
         <p class="help">The app preserves both bytes and shows bit positions. Per-bit meanings are not verified for this ECU calibration; a set bit is not automatically a confirmed component fault.</p>
