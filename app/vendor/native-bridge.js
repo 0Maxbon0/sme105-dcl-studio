@@ -2124,10 +2124,15 @@ init_dist();
 var Share = registerPlugin("Share", {
   web: () => Promise.resolve().then(() => (init_web3(), web_exports3)).then((m) => new m.ShareWeb())
 });
+
+// app/js/native-bridge-entry.js
+init_dist();
+var ExportStorage = registerPlugin("ExportStorage");
 export {
   BleClient,
   Capacitor,
   Directory,
+  ExportStorage,
   Filesystem,
   Share
 };

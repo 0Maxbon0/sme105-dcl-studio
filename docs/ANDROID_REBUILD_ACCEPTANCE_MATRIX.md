@@ -678,3 +678,10 @@ Section 4 records the initial Phase 0 findings; this ledger supersedes those his
 - Responsive checks: 360, 412, and 768 CSS-pixel layouts had equal viewport/document widths; screenshots are in `artifacts/screenshots/`.
 - No ECU command, code clear, firmware write, flash, or destructive operation was sent or performed.
 - AGY Gemini 3.8 Flash High exact-model review was attempted twice and both calls failed with `Tunnel-client has not been seen for 300 seconds`; independent review and final re-review are unavailable. The owner performed a read-only adversarial self-review and repaired its two confirmed P1 findings. No AGY approval or full acceptance claim is made.
+
+### Public export folder correction (2026-11-05)
+
+- All native export paths now write a durable MediaStore Downloads copy to `Download/SME105 DCL Studio` before opening Android Share. The cache copy is only the sharing source. No broad storage permission is required on Android 10+; Android 8/9 explicitly report that this saving path is unsupported.
+- Galaxy A52s Android 14: exported the owner's existing 18:54:18 live session through the actual JavaScript/native plugin path. Public CSV exists at `/sdcard/Download/SME105 DCL Studio/sme105-live-20261105-185418.csv` (2,282,312 bytes). SHA-256 matches the independently retrieved recording CSV: `de902f0e3f9fb23baa0595d0cf729fd9ac1aceec3289cf668b0d3d37bd806ea1`.
+- That recording has 64,272 rows across 39 channels. Engine speed spans 792–2,768 rpm; throttle raw counts span 177–397. IACT changes 286 → 948 near 233.03 seconds and returns to 286 near 236.27 seconds, consistent with an interruption/reconnection but not proof of the physical cause. The recording ends after RX silence and remains INCOMPLETE.
+- Latest APK SHA-256: `bad4fd644bc687b16dbebaedf2e10193a6e378d60fa3ac9517bfa3fe84e0b025`. Build succeeds; installed without clearing app data; 60 automated tests pass.

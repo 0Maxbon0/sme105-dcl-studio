@@ -27,9 +27,15 @@ function toBase64(buffer) {
 
 export async function saveOrShare(blob, fileName) {
   if (window.Capacitor?.isNativePlatform?.()) {
-    const { Filesystem, Directory, Share } = await import("../vendor/native-bridge.js");
+    const { Filesystem, Directory, Share, ExportStorage } = await import("../vendor/native-bridge.js");
     const file = await Filesystem.writeFile({ path: `diagnostics/${fileName}`, data: toBase64(await blob.arrayBuffer()), directory: Directory.Cache, recursive: true });
-    return Share.share({ title: fileName, files: [file.uri], dialogTitle: "Save or share from this device" });
+    const saved = await ExportStorage.save({ sourceUri: file.uri, fileName });
+    await recordDiagnosticEvent("EXPORT_SAVED", { fileName, folder: saved.folder, bytes: blob.size }, "export");
+    try {
+      return await Share.share({ title: fileName, files: [file.uri], dialogTitle: "Saved in Downloads/SME105 DCL Studio · Share a copy" });
+    } catch (error) {
+      throw new Error(`File saved in ${saved.folder}; sharing failed: ${error?.message || String(error)}`);
+    }
   }
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob); link.download = fileName; link.click();
