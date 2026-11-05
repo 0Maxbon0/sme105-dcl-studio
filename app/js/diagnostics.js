@@ -141,7 +141,7 @@ async function processWrites(batch) {
   return !storageError;
 }
 
-function flushDiagnosticQueue() {
+export function flushDiagnosticQueue() {
   if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
   if (flushTask) return flushTask;
   if (!pendingWrites.length) return Promise.resolve(!storageError);

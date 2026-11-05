@@ -2128,8 +2128,10 @@ var Share = registerPlugin("Share", {
 // app/js/native-bridge-entry.js
 init_dist();
 var ExportStorage = registerPlugin("ExportStorage");
+var BridgeConnection = registerPlugin("BridgeConnection");
 export {
   BleClient,
+  BridgeConnection,
   Capacitor,
   Directory,
   ExportStorage,

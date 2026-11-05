@@ -1,0 +1,51 @@
+{
+  "link": "BLE \u00b7 AUTH",
+  "message": "Bridge idle",
+  "writes": [
+    {
+      "command": "HELLO",
+      "hidden": false
+    },
+    {
+      "command": "PINS",
+      "hidden": false
+    },
+    {
+      "command": "STATUS",
+      "hidden": false
+    },
+    {
+      "command": "STATUS",
+      "hidden": true
+    },
+    {
+      "command": "STATUS",
+      "hidden": true
+    },
+    {
+      "command": "STATUS",
+      "hidden": true
+    },
+    {
+      "command": "STATUS",
+      "hidden": true
+    },
+    {
+      "command": "STATUS",
+      "hidden": true
+    }
+  ],
+  "backgroundStatusReplies": 5,
+  "device": "Samsung Galaxy A52s / Android 14",
+  "homeIntervalSeconds": 8,
+  "forcedGattDisconnectRecoveryPassed": true,
+  "nativeForegroundServiceConfirmed": true,
+  "recordingWakeLockConfirmedWithSimulatedActiveFlag": true,
+  "newVehicleLiveCaptureStarted": false,
+  "automatedTests": {
+    "passed": 68,
+    "failed": 0,
+    "skipped": 0
+  },
+  "apkSha256": "0b5dd6e5ac504395801305dc16fcaa83302cc4b18b062a02f08d89622414f80d"
+}

@@ -557,12 +557,12 @@ Section 4 records the initial Phase 0 findings; this ledger supersedes those his
 | **REQ-PLT-03** | Native BLE picker discovered the bridge while phone Wi-Fi remained enabled; GATT session not independently confirmed. |
 | **REQ-PLT-04** | Latest debug APK built and installed on the physical Galaxy A52s; MainActivity resumed. Existing UI screenshot is `artifacts/screenshots/android-a52s-live-360dp.png`; a fresh UI screenshot was blocked by the phone lock/notification shade. |
 | **REQ-BLE-01** | Verified: Nordic UART service/RX/TX UUIDs match the v23 bridge. |
-| **REQ-BLE-02** | Native Android BLE scan/picker ran and listed SME105-DCL; full GATT exchange not confirmed. |
+| **REQ-BLE-02** | Verified on Galaxy A52s: native bonded GATT connection, UART notifications, and read-only HELLO/PINS/STATUS exchange. |
 | **REQ-BLE-03** | Phone already had an OS bond; app retains explicit bond/auth path. New pairing prompt was not observed. |
-| **REQ-BLE-04** | Negotiated MTU is surfaced by native transport; device-side negotiated MTU not observed in a completed GATT session. |
+| **REQ-BLE-04** | Verified on Galaxy A52s: native GATT negotiated MTU 247; explicit service-discovery completion precedes notifications. |
 | **REQ-BLE-05** | Verified in source and host tests: bounded line reassembly, ordered chunk writes, and 180-byte command chunking. |
 | **REQ-BLE-06** | Verified: Android BLE permissions are declared and runtime permissions were granted for the picker test. |
-| **REQ-BLE-07** | App requests Stop on background; no foreground-service streaming qualification. Long background operation not verified. |
+| **REQ-BLE-07** | Native BLE no longer requests Stop on Home. A connectedDevice foreground service protects the link; active recording holds a bounded partial wake lock. Home/return and five background read-only replies verified; long vehicle streaming remains unverified. |
 | **REQ-BLE-08** | Verified in controller/tests: no automatic read retry or re-arm after disconnect/incomplete response. |
 | **REQ-BLE-09** | Fail-closed preflight and explicit user actions retained; no vehicle operation started. |
 | **REQ-NAV-01** | Implemented; 360/412 browser screenshots and 360/412/768 CSS-pixel no-overflow checks; replay data shown. |
@@ -612,7 +612,7 @@ Section 4 records the initial Phase 0 findings; this ledger supersedes those his
 | **REQ-PERF-04** | Not measured against the <100 ms target on a physical stream. |
 | **REQ-PERF-05** | 60 fps scrolling/transition target not formally profiled. |
 | **REQ-PERF-06** | 39 PIDs are available in Advanced; DOM virtualization is not implemented/verified. |
-| **REQ-PERF-07** | Background capture is stopped; no native foreground service or 3-hour background claim. |
+| **REQ-PERF-07** | Native foreground service and recording wake lock implemented and exercised. Browser/demo background captures still stop. No three-hour physical background qualification claimed. |
 | **REQ-PERF-08** | Verified by browser screenshots at 360/412 and installed dark-theme phone screenshot; 48 dp controls and reduced-motion preference are present. |
 | **REQ-DTC-01** | Implemented; capture-backed tests and mode-mismatch tests pass; see `npm test` result in Section 7. |
 | **REQ-DTC-02** | Implemented; capture-backed tests and mode-mismatch tests pass; see `npm test` result in Section 7. |
@@ -648,7 +648,7 @@ Section 4 records the initial Phase 0 findings; this ledger supersedes those his
 | **REQ-TEST-08** | Verified: latest Gradle debug APK build succeeded and was installed with ADB; MainActivity resumed on the Galaxy A52s. Full native GATT workflow remains unverified. |
 | **REQ-TEST-09** | Intentionally not produced: owner signing credentials were not supplied; debug APK only. |
 | **REQ-PHYS-01** | Latest debug APK installed on Samsung Galaxy A52s (Android 14); ADB confirmed MainActivity resumed. Phone UI remained at its lock/notification shade during the latest screenshot attempt. |
-| **REQ-PHYS-02** | Partial: picker found bridge and phone already had an OS bond; app GATT/authentication transaction not confirmed. |
+| **REQ-PHYS-02** | Verified using existing bond: authenticated native UART connection; Home/return retained it, and a forced GATT disconnect recovered without ESP/car reset. New pairing remains untested. |
 | **REQ-PHYS-03** | Not performed: no ECU command or vehicle test; remains unverified. |
 | **REQ-PHYS-04** | Not performed: no physical 0E/A4 read; remains unverified. |
 | **REQ-PHYS-05** | Not performed: no three-hour phone resource test. |
@@ -666,7 +666,7 @@ Section 4 records the initial Phase 0 findings; this ledger supersedes those his
 | **REQ-EXPORT-03** | Partial: recording persistence/export tests and archive verification pass; diagnostic export after native process restart not tested. |
 | **REQ-PERF-09** | Three-hour simulated decoder test passes with bounded sample history; phone memory, thermal, battery, and render latency unmeasured. |
 | **REQ-TEST-10** | Partial: fixture, fragmentation, 3-hour memory, screenshots/layout, and theme checks run; tablet native and frame-rate profiling not run. |
-| **REQ-BLE-10** | Host-side protocol and permission checks pass; physical authenticated GATT, MTU, and disconnect sequence remain unverified. |
+| **REQ-BLE-10** | Verified on Galaxy A52s: authenticated UART, MTU 247, background read-only replies, and forced GATT disconnect/recovery. Vehicle reads were not started in this test. |
 
 ### Current build and test evidence
 
@@ -685,3 +685,13 @@ Section 4 records the initial Phase 0 findings; this ledger supersedes those his
 - Galaxy A52s Android 14: exported the owner's existing 18:54:18 live session through the actual JavaScript/native plugin path. Public CSV exists at `/sdcard/Download/SME105 DCL Studio/sme105-live-20261105-185418.csv` (2,282,312 bytes). SHA-256 matches the independently retrieved recording CSV: `de902f0e3f9fb23baa0595d0cf729fd9ac1aceec3289cf668b0d3d37bd806ea1`.
 - That recording has 64,272 rows across 39 channels. Engine speed spans 792–2,768 rpm; throttle raw counts span 177–397. IACT changes 286 → 948 near 233.03 seconds and returns to 286 near 236.27 seconds, consistent with an interruption/reconnection but not proof of the physical cause. The recording ends after RX silence and remains INCOMPLETE.
 - Latest APK SHA-256: `bad4fd644bc687b16dbebaedf2e10193a6e378d60fa3ac9517bfa3fe84e0b025`. Build succeeds; installed without clearing app data; 60 automated tests pass.
+
+### Home/foreground connection correction (2026-11-05)
+
+- Confirmed defects: native background visibility requested Stop; no connected-device foreground service protected the process; failed writes could leave an OS GATT handle open; no foreground state reconciliation existed.
+- Physical regression testing exposed an additional Android MTU/service-discovery race. The BLE plugin can resolve connect from an MTU callback before UART services exist. Reconnection now explicitly awaits service discovery before subscribing to UART notifications.
+- Native Home/return preserves a surviving controller/session. An actual lost link closes stale handles and reconnects the remembered bridge once on foreground; only HELLO/PINS/STATUS identity checks are sent, with no automatic vehicle re-arm or read restart. Explicit Disconnect clears remembered reconnect intent. Generation checks reject old notification/disconnect callbacks and queued writes.
+- Native connection service uses the connectedDevice foreground type. Active recording holds a partial wake lock (bounded to four hours and released when capture ends/service stops). The native journal flushes on background and is not falsely closed by native pagehide. Browser/demo behavior retains its background Stop.
+- Actual Galaxy A52s Android 14: native authenticated UART and MTU 247 observed; Home for eight seconds retained the link; five read-only STATUS commands executed while document.hidden was true, and all five replies were persisted. A forced native GATT disconnect recovered to BLE AUTH / Bridge idle after Home/return, without car/ESP power cycling. Simulated recording-service activation held and released the wake lock. Evidence: `artifacts/lifecycle-home-device-proof.json`.
+- Final build and install succeeded; 68 automated tests passed, zero failed/skipped. APK SHA-256: `0b5dd6e5ac504395801305dc16fcaa83302cc4b18b062a02f08d89622414f80d`.
+- No new vehicle command was issued. Continuous live capture across Home under actual engine load, long background endurance, and Android process termination during an active vehicle session remain unverified. No independent AGY approval claimed.

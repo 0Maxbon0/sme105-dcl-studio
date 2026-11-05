@@ -5,7 +5,7 @@ import { createMockTransport, createReplay } from "./mock-transport.js";
 import { STR } from "./strings.js";
 import { createRecording, listRecordings, recordingBlob } from "./recording.js";
 import { applyStaticStrings, confirmDialog, exportCsv, exportLog, movePinnedSensor, openSensorDetails, refreshDashboardCharts, render, renderEventHistory, renderWarningHistory, setSensorChartRange, showView, toggleSensorPin } from "./ui.js";
-import { closeDiagnosticRun, diagnosticSnapshot, recentDiagnosticEvents, recordDiagnosticEvent, recordDiagnosticWarning, setDiagnosticStorageErrorHandler, startDiagnosticRun } from "./diagnostics.js";
+import { closeDiagnosticRun, flushDiagnosticQueue, diagnosticSnapshot, recentDiagnosticEvents, recordDiagnosticEvent, recordDiagnosticWarning, setDiagnosticStorageErrorHandler, startDiagnosticRun } from "./diagnostics.js";
 import { exportDiagnosticZip, exportGroupCsv, exportSensorCsv, saveOrShare } from "./exports.js";
 import { lookupCode } from "./codes-db.js";
 import { sensorFreshnessTransitions } from "./live-dashboard.js";
@@ -24,6 +24,9 @@ let previousAudit = { link: null, phase: null, message: null };
 let previousSessionKey = "";
 const previousFreshness = new Map();
 let wired = false;
+let resumeWork = null;
+let protectedCapture = false;
+const nativeApp = () => !!window.Capacitor?.isNativePlatform?.();
 
 const controller = createController({
   send(command) {
@@ -65,6 +68,13 @@ function refreshJournal() {
 }
 
 function auditState(state) {
+  const capturing = !!state.op;
+  if (capturing !== protectedCapture) {
+    protectedCapture = capturing;
+    if (transport === ble) ble.setRecording(capturing).catch(error => {
+      if (capturing) controller.failRecording(`Background recording protection failed: ${error.message}`);
+    });
+  }
   if (state.link !== previousAudit.link) {
     recordDiagnosticEvent("BLE_STATE", { state: state.link, transport: state.transport || "", deviceName: state.deviceName || "", auth: state.identity.auth || "" }, "bluetooth");
     previousAudit.link = state.link;
@@ -138,7 +148,35 @@ function writeStorage(key, value) {
   try { localStorage.setItem(key, value); } catch { /* private mode */ }
 }
 
+async function reconcileBridgeConnection() {
+  if (!nativeApp() || demoEnabled() || !ble.connectionWanted || ble.connecting) return;
+  if (resumeWork) return resumeWork;
+  transport = ble;
+  controller.state.recovering = true;
+  render(controller.state);
+  resumeWork = (async () => {
+    const result = await ble.reconcile();
+    recordDiagnosticEvent("BLE_FOREGROUND_CHECK", { connected: result.connected, reconnected: !!result.reconnected }, "bluetooth");
+    if (result.connected && (result.reconnected || controller.state.link === "disconnected")) {
+      controller.onConnected(result.device?.name || ble.device?.name || "SME105-DCL", "ble");
+      // onConnected sends only HELLO/PINS/STATUS. Interrupted vehicle operations
+      // remain saved and are never automatically armed or started again.
+    }
+  })().catch(async error => {
+    await ble.discardNative();
+    controller.onDisconnected();
+    controller.state.message = `Bluetooth recovery failed: ${error.message}. Tap Connect to retry.`;
+    recordDiagnosticEvent("BLE_RECOVERY_FAILED", { reason: error.message }, "error");
+  }).finally(() => {
+    controller.state.recovering = false;
+    resumeWork = null;
+    render(controller.state);
+  });
+  return resumeWork;
+}
+
 async function connect() {
+  if (resumeWork) return resumeWork;
   const button = document.getElementById("connect-btn");
   button.disabled = true;
   recordDiagnosticEvent("BLE_CONNECT_REQUESTED", { demo: demoEnabled() }, "bluetooth");
@@ -504,19 +542,25 @@ function wire() {
     });
   };
   controller.subscribe(state => { scheduleRender(); auditState(state); });
-  setInterval(() => controller.tick(), 250);
+  setInterval(() => { if (!controller.state.recovering) controller.tick(); }, 250);
   setInterval(() => {
     if (controller.state.combined || controller.state.op?.kind === "live" || !document.getElementById("sensor-drawer").hidden) scheduleRender();
     auditFreshness(controller.state);
   }, 1000);
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) scheduleRender(); });
   document.addEventListener("visibilitychange", () => {
     recordDiagnosticEvent(document.hidden ? "APP_BACKGROUND" : "APP_FOREGROUND", { phase: controller.state.phase }, "lifecycle");
-    if (document.hidden && controller.state.phase !== "idle") {
-      recordDiagnosticEvent("BACKGROUND_CAPTURE_STOP_REQUESTED", { reason: "app left foreground" }, "lifecycle");
-      controller.requestStop();
+    if (document.hidden) {
+      void flushDiagnosticQueue();
+      if ((!nativeApp() || transport !== ble) && controller.state.phase !== "idle") {
+        recordDiagnosticEvent("BACKGROUND_CAPTURE_STOP_REQUESTED", { reason: "browser/demo left foreground" }, "lifecycle");
+        controller.requestStop();
+      }
+    } else {
+      scheduleRender();
+      void reconcileBridgeConnection();
     }
   });
+  window.addEventListener("sme105-native-resume", () => { scheduleRender(); void reconcileBridgeConnection(); });
   window.addEventListener("resize", () => { scheduleRender(); requestAnimationFrame(refreshDashboardCharts); });
   if ("serviceWorker" in navigator && !window.Capacitor?.isNativePlatform?.()) {
     navigator.serviceWorker.register("./sw.js").catch((error) => {
@@ -529,6 +573,7 @@ function wire() {
   wired = true;
   auditState(controller.state);
   refreshWarnings();
+  void reconcileBridgeConnection();
 }
 
 async function boot() {
@@ -556,7 +601,10 @@ async function boot() {
     controller.state.message = `Application task failed: ${error?.message || String(error)}`;
     if (wired) render(controller.state);
   });
-  window.addEventListener("pagehide", () => { closeDiagnosticRun("pagehide"); });
+  window.addEventListener("pagehide", () => {
+    if (nativeApp()) void flushDiagnosticQueue();
+    else void closeDiagnosticRun("pagehide");
+  });
   wire();
 }
 

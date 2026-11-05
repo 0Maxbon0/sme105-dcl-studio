@@ -522,7 +522,8 @@ export function render(state) {
   const connectText = linked || state.link === "denied" ? STR.disconnectAction : STR.connectAction;
   $("connect-btn").textContent = connectText;
   $("connect-settings").textContent = connectText;
-  $("connect-settings").disabled = busy;
+  $("connect-settings").disabled = busy || !!state.recovering;
+  $("connect-btn").disabled = !!state.recovering;
   $("message").textContent = state.message || "";
 
   const onboardingDismissed = readStored("sme105-onboarding-dismissed") === "1";
@@ -544,7 +545,7 @@ export function render(state) {
   $("status-raw").textContent = redactDiagnostic(state.status?.raw || state.identity.hello || "");
 
   const actions = ["read-codes-btn", "koeo-btn", "koer-btn", "live-start", "offline-btn", "bench-btn", "reboot-btn", "clear-btn", "mem-btn"];
-  for (const id of actions) $(id).disabled = !linked || busy;
+  for (const id of actions) $(id).disabled = !linked || busy || !!state.recovering;
   $("stored-code-mode").disabled = busy;
   for (const id of ["live-set", "live-group"]) $(id).disabled = busy;
 

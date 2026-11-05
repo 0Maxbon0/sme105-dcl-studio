@@ -5,3 +5,5 @@ export { Share } from "@capacitor/share";
 
 import { registerPlugin } from "@capacitor/core";
 export const ExportStorage = registerPlugin("ExportStorage");
+
+export const BridgeConnection = registerPlugin("BridgeConnection");
