@@ -103,10 +103,10 @@ test("DTC mode mismatch, absent target response, and incomplete self-test fail c
     blocks25: 1, blocks26: 0, codes: [], selfTestComplete: false,
   } });
   assert.equal(noFlag.status, "INCOMPLETE");
-  assert.ok(noFlag.reasons.some((reason) => reason.includes("self-test complete flag")));
+  assert.ok(noFlag.reasons.some((reason) => reason.includes("result-phase flag")));
 });
 
-test("KOEO capture satisfies mode 25H and Frame 7 completion checks", () => {
+test("KOEO capture satisfies mode 25H and Frame 7 result-phase checks", () => {
   const { session, cart } = decode(capture("20261104T154903976737Z-usb-bridge.txt"));
   const verdict = sessionVerdict(session, { variant: "KOEO", cart });
   assert.equal(verdict.valid, true);

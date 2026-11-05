@@ -185,7 +185,7 @@ progress { width: 100%; height: 12px; accent-color: var(--cyan); }
 .chart-range button { min-height: 48px; text-align: center; font-size: .76rem; }
 .chart-range button[aria-pressed="true"] { border-color: var(--cyan); color: var(--cyan); }
 .detail-chart { width: 100%; height: 250px; touch-action:none; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
-nav { position: fixed; inset: auto 0 0; z-index: 5; display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 96%, transparent); backdrop-filter: blur(16px); }
+nav { position: fixed; inset: auto 0 0; z-index: 5; display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 96%, transparent); backdrop-filter: blur(16px); }
 nav button { display: grid; place-items: center; min-height: 48px; padding: 4px 2px; border: 0; background: transparent; color: var(--muted); font-size: .72rem; }
 nav button[aria-current="page"] { color: var(--cyan); font-weight: 800; }
 .modal { position: fixed; inset: 0; z-index: 10; display: none; align-items: end; background: rgba(0, 5, 10, .68); }

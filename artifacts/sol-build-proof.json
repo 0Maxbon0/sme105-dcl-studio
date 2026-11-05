@@ -1,0 +1,67 @@
+{
+  "apkPath": "/home/maxim/maximizotech/sme105-fw-review-FORupdGL/artifacts/android/sme105-dcl-studio-1.8.0-debug.apk",
+  "apkSha256": "7326c1a1ccc81e639be6eb8c89bffd360a6d44b3d669289d7ec5b607ba752ca9",
+  "apkBytes": 4757492,
+  "packagedSourceFilesVerified": [
+    "app/index.html",
+    "app/styles.css",
+    "app/sw.js",
+    "app/js/native-bridge-entry.js",
+    "app/js/kline-ui.js",
+    "app/js/codes-db.js",
+    "app/js/dashboard-layout.js",
+    "app/js/kline.js",
+    "app/js/strings.js",
+    "app/js/app.js",
+    "app/js/ble.js",
+    "app/js/koer-guide.js",
+    "app/js/dtc-history.js",
+    "app/js/ui.js",
+    "app/js/combined.js",
+    "app/js/diagnostics.js",
+    "app/js/test-history.js",
+    "app/js/cart.js",
+    "app/js/protocol.js",
+    "app/js/chart-series.js",
+    "app/js/session.js",
+    "app/js/live-dashboard.js",
+    "app/js/pids.js",
+    "app/js/reference.js",
+    "app/js/mock-transport.js",
+    "app/js/exports.js",
+    "app/js/recording.js",
+    "app/js/controller.js",
+    "app/data/codes.js"
+  ],
+  "firmware": {
+    "esp32dev": {
+      "path": "/home/maxim/maximizotech/sme105-fw-review-FORupdGL/firmware/sme105_usb_bridge/.pio/build/esp32dev/firmware.bin",
+      "bytes": 849104,
+      "sha256": "760a99aad8ed7d0cf0ae0de54d7df060a723c7f32c11d96bcdf9fd800e63db44"
+    },
+    "esp32dev_ble": {
+      "path": "/home/maxim/maximizotech/sme105-fw-review-FORupdGL/firmware/sme105_usb_bridge/.pio/build/esp32dev_ble/firmware.bin",
+      "bytes": 1086432,
+      "sha256": "f2fbdb8a9c62c7fcfde683b4a67e904c11b44352d80361d64c90511bd9e3dd4a"
+    }
+  },
+  "nodeTests": {
+    "passed": 86,
+    "failed": 0,
+    "skipped": 0
+  },
+  "pythonTests": {
+    "passed": 257,
+    "failed": 0,
+    "skipped": 9,
+    "discovered": 266
+  },
+  "firmwareUpload": {
+    "environment": "esp32dev_ble",
+    "version": 24,
+    "result": "SUCCESS",
+    "durationSeconds": 70.66,
+    "bootProof": "firmware-v24-boot-proof.json"
+  },
+  "review": "Sole-engineer source/failure review; no independent AGY approval claimed"
+}

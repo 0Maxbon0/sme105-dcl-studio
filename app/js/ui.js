@@ -590,13 +590,14 @@ export function render(state) {
   const variant = state.op?.variant || state.lastSession?.variant;
   $("codes-progress").value = ["KOEO", "KOER", "0E", "A4"].includes(variant) ? pct : 0;
   $("live-progress").value = ["ALL", "LIVE", "LIVE2", "LIVE3"].includes(variant) ? pct : 0;
-  const prompt = activeCodes(state).find((entry) => ["010", "020", "030"].includes(entry.code));
+  $("kline-bridge").textContent = `Bridge firmware: ${state.status?.fields?.fw || "not identified"} · Receiver backend: NONE · protocol/service set: UNKNOWN`;
   const promptBox = $("koer-prompt");
-  promptBox.hidden = !(prompt && state.trust === "progress");
-  promptBox.textContent = promptBox.hidden ? "" : `Follow the ECU prompt now: ${lookupCode(prompt.code).description}`;
+  promptBox.hidden = variant !== "KOER";
+  promptBox.setAttribute("role", "status");
+  promptBox.textContent = `${state.koerGuide?.phase || "PREPARATION"} · No authenticated ECU operator prompt is available. Do not act on a countdown or fault code. لا توجد إشارة موثقة من وحدة التحكم؛ لا تضغط الوقود أو تحرك المقود أو الفرامل اعتماداً على الوقت أو كود عطل.`;
 
   const snap = activeSnap(state);
-  const result = state.lastSession;
+  const result = state.op ? null : state.lastSession;
   const diagnosticVariant = state.op?.variant || result?.variant || "";
   const expectedMode = ["0E", "A4"].includes(diagnosticVariant) ? 0x26
     : ["KOEO", "KOER"].includes(diagnosticVariant) ? 0x25 : null;
@@ -608,6 +609,8 @@ export function render(state) {
     `Requested mode: ${expectedMode.toString(16).toUpperCase()}H`,
     `Observed mode: ${observedModes.length ? observedModes.map((mode) => `${mode.toString(16).toUpperCase()}H`).join(", ") : "not yet seen"}`,
     `Codes decoded: ${activeCodes(state).length}`,
+    `Witness: ${result?.verdict?.witnessStatus || "not yet verified"}`,
+    "KOER success / operator completeness: unverified",
     `Bridge ECU DTC verification: ${result ? (result.dtcVerified ? "reported" : "not reported") : "pending"}`,
   ];
   if (expectedMode === 0x25) {
@@ -739,9 +742,9 @@ export function renderWarningHistory(warnings) {
     const row = document.createElement("article"); row.className = "warning-row"; row.dataset.level = warning.severity;
     const title = document.createElement("strong");
     title.textContent = `${warning.severity.toUpperCase()} · ${warning.ruleId || warning.sensor || "Diagnostic warning"}`;
-    const reason = document.createElement("p"); reason.textContent = warning.reason;
+    const reason = document.createElement("p"); reason.textContent = warning.ruleId === "DTC-111" ? "Historical Code 111: no fault code reported in that dataset. Earlier evidence remains; no global all-clear or memory-clear proof." : warning.reason;
     const evidence = document.createElement("small");
-    evidence.textContent = `${warning.triggeredAt} · ${warning.active ? "active" : `resolved ${warning.resolvedAt}`} · ${warning.source || "Source unavailable"}`;
+    evidence.textContent = `${warning.triggeredAt} · ${warning.ruleId?.startsWith("DTC-") ? "historical observation" : warning.active ? "active" : `resolved ${warning.resolvedAt}`} · ${warning.source || "Source unavailable"}`;
     row.append(title, reason, evidence); list.append(row);
   }
 }
@@ -752,7 +755,10 @@ export function renderEventHistory(events) {
   for (const item of events) {
     const row = document.createElement("article"); row.className = "event-row";
     const title = document.createElement("strong"); title.textContent = `${item.category} · ${item.type}`;
-    const detail = document.createElement("span"); detail.textContent = redactDiagnostic(JSON.stringify(item.detail));
+    const detail = document.createElement("span");
+    const summary = item.type === "KLINE_SESSION" ? { id: item.detail.id, source: item.detail.source, status: item.detail.status, records: item.detail.records?.length, note: "Full raw evidence retained in ZIP and K-Line history" } : item.detail;
+    const preview = JSON.stringify(summary);
+    detail.textContent = redactDiagnostic(preview.slice(0, 2000)) + (preview.length > 2000 ? " … Full evidence retained in ZIP." : "");
     const time = document.createElement("small"); time.textContent = `${item.utc} · ${item.monotonic_us} µs`;
     row.append(title, detail, time); list.append(row);
   }

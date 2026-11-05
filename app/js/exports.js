@@ -57,6 +57,9 @@ export async function exportDiagnosticZip({ activeArchive = null, unitSystem = "
     addText("bridge-raw.txt", snapshot.raw.map(item => `${item.utc}\t${item.monotonic_us}\t${item.line}`).join("\n") + (snapshot.raw.length ? "\n" : ""));
     addText("all-sensors.csv", samplesCsv(snapshot.samples, unitSystem));
     addText("warnings.json", snapshot.warnings);
+    addText("sensor-provenance.json", { physicalComponents: { MAF: ["0x26 raw counts, no airflow conversion"], IAT: ["0x05 IACT raw", "0x0F ACT ECU temperature"] }, observedIatLagSeconds: 26.323942, fallback: "UNVERIFIED", IEGO1: "0x08 raw counts, no verified millivolt or mixture conversion" });
+    addText("operator-events.json", snapshot.events.filter(event => event.type.startsWith("KOER_")));
+    addText("kline-sessions.json", snapshot.events.filter(event => event.type.startsWith("KLINE_")));
     addText("dtc-evidence.json", snapshot.events.filter(event => event.type === "SESSION_RESULT"));
     addText("app-errors.jsonl", snapshot.events.filter(event => event.category === "error" || event.type.includes("ERROR")).map(event => JSON.stringify(event)).join("\n") + "\n");
 
@@ -98,7 +101,7 @@ export async function exportDiagnosticZip({ activeArchive = null, unitSystem = "
     }
     zip.file("sha256-manifest.txt", checksums.join("\n") + "\n");
     const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 5 } });
-    const verified = await window.JSZip.loadAsync(blob);
+    const verified = await window.JSZip.loadAsync(await blob.arrayBuffer());
     for (const entry of checksums) {
       const [expected, path] = entry.split(/\s+/, 2);
       const bytes = await verified.file(path).async("uint8array");

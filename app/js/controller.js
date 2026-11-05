@@ -68,6 +68,9 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       rawBytes: entry.rawBytes,
       rawData: entry.rawData,
       rxTimeUs: entry.rxTimeUs,
+      receivedAt: entry.receivedAt,
+      frameTimeUs: entry.frameTimeUs,
+      frameReceivedAt: entry.frameReceivedAt,
     }));
     const pids = {};
     if (snap) {
@@ -94,8 +97,14 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       mem: snap?.mem ? { ...snap.mem } : {},
       rom: snap?.rom || null,
       selfTestComplete: !!snap?.selfTestComplete,
+      ecuEvidence: snap?.evidence || [],
+      integrity: { rawCapture: verdict.status, witness: verdict.witnessStatus || "LEGACY_UNVERIFIED",
+        mode: requestedMode == null ? "NOT_DIAGNOSTIC" : ((requestedMode === 0x25 ? snap?.blocks25 > 0 && !snap?.blocks26 : snap?.blocks26 > 0 && !snap?.blocks25) && (snap?.codes || []).every(c => c.mode === requestedMode) ? "CONSISTENT" : "MISSING_OR_MISMATCHED"),
+        resultPhaseObserved: !!snap?.selfTestComplete, operatorCompleteness: "UNVERIFIED", verifiedKoerSuccess: false },
       frame7First: snap?.frame7First ?? null,
       frame7Last: snap?.frame7Last ?? null,
+      completeBlocks25: snap?.completeBlocks25 || 0,
+      completeBlocks26: snap?.completeBlocks26 || 0,
       blocks25: snap?.blocks25 || 0,
       blocks26: snap?.blocks26 || 0,
       bridgeBlocks: state.op?.session?.bridgeBlocks ?? null,
@@ -114,6 +123,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     }) : null;
     if (override) {
       verdict = {
+        ...verdict,
         valid: false,
         status: override.status,
         reasons: unique([override.reason, ...(verdict?.reasons || [])]),
@@ -233,15 +243,15 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
         onSample(sample) {
           sample.receivedAt = now();
           state.archive.sample(sample);
-          recordDiagnosticSample(sample, { variant: state.op?.variant || "" });
+          recordDiagnosticSample(sample, { variant: state.op?.variant || "", source: state.transport === "demo" ? "simulation" : "bridge" });
         },
       } : {});
     }
     noteSessionLine(state.op.session, parsed);
     try {
-      if (parsed.type === "rx" && state.cart) state.cart.pushRx(parsed.t_us, parsed.byte);
+      if (parsed.type === "rx" && state.cart) state.cart.pushRx(parsed.t_us, parsed.byte, now());
       if (parsed.type === "rx_batch" && state.cart) {
-        for (const event of parsed.events) state.cart.pushRx(event.t_us, event.byte);
+        for (const event of parsed.events) state.cart.pushRx(event.t_us, event.byte, now());
       }
     } catch (error) {
       state.op.forceStatus = "INCOMPLETE";
@@ -265,7 +275,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
 
   function handleLine(line) {
     const parsed = parseLine(line);
-    recordBridgeRaw(parsed.raw);
+    recordBridgeRaw(parsed.raw, { source: state.transport === "demo" ? "simulation" : "bridge" });
     state.archive?.line(parsed.raw);
     state.log.push(parsed.raw);
     if (state.archive && state.log.length > 2100) state.log.splice(0, state.log.length - 2000);

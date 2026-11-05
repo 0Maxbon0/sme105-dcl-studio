@@ -12,7 +12,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=7">
+  <link rel="stylesheet" href="styles.css?v=8">
 </head>
 <body>
   <header class="top">
@@ -94,6 +94,17 @@
       <button id="read-codes-btn" type="button" class="primary" data-str="readStored"></button>
       <button id="koeo-btn" type="button" data-str="runKoeo"></button>
       <button id="koer-btn" type="button" data-str="runKoer"></button>
+      <details class="history-panel"><summary>KOER preparation and operator journal / الإعداد وسجل المشغّل</summary>
+        <p>Do not start an engine-running test with raw-petrol odor or unstable idle. Use a qualified technician and a validated vehicle procedure, outdoors, stationary, in neutral, parking brake applied. No accelerator, steering or brake action is requested by the timer or result codes. Stop remains available at the top of the app.</p>
+        <p lang="ar" dir="rtl">لا تبدأ اختبار المحرك مع رائحة بنزين خام أو عدم استقرار الخمول. يلزم فني مؤهل وإجراء موثق للسيارة، في مكان مفتوح والسيارة ثابتة وعلى الوضع المحايد وفرامل اليد مفعلة. الوقت وأكواد الأعطال ليست تعليمات للوقود أو المقود أو الفرامل. زر الإيقاف أعلى التطبيق.</p>
+        <p>Optional markers below record actions already reported by the operator. They do not instruct an action or prove ECU acceptance. / الأزرار تسجل ما أبلغ عنه المشغّل فقط ولا تطلب تنفيذ حركة.</p>
+        <button type="button" data-operator-marker="external-cue">Record externally observed cue / تسجيل إشارة خارجية</button>
+        <button type="button" data-operator-marker="throttle-reported">Record reported throttle action / تسجيل حركة وقود مبلغ عنها</button>
+        <button type="button" data-operator-marker="steering-reported">Record reported steering action / تسجيل حركة مقود مبلغ عنها</button>
+        <button type="button" data-operator-marker="brake-reported">Record reported brake action / تسجيل حركة فرامل مبلغ عنها</button>
+        <p id="operator-marker-status" role="status"></p>
+        <pre id="koer-operator-history" style="white-space:pre-wrap;overflow-wrap:anywhere" aria-label="Saved KOER operator events"></pre>
+      </details>
       <p id="koer-prompt" class="banner warn" hidden></p>
       <label class="meter"><span data-str="koeoProgress"></span><progress id="codes-progress" max="100" value="0"></progress></label>
       <p id="codes-meta" class="meta"></p>
@@ -111,6 +122,24 @@
         <p class="help">The app preserves both bytes and shows bit positions. Per-bit meanings are not verified for this ECU calibration; a set bit is not automatically a confirmed component fault.</p>
         <div id="fmem-values"></div>
       </details>
+    </section>
+    <section id="view-kline" class="view" hidden>
+      <h2>K-Line / Pin 7</h2>
+      <p id="kline-bridge" class="help"></p>
+      <p class="banner warn" role="status">Hardware Required / Not Connected · Hardware RX disabled · TX prohibited</p>
+      <p>Pin 7 ISO9141 is separate from DCL and STO. A dedicated automotive K-Line transceiver is required. MAX487 and BSS138 are unsuitable. GPIO19 is an unconnected future candidate, with no qualified receiver backend.</p>
+      <p>No modules or services have been detected. ABS is not fitted. Central locking is fitted, but independent K-Line access is unverified. PATS is future read-only information only.</p>
+      <p>Passive silence is expected without an external diagnostic session; silence alone is not an ECU failure. No initialization, wake-up, scanning, retries or transmit operations are implemented.</p>
+      <label class="stack">Import offline K-Line JSONL / ASCII / .bin<input id="kline-import" type="file" accept=".jsonl,.txt,.bin,.raw"></label>
+      <p class="help">ASCII: KLINE t_us=100 byte=55. JSONL requires channel KLINE and uint32 t_us, with byte, edge, error or metadata. Binary imports use synthetic byte-index timestamps. All imports remain unverified offline evidence.</p>
+      <button id="kline-simulate" type="button">Start simulation recording</button>
+      <button id="kline-stop" type="button" disabled>Stop simulation and save</button>
+      <p id="kline-message" role="status"></p>
+      <p id="kline-session-status" role="status"></p>
+      <label class="stack">Saved K-Line sessions<select id="kline-history"></select></label>
+      <button id="kline-export" type="button" disabled>Export selected K-Line CSV</button>
+      <p class="help">Saved sessions and complete raw records also appear in the full diagnostic ZIP. Preview shows the last 300 records.</p>
+      <pre id="kline-raw" class="mono" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
     </section>
     <section id="view-tools" class="view" hidden>
       <h2>Settings and tools</h2>
@@ -189,6 +218,7 @@
     <button type="button" data-view="live" aria-current="page"></button>
     <button type="button" data-view="codes"></button>
     <button type="button" data-view="log"></button>
+    <button type="button" data-view="kline">K-Line</button>
     <button type="button" data-view="tools"></button>
   </nav>
   <aside id="sensor-drawer" class="drawer-backdrop" hidden>
@@ -220,6 +250,6 @@
     </div>
   </div>
   <script src="vendor/jszip.min.js"></script>
-  <script type="module" src="js/app.js?v=14"></script>
+  <script type="module" src="js/app.js?v=15"></script>
 </body>
 </html>

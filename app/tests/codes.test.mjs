@@ -21,7 +21,11 @@ test("fault database covers the European list and this car's notes", () => {
   assert.doesNotMatch(lookupCode("157").description, /MAP/i);
   assert.equal(lookupCode("214").category, "ignition");
   assert.equal(lookupCode("111").category, "pass");
-  assert.equal(lookupCode("010").category, "prompt");
+  for (const code of ["010", "020", "030"]) {
+    assert.equal(lookupCode(code).category, "legacy-unverified");
+    assert.doesNotMatch(lookupCode(code).description, /depress|press.*pedal|follow/i);
+  }
+  assert.equal(lookupCode("538").category, "self-test result");
   const unknown = lookupCode("999");
   assert.equal(unknown.known, false);
   assert.equal(unknown.description, "Unknown code — not in database");

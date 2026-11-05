@@ -1,6 +1,6 @@
 /** ASCII line protocol for the SME105 bridge. No DOM, no Bluetooth. */
 
-export const APP_VERSION = "1.7.1";
+export const APP_VERSION = "1.8.0";
 
 export const NUS_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
 export const NUS_RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
@@ -167,6 +167,7 @@ function num(fields, key) {
 
 export function parseLine(line) {
   const raw = String(line).replace(/\r$/, "");
+  if (raw.startsWith("KLINE ")) return { type: "kline", raw, channel: "KLINE", hardwareVerified: false, fields: parseFields(raw) };
   if (raw.startsWith("RXB ")) {
     const match = raw.match(/^RXB t_us=(\d{1,10}) data=([0-9A-F]{2,32}) dt=(\d+(?:,\d+)*)$/);
     if (match) {
@@ -228,6 +229,8 @@ export function parseLine(line) {
       expected: (fields.expected || "").toUpperCase(),
       observed: (fields.observed || "").toUpperCase(),
       match: num(fields, "match"),
+      evidence: num(fields, "evidence"), epoch: num(fields, "epoch"), sequence: num(fields, "tx_seq"),
+      block: num(fields, "block"), completed: num(fields, "complete"),
     };
   }
   if (raw.startsWith("RX ")) {

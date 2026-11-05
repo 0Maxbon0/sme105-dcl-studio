@@ -1,3 +1,6 @@
+import { warningsForDiagnosticSession } from "./dtc-history.js";
+import { wireKline } from "./kline-ui.js";
+import { createKoerGuide } from "./koer-guide.js";
 import { BleTransport, bluetoothAvailable } from "./ble.js";
 import { createController } from "./controller.js";
 import { APP_VERSION, createLineBuffer } from "./protocol.js";
@@ -5,7 +8,7 @@ import { createMockTransport, createReplay } from "./mock-transport.js";
 import { STR } from "./strings.js";
 import { createRecording, listRecordings, recordingBlob } from "./recording.js";
 import { applyStaticStrings, confirmDialog, exportCsv, exportLog, reorderPinnedSensor, pinnedSensors, isDashboardArranging, toggleDashboardArrangement, setDashboardDensity, inspectSensorChart, closeSensorDetails, restoreDashboardCapture, openSensorDetails, refreshDashboardCharts, render, renderEventHistory, renderWarningHistory, setSensorChartRange, showView, toggleSensorPin } from "./ui.js";
-import { closeDiagnosticRun, flushDiagnosticQueue, diagnosticSnapshot, recentDiagnosticEvents, recordDiagnosticEvent, recordDiagnosticWarning, setDiagnosticStorageErrorHandler, startDiagnosticRun } from "./diagnostics.js";
+import { closeDiagnosticRun, flushDiagnosticQueue, diagnosticHistory, recentDiagnosticEvents, recordDiagnosticEvent, recordDiagnosticWarning, setDiagnosticStorageErrorHandler, startDiagnosticRun } from "./diagnostics.js";
 import { exportDiagnosticZip, exportGroupCsv, exportSensorCsv, saveOrShare } from "./exports.js";
 import { lookupCode } from "./codes-db.js";
 import { sensorFreshnessTransitions } from "./live-dashboard.js";
@@ -26,6 +29,13 @@ const previousFreshness = new Map();
 let wired = false;
 let resumeWork = null;
 let protectedCapture = false;
+let operatorSave = Promise.resolve(false);
+const koerGuide = createKoerGuide({ journal: (type, detail) => {
+  const pending = recordDiagnosticEvent(type, detail, "koer");
+  if (type === "KOER_OPERATOR_EVENT") operatorSave = pending;
+  return pending;
+} });
+let koerEvidenceCount = 0;
 const nativeApp = () => !!window.Capacitor?.isNativePlatform?.();
 
 const controller = createController({
@@ -57,8 +67,16 @@ function demoKey() {
   return document.getElementById("demo-capture").value;
 }
 
+async function refreshKoerJournal() {
+  try {
+    const events = await diagnosticHistory();
+    document.getElementById("koer-operator-history").textContent = events.filter(e => e.type.startsWith("KOER_")).slice(-40)
+      .map(e => `${e.utc} · ${e.type} · ${e.detail.source || "app"} · ${e.detail.action || e.detail.phase || e.detail.type || ""}`).join("\n") || "No operator markers saved. / لا توجد علامات مشغّل محفوظة.";
+  } catch (error) { document.getElementById("koer-operator-history").textContent = `Journal unavailable: ${error.message}`; }
+}
+
 function refreshWarnings() {
-  return diagnosticSnapshot().then(snapshot => renderWarningHistory(snapshot.warnings))
+  return diagnosticHistory("warnings").then(renderWarningHistory)
     .catch(error => { document.getElementById("warning-history").textContent = `Warning history unavailable: ${error.message}`; });
 }
 
@@ -68,6 +86,13 @@ function refreshJournal() {
 }
 
 function auditState(state) {
+  if (state.op?.variant === "KOER") {
+    if (koerGuide.state.sessionId !== state.op.startedAt) { koerGuide.start(state.op.startedAt); koerEvidenceCount = 0; }
+    const evidence = state.cart?.snapshot()?.evidence || [];
+    for (; koerEvidenceCount < evidence.length; ++koerEvidenceCount) koerGuide.evidence({ ...evidence[koerEvidenceCount], source: state.transport === "demo" ? "simulation" : "bridge" });
+  }
+
+  state.koerGuide = koerGuide.state;
   const capturing = !!state.op;
   if (capturing !== protectedCapture) {
     protectedCapture = capturing;
@@ -94,10 +119,18 @@ function auditState(state) {
   const key = `${session.variant}:${session.startedAt}:${session.completedAt}`;
   if (key === previousSessionKey) return;
   previousSessionKey = key;
+  if (session.variant === "KOER") {
+    const evidence = session.ecuEvidence || [];
+    for (; koerEvidenceCount < evidence.length; ++koerEvidenceCount) koerGuide.evidence({ ...evidence[koerEvidenceCount], source: state.transport === "demo" ? "simulation" : "bridge" });
+    koerGuide.finish({ disconnected: session.verdict?.reasons?.includes("link lost"),
+    aborted: session.verdict?.end?.reason === 15, timedOut: session.verdict?.end?.reason === 16,
+    captureIntegrity: session.verdict?.status });
+  }
   const evidence = {
-    variant: session.variant, kind: session.kind, startedAt: session.startedAt, completedAt: session.completedAt,
+    channel: "DCL", source: state.transport === "demo" ? "simulation" : "bridge", hardwareVerified: false, variant: session.variant, kind: session.kind, startedAt: session.startedAt, completedAt: session.completedAt,
     verdict: session.verdict, requestedMode: session.requestedMode, observedModes: session.observedModes,
     dtcVerified: session.dtcVerified, selfTestComplete: session.selfTestComplete,
+    integrity: session.integrity, ecuEvidence: session.ecuEvidence,
     codes: session.codes, blocks25: session.blocks25, blocks26: session.blocks26,
     rx: session.verdict?.end?.rx ?? null, parityRejects: session.parityRejects,
     codeParityRejects: session.codeParityRejects,
@@ -110,18 +143,9 @@ function auditState(state) {
       ruleId: `SESSION-${session.verdict?.status || "INCOMPLETE"}`, reason: (session.verdict?.reasons || ["Session incomplete"]).join("; "),
       source: `${session.variant} session validity checks`, evidence });
   }
-  for (const code of session.codes || []) {
-    const description = lookupCode(code.code)?.description || "Description unavailable in the checked-in fault table.";
-    recordDiagnosticWarning(`stored-${code.code}`, true, { severity: "amber", sensor: `DTC ${code.code}`,
-      ruleId: `DTC-${code.code}`, reason: `${description} Observed in this capture; the bridge reports ECU verification separately.`,
-      source: `${session.variant} · requested mode ${code.requestedMode?.toString(16).toUpperCase() || "?"}H · observed ${code.mode?.toString(16).toUpperCase() || "?"}H`,
-      evidence: { ...code, verdict: session.verdict, dtcVerified: session.dtcVerified } });
-  }
-  if (session.verdict?.valid && ["0E", "A4"].includes(session.variant)) {
-    const found = new Set((session.codes || []).map(code => code.code));
-    diagnosticSnapshot().then(snapshot => snapshot.warnings.filter(item => item.active && item.key.startsWith("stored-") && !found.has(item.key.slice(7)))
-      .forEach(item => recordDiagnosticWarning(item.key, false, {}))).then(refreshWarnings);
-  } else refreshWarnings();
+  for (const {key, warning} of warningsForDiagnosticSession(session)) recordDiagnosticWarning(key, true, warning);
+  // New datasets never resolve older warnings or imply a memory clear.
+  refreshWarnings();
 }
 
 function auditFreshness(state) {
@@ -313,10 +337,10 @@ function showSavedTest() {
 }
 async function refreshTestHistory() {
   try {
-    const snapshot = await diagnosticSnapshot();
+    const events = await diagnosticHistory();
     const select = document.getElementById("saved-tests");
     const prior = savedTests[Number(select.value)];
-    savedTests = savedDiagnosticTests(snapshot.events);
+    savedTests = savedDiagnosticTests(events);
     select.replaceChildren(...savedTests.map((event, index) => new Option(
       `${new Date(event.detail.completedAt).toLocaleString()} · ${event.detail.variant} · ${event.detail.codes?.length || 0} codes · ${event.detail.verdict?.status || "UNKNOWN"}`, index)));
     const index = prior ? savedTests.findIndex(event => event.id === prior.id && event.runId === prior.runId) : -1;
@@ -341,12 +365,13 @@ async function exportSavedTests(all = false) {
 }
 
 async function restoreLastDiagnosticResult() {
-  const snapshot = await diagnosticSnapshot();
-  const resultEvent = snapshot.events.filter(event => event.type === "SESSION_RESULT").at(-1);
+  const events = await diagnosticHistory();
+  const resultEvent = events.filter(event => event.type === "SESSION_RESULT").at(-1);
   if (!resultEvent?.detail) return;
   const detail = resultEvent.detail;
   controller.state.lastSession = { ...detail, rows: [], pids: {}, mem: {}, rom: null, totalRows: 0 };
   controller.state.trust = detail.verdict?.valid ? "valid" : "untrusted";
+  if (detail.variant === "KOER") Object.assign(koerGuide.state, { phase: "ENDED_UNVERIFIED", sessionId: detail.startedAt, prompt: null, verifiedSuccess: false });
   previousSessionKey = `${detail.variant}:${detail.startedAt}:${detail.completedAt}`;
 }
 
@@ -373,6 +398,12 @@ function wire() {
   document.getElementById("high-contrast").checked = readStorage("eeciv-high-contrast") === "1";
   document.getElementById("reduce-motion").checked = readStorage("eeciv-reduce-motion") === "1";
   applyDisplayPreferences();
+  wireKline();
+  void refreshKoerJournal();
+  document.querySelectorAll("[data-operator-marker]").forEach(button => button.addEventListener("click", async () => {
+    try { const event = koerGuide.confirm(button.dataset.operatorMarker); if (!await operatorSave) throw new Error("Operator marker was not saved; diagnostic storage failed"); await refreshKoerJournal(); document.getElementById("operator-marker-status").textContent = `Human report saved: ${new Date(event.at).toLocaleTimeString()} · not ECU confirmed / تقرير بشري غير مؤكد من وحدة التحكم`; }
+    catch (error) { document.getElementById("operator-marker-status").textContent = error.message; }
+  }));
   const storedMode = readStorage("eeciv-stored-code-mode");
   if (storedMode === "0E" || storedMode === "A4") document.getElementById("stored-code-mode").value = storedMode;
   document.getElementById("stored-code-mode").addEventListener("change", (event) => {

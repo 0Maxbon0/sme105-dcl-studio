@@ -1,4 +1,6 @@
 #include <Arduino.h>
+#include "pad_evidence.h"
+#include "kline_rx.h"
 #include <HardwareSerial.h>
 #include <WiFi.h>
 #include <Preferences.h>
@@ -96,7 +98,7 @@ constexpr uint32_t kOtaCurrentVersion = 1;
 // still be able to boot PENDING_VERIFY from an older accepted version and
 // prove their manifest before promoting ota_ver. On a VALID app with NO pending
 // ledger, a supervised physical USB flash may adopt this build baseline.
-constexpr uint32_t kUsbInstalledBuildVersion = 23;
+constexpr uint32_t kUsbInstalledBuildVersion = 24;
 constexpr size_t kOtaAppSlotMax = 0x140000; // default 4MB ESP32 OTA partition table
 constexpr char kOtaPublisherPublicPEM[] =
   "-----BEGIN PUBLIC KEY-----\n"
@@ -214,6 +216,7 @@ volatile uint32_t targetUs = 0;
 volatile uint8_t variant = 0, pendingSlot = 0;
 volatile uint8_t wordsStarted = 0, wordsVerified = 0;
 volatile uint8_t padCount = 0;
+PadEvidence padEvidence;
 volatile uint8_t padRx[4][2] = {{0}};
 volatile uint32_t txStartUs[4] = {}, txDoneUs[4] = {};
 volatile uint32_t uartErr = 0, lostRx = 0, rxTotal = 0, lastRxAtUs = 0;
@@ -1693,6 +1696,7 @@ void IRAM_ATTR slotISR() {
   // RMT autonomous single-shot gate: 2180us HIGH then 80us LOW.
   startDeGate(index);
   const CmdWord selected = dpsWord(index);
+  padEvidence.start(dpsBlocks, index, selected.first, selected.second, now);
   // Native UART2 TX AHB FIFO writes, not the APB RX register bitfield.
   WRITE_PERI_REG(UART_FIFO_AHB_REG(2), selected.first);
   WRITE_PERI_REG(UART_FIFO_AHB_REG(2), selected.second);
@@ -1700,6 +1704,7 @@ void IRAM_ATTR slotISR() {
 }
 
 void IRAM_ATTR uart2ISR(void*) {
+  portENTER_CRITICAL_ISR(&txLock);
   const uint32_t pending = UART2.int_st.val;
   if (pending & (1UL << 14)) { // TX_DONE shifted final 8N1 stop bit
     // The gate is still HIGH for ~90us after the stop bit: witness the pad.
@@ -1739,7 +1744,11 @@ void IRAM_ATTR uart2ISR(void*) {
         __sync_synchronize();
         padCount = index + 1;
       }
-      const CmdWord expected = extra ? extraWord : dpsWord(index);
+      const CmdWord expected = extra ? extraWord :
+        CmdWord{padEvidence.active.expected0, padEvidence.active.expected1};
+      if (!extra) padEvidence.complete(b0, b1, now, deWasHigh && count == 2 &&
+          countMid == 1 && countAfter == 0 &&
+          !(flags & ((1UL << 2) | (1UL << 3) | (1UL << 4))));
       // RXFIFO_TOUT (bit 8) indicates inactivity, not a UART frame error.
       // Parity, framing and overflow (bits 2..4) invalidate the pad witness.
       if (!deWasHigh) {
@@ -1764,6 +1773,7 @@ void IRAM_ATTR uart2ISR(void*) {
     }
   }
   UART2.int_clr.val = pending;
+  portEXIT_CRITICAL_ISR(&txLock);
 }
 
 void IRAM_ATTR slideHeader(uint8_t octet, uint32_t at) {
@@ -1958,6 +1968,7 @@ void stopEverything(Fault reason) {
   // performs a full UART2 module reset before the next session.
   slotArmed = false;
   slotInFlight = false;
+  padEvidence.abort();
   portEXIT_CRITICAL(&txLock);
   closeNative(); closeReference();
   if (failure == NO_FAULT) failure = reason;
@@ -2471,6 +2482,15 @@ void beginSession(Stage target, uint8_t kind) {
   deCutoff = false;
   reportedErrors = reportedLost = 0;
   lastReportedBaseline = sentPadReports = 0;
+  // Accepted sessions start with no inherited witness, before variant changes
+  // or any handshake can expose the task reporter to old ISR buffers.
+  portENTER_CRITICAL(&txLock);
+  padEvidence.begin();
+  wordsStarted = wordsVerified = padCount = 0;
+  for (uint8_t i = 0; i < 4; ++i) {
+    padRx[i][0] = padRx[i][1] = 0; txStartUs[i] = txDoneUs[i] = 0;
+  }
+  portEXIT_CRITICAL(&txLock);
   captureOnly = false;
   variant = kind;
   const bool listen = target == CART_PASSIVE && kind == 2;
@@ -2478,7 +2498,7 @@ void beginSession(Stage target, uint8_t kind) {
     if (!openNative()) { stopEverything(CART_INIT); out.println(F("FAULT reason=CART_INIT")); return; }
     stopLatched = false;
     stage = CART_PASSIVE; captureStartedMs = millis();
-    out.println(F("EVENT session=LISTEN_9600 origin=RO_ONLY no_tx=1"));
+    out.print(F("EVENT session=LISTEN_9600 origin=RO_ONLY no_tx=1 epoch=")); out.print(padEvidence.epoch); out.print(F(" boot_id=")); out.println(padEvidence.boot);
     return;
   }
   if (offline) {
@@ -2489,7 +2509,7 @@ void beginSession(Stage target, uint8_t kind) {
     framePeriodUs = 0;
     stopLatched = false;
     stage = CART_READ; captureStartedMs = millis();
-    out.println(F("EVENT session=OFFLINE_JOIN no_handshake=1"));
+    out.print(F("EVENT session=OFFLINE_JOIN no_handshake=1 epoch=")); out.print(padEvidence.epoch); out.print(F(" boot_id=")); out.println(padEvidence.boot);
     return;
   }
   if (!openReference()) { stopEverything(CART_INIT); return; }
@@ -2497,7 +2517,9 @@ void beginSession(Stage target, uint8_t kind) {
   stage = QUIET;
   stageStartedMs = millis();
   out.print(F("EVENT session="));
-  out.println(target == CART_READ ? F("READ_CANDIDATE") : F("OBSERVE"));
+  out.print(target == CART_READ ? F("READ_CANDIDATE") : F("OBSERVE"));
+  out.print(F(" epoch=")); out.print(padEvidence.epoch);
+  out.print(F(" boot_id=")); out.println(padEvidence.boot);
 }
 
 bool sendReference(const uint8_t (&bytes)[11]) {
@@ -2592,15 +2614,32 @@ void flushPadReports() {
   // during any uncompleted four-word critical timing sequence. ISR evidence
   // stays in bounded SRAM until the fourth word or a latched fault/STOP.
   if (stage == CART_READ && !captureOnly && failure == NO_FAULT) return;
-  while (sentPadReports < padCount) {
-    const uint8_t i = sentPadReports++;
-    const CmdWord selected = dpsWord(i);
-    out.print(F("TX_PAD slot=")); out.print(i);
-    out.print(F(" expected=")); outputHex(selected.first); outputHex(selected.second);
-    out.print(F(" observed=")); outputHex(padRx[i][0]); outputHex(padRx[i][1]);
-    out.print(F(" tx_us=")); out.print(txStartUs[i]);
-    out.print(F(" done_us=")); out.print(txDoneUs[i]);
-    out.print(F(" match=")); out.println(i < wordsVerified ? 1 : 0);
+  while (sentPadReports < 5) {
+    PadEvidence::Record record;
+    portENTER_CRITICAL(&txLock);
+    const uint8_t i = sentPadReports;
+    record = i < 4 ? padEvidence.first[i] : padEvidence.failed;
+    const bool available = record.sequence && (i < 4 || (padEvidence.hasFailure && record.block > 0));
+    if (available) ++sentPadReports;
+    portEXIT_CRITICAL(&txLock);
+    if (!available) {
+      // Partial first blocks can still have a failed later witness in slot 4.
+      if (i < 4 && (stage == FINISHING || failure != NO_FAULT)) { ++sentPadReports; continue; }
+      break;
+    }
+    out.print(F("TX_PAD slot=")); out.print(record.slot);
+    out.print(F(" expected=")); outputHex(record.expected0); outputHex(record.expected1);
+    out.print(F(" observed="));
+    if (record.completed) { outputHex(record.observed0); outputHex(record.observed1); }
+    else out.print(F("UNAVAILABLE"));
+    out.print(F(" tx_us=")); out.print(record.start);
+    out.print(F(" done_us=")); out.print(record.done);
+    out.print(F(" match=")); out.print(record.completed && record.match ? 1 : 0);
+    out.print(F(" evidence=2 epoch=")); out.print(record.epoch);
+    out.print(F(" boot_id=")); out.print(record.boot);
+    out.print(F(" tx_seq=")); out.print(record.sequence);
+    out.print(F(" block=")); out.print(record.block);
+    out.print(F(" complete=")); out.println(record.completed ? 1 : 0);
   }
 }
 void flushRaw() {
@@ -2728,6 +2767,10 @@ void reportEnd() {
   out.print(F(" ro_bytes=")); out.print(rxTotal);
   out.print(F(" ro_lost=")); out.print(lostRx);
   out.print(F(" uart_errors=")); out.print(uartErr);
+  out.print(F(" evidence=2 epoch=")); out.print(padEvidence.epoch);
+  out.print(F(" boot_id=")); out.print(padEvidence.boot);
+  out.print(F(" witness_started=")); out.print(padEvidence.started);
+  out.print(F(" witness_verified=")); out.print(padEvidence.verified);
   out.print(F(" pad_verified=")); out.print(wordsVerified);
   out.print(F(" words_started=")); out.print(wordsStarted);
   out.println(F(" ecu_verified=0 dtc_verified=0 DE=LOW"));
@@ -2760,7 +2803,7 @@ void printStatus() {
     out.print(variantName(armedVariant));
   else out.print(F("NONE"));
   out.print(F(" fault=")); out.print(static_cast<unsigned>(failure));
-  out.print(F(" live_all=1 rx_batch=1"));
+  out.print(F(" live_all=1 rx_batch=1 pad_evidence=2 kline_hw=0 kline_tx=0 kline_rx_backend=NONE"));
   out.print(F(" fw=")); out.println(kUsbInstalledBuildVersion);
 }
 void printPins() {
@@ -3324,6 +3367,7 @@ void setup() {
   pinMode(kDI, INPUT);
   gpio_set_direction(GPIO_NUM_18, GPIO_MODE_OUTPUT);
   deOff();
+  padEvidence.boot = esp_random();
   Serial.begin(115200);
   deTimer = timerBegin(0, 80, true);
   if (deTimer) {

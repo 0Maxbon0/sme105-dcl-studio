@@ -1,0 +1,25 @@
+{
+  "device": "Samsung SM-A528B",
+  "androidPackage": "com.maximizotech.sme105dclstudio",
+  "appVersion": "1.8.0",
+  "klineSimulationRecords": 24,
+  "status": "STOPPED",
+  "exportFolder": "Internal storage/Download/SME105 DCL Studio",
+  "csvSha256": "01ebcc63d4b784ade38bffe6e0567e4f1b86b128c74caedc7c30ebee34ebc5cc",
+  "csvBytes": 4406,
+  "nativeShareSheetObserved": true,
+  "shareRecipientSelectedByAgent": false,
+  "hardwareVerified": false,
+  "vehicleCommandsSent": false,
+  "screenshots": [
+    "screenshots/sol-20261105/kline-simulation-recording.png"
+  ],
+  "pending": [
+    "Full ZIP native export not repeated; Node ZIP integrity test passed",
+    "No new ECU/engine-running tests; DCL pad timing after upload unverified on vehicle",
+    "K-Line electrical hardware/backend unavailable"
+  ],
+  "finalApkInstalled": true,
+  "bluetoothRestored": true,
+  "appLeftStopped": true
+}

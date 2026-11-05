@@ -7,6 +7,8 @@ export function createSession() {
     kind: "",
     rx: 0,
     pads: [],
+    epoch: null,
+    bootId: null,
     problems: [],
     end: null,
     offlineQuietUs: null,
@@ -20,6 +22,8 @@ export function noteSessionLine(session, parsed) {
   if (parsed.type === "session_start") {
     session.started = true;
     session.kind = parsed.kind || "";
+    session.epoch = parsed.fields?.epoch ?? null;
+    session.bootId = parsed.fields?.boot_id ?? null;
     session.rx = 0;
     session.pads = [];
     session.problems = [];
@@ -65,7 +69,7 @@ function diagnosticModeProblems(variant, cart) {
     reasons.push(`${cart.codeParityRejects} DTC code word(s) failed parity verification`);
   }
   if (spec.selfTest && !cart.selfTestComplete) {
-    reasons.push(`missing Frame 7 self-test complete flag for ${variant}`);
+    reasons.push(`missing Frame 7 result-phase flag for ${variant}`);
   }
   return reasons;
 }
@@ -97,6 +101,10 @@ export function sessionVerdict(session, flags = {}) {
       }
     }
   }
+  const provenance = session?.pads?.length > 0 && session.epoch !== null && session.bootId !== null &&
+    session.end?.fields?.boot_id === session.bootId && session.end?.fields?.epoch === session.epoch &&
+    session.pads.every(p => p.evidence === 2 && p.fields?.boot_id === session.bootId && String(p.epoch) === session.epoch && p.completed === 1 && p.sequence > 0);
+  if (session?.pads?.some(p => p.evidence === 2) && !provenance) reasons.push("TX_PAD session provenance missing or inconsistent");
   const forced = flags.disconnect || flags.timeout;
   const valid = reasons.length === 0 && !forced;
   let status = "INCOMPLETE";
@@ -104,6 +112,8 @@ export function sessionVerdict(session, flags = {}) {
   else if (flags.disconnect) status = "FAILED";
   return {
     valid,
+    witnessStatus: provenance ? "SESSION_BOUND" : "LEGACY_UNVERIFIED",
+    verifiedSuccess: false,
     status,
     reasons,
     end: session?.end || null,

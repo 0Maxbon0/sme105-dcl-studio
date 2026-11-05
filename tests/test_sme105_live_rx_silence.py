@@ -109,6 +109,8 @@ int main() {
 #include <cstdint>
 #include <cassert>
 #include <string>
+#include "pad_evidence.h"
+PadEvidence padEvidence;
 #define F(x) x
 #define portENTER_CRITICAL(x) ((void)0)
 #define portEXIT_CRITICAL(x) ((void)0)
@@ -234,7 +236,7 @@ int main() {
             src, binary = Path(td) / "watchdog.cpp", Path(td) / "watchdog"
             src.write_text(cpp, encoding="utf-8")
             subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
-                            "-fsanitize=undefined", str(src), "-o", str(binary)],
+                            "-fsanitize=undefined", "-I", str(SKETCH.parent), str(src), "-o", str(binary)],
                            check=True, capture_output=True)
             subprocess.run([str(binary)], check=True, capture_output=True)
 

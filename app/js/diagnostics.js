@@ -192,9 +192,9 @@ export function recordDiagnosticEvent(type, detail = {}, category = "app") {
     write(transaction) { transaction.objectStore("events").add(record); } });
 }
 
-export function recordBridgeRaw(line) {
+export function recordBridgeRaw(line, context = {}) {
   if (!run) return Promise.resolve(false);
-  const value = { ...common(), line: redactDiagnostic(String(line)) };
+  const value = { ...common(), channel: String(line).startsWith("KLINE ") ? "KLINE" : "DCL", source: context.source || "bridge", hardwareVerified: false, line: redactDiagnostic(String(line)) };
   return queueOperation({ stores: ["raw"], fallback: { raw: [value] },
     write(transaction) { transaction.objectStore("raw").add(value); } });
 }
@@ -202,7 +202,7 @@ export function recordBridgeRaw(line) {
 export function recordDiagnosticSample(sample, context = {}) {
   if (!run) return Promise.resolve(false);
   const pid = PID_BY_NAME.get(sample.name);
-  const value = { ...common(), pid: pid ? `0x${Number(pid).toString(16).padStart(2, "0").toUpperCase()}` : "",
+  const value = { ...common(), channel: "DCL", source: context.source || "bridge", hardwareVerified: false, pid: pid ? `0x${Number(pid).toString(16).padStart(2, "0").toUpperCase()}` : "",
     name: sample.name, variant: context.variant || "", t_s: sample.t, raw: sample.raw, value: sample.value, unit: sample.unit,
     receivedAt: sample.receivedAt ?? Date.now(), validity: "received", timeBasis: "ECU-relative" };
   return queueOperation({ stores: ["samples"], fallback: { samples: [value] },
@@ -301,3 +301,16 @@ export async function recentDiagnosticEvents(limit = 100) {
 }
 
 export function currentDiagnosticRun() { return run; }
+
+/** History views must not load the potentially hours-long raw/sample stores. */
+export async function diagnosticHistory(store = "events") {
+  if (!["events", "warnings"].includes(store)) throw new Error("Unsupported history store");
+  await flushDiagnosticQueue();
+  const database = await db();
+  const rows = await new Promise((resolve, reject) => {
+    const request = database.transaction(store).objectStore(store).getAll();
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  return [...rows, ...unsaved[store]];
+}

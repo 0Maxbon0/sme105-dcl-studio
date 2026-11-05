@@ -10,7 +10,7 @@ export const READING_REFERENCES = {
   DSDRPM: ["875 rpm is the published regulated idle reference, not a fixed target in every condition.", "The ECU may request a different idle during warm-up or extra load; compare actual RPM with its current target."],
   ECT: [unknown, "Rises as coolant warms. Lower is not always better. Warm-up, thermostat and fan operation matter; an operating band is not a sensor accuracy test."],
   ACT: [unknown, "Depends on ambient temperature and heat soak. A high raw intake input can accompany a substituted temperature; neither hotter nor colder is universally better."],
-  IACT: [raw, "Raw thermistor input, not degrees. Higher counts cannot be assigned a temperature without this ECU's transfer curve. Check ACT and recorded fault codes together."],
+  IACT: [raw, "Raw IAT-related ECU channel, not degrees or another physical sensor. ACT and IACT changed 26.324 seconds apart in a preserved recording; calibration and fallback are unverified."],
   IECT: [raw, "Use the separate ECT channel in °C. The thermistor conversion is nonlinear; raw counts are retained for circuit diagnosis."],
   ITP: [raw, "Should respond smoothly to throttle movement. More counts describe a signal change, not better health. Percent opening needs verified closed/open endpoints."],
   RATCH: [raw, "The ECU's learned closed-throttle reference. Compare with throttle only while the pedal is released; there is no verified fixed difference limit here."],

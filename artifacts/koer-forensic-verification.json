@@ -1,0 +1,190 @@
+{
+  "inputSha256": "852d3dcfd47c9876d28c9606ce5c38bbf6bdbf4723237347444c5e17ed1375d9",
+  "rawLines": 99629,
+  "mainRawLines": [
+    58920,
+    91791
+  ],
+  "rx": 32862,
+  "frames": 5695,
+  "completeMode25Cycles": 353,
+  "frame7Counts": {
+    "ACC0": 86,
+    "EC80": 267
+  },
+  "codeCounts": {
+    "37:172": 267,
+    "37:538": 267,
+    "37:521": 267
+  },
+  "codes": [
+    {
+      "code": "172",
+      "mode": 37,
+      "frame": 0,
+      "slot": 15,
+      "rawBytes": [
+        114,
+        225
+      ],
+      "rawData": 370,
+      "rxTimeUs": 110783095,
+      "receivedAt": "2026-11-05T16:48:47.479Z",
+      "frameTimeUs": 110745598,
+      "frameReceivedAt": "2026-11-05T16:48:47.417Z"
+    },
+    {
+      "code": "538",
+      "mode": 37,
+      "frame": 1,
+      "slot": 15,
+      "rawBytes": [
+        56,
+        69
+      ],
+      "rawData": 1336,
+      "rxTimeUs": 110825599,
+      "receivedAt": "2026-11-05T16:48:47.502Z",
+      "frameTimeUs": 110788097,
+      "frameReceivedAt": "2026-11-05T16:48:47.485Z"
+    },
+    {
+      "code": "521",
+      "mode": 37,
+      "frame": 2,
+      "slot": 15,
+      "rawBytes": [
+        33,
+        197
+      ],
+      "rawData": 1313,
+      "rxTimeUs": 110868093,
+      "receivedAt": "2026-11-05T16:48:47.530Z",
+      "frameTimeUs": 110830595,
+      "frameReceivedAt": "2026-11-05T16:48:47.506Z"
+    }
+  ],
+  "evidence": [
+    {
+      "type": "SELF_TEST_PHASE",
+      "mode": 37,
+      "frame": 7,
+      "slot": 2,
+      "rawBytes": [
+        172,
+        192
+      ],
+      "rxTimeUs": 52570242,
+      "receivedAt": "2026-11-05T16:47:49.252Z",
+      "frameReceivedAt": "2026-11-05T16:47:49.250Z",
+      "previous": null,
+      "interpretation": "General response phase only; no authenticated operator cue",
+      "source": "bridge"
+    },
+    {
+      "type": "RESULT_PHASE",
+      "mode": 37,
+      "frame": 7,
+      "slot": 2,
+      "rawBytes": [
+        236,
+        128
+      ],
+      "rxTimeUs": 111048086,
+      "receivedAt": "2026-11-05T16:48:47.720Z",
+      "frameReceivedAt": "2026-11-05T16:48:47.713Z",
+      "previous": 172,
+      "interpretation": "General response phase only; no authenticated operator cue",
+      "source": "bridge"
+    },
+    {
+      "type": "DTC",
+      "code": "172",
+      "mode": 37,
+      "frame": 0,
+      "slot": 15,
+      "rawBytes": [
+        114,
+        225
+      ],
+      "rawData": 370,
+      "rxTimeUs": 110783095,
+      "receivedAt": "2026-11-05T16:48:47.479Z",
+      "frameTimeUs": 110745598,
+      "frameReceivedAt": "2026-11-05T16:48:47.417Z",
+      "source": "bridge",
+      "authenticatedOperatorCue": false
+    },
+    {
+      "type": "DTC",
+      "code": "538",
+      "mode": 37,
+      "frame": 1,
+      "slot": 15,
+      "rawBytes": [
+        56,
+        69
+      ],
+      "rawData": 1336,
+      "rxTimeUs": 110825599,
+      "receivedAt": "2026-11-05T16:48:47.502Z",
+      "frameTimeUs": 110788097,
+      "frameReceivedAt": "2026-11-05T16:48:47.485Z",
+      "source": "bridge",
+      "authenticatedOperatorCue": false
+    },
+    {
+      "type": "DTC",
+      "code": "521",
+      "mode": 37,
+      "frame": 2,
+      "slot": 15,
+      "rawBytes": [
+        33,
+        197
+      ],
+      "rawData": 1313,
+      "rxTimeUs": 110868093,
+      "receivedAt": "2026-11-05T16:48:47.530Z",
+      "frameTimeUs": 110830595,
+      "frameReceivedAt": "2026-11-05T16:48:47.506Z",
+      "source": "bridge",
+      "authenticatedOperatorCue": false
+    }
+  ],
+  "verdict": {
+    "valid": false,
+    "witnessStatus": "LEGACY_UNVERIFIED",
+    "verifiedSuccess": false,
+    "status": "INCOMPLETE",
+    "reasons": [
+      "TX_PAD slot 2 expected 253E observed 260E match 1"
+    ],
+    "end": {
+      "type": "end",
+      "raw": "END reason=16 ro_bytes=32862 ro_lost=0 uart_errors=0 pad_verified=4 words_started=4 ecu_verified=0 dtc_verified=0 DE=LOW",
+      "fields": {
+        "reason": "16",
+        "ro_bytes": "32862",
+        "ro_lost": "0",
+        "uart_errors": "0",
+        "pad_verified": "4",
+        "words_started": "4",
+        "ecu_verified": "0",
+        "dtc_verified": "0",
+        "DE": "LOW"
+      },
+      "reason": 16,
+      "reasonName": "CAPTURE_TIMEOUT",
+      "ro_bytes": 32862,
+      "ro_lost": 0,
+      "uart_errors": 0,
+      "pad_verified": 4,
+      "words_started": 4,
+      "de": "LOW"
+    }
+  },
+  "authenticatedOperatorPrompts": [],
+  "verifiedKoerSuccess": false,
+  "timestampNote": "frameReceivedAt is the source RX frame-sync host timestamp; receivedAt is the actual code/phase word's host receipt. MCU timestamps are preserved independently; host batching is not ECU time."
+}

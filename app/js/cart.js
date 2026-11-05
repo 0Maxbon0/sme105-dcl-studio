@@ -27,13 +27,18 @@ export function createCartDecoder(pidSet = null, { onSample = null, historyLimit
     mode: null,
     t0: null,
     codes: [],
+    evidence: [],
     codeSeen: new Set(),
+    codeCounts: {},
+    frame7Counts: {},
     codeParityRejects: 0,
     rom: null,
     frame7First: null,
     frame7Last: null,
     selfTestComplete: false,
     blocks25: 0,
+    completeBlocks25: 0,
+    completeBlocks26: 0,
     blocks26: 0,
     frameCount: 0,
     parityRejects: 0,
@@ -63,9 +68,16 @@ export function createCartDecoder(pidSet = null, { onSample = null, historyLimit
     for (const fr of block) {
       const word = fr.slots[2];
       if (!word) continue;
-      if (fr.fid === 4) mode = word[0];
-      if (mode === 0x25 && fr.fid === 7) {
+      if (fr.fid === 4 && parityOk(...word)) mode = word[0];
+      if (mode === 0x25 && fr.fid === 7 && parityOk(...word)) {
+        const phaseKey = word.map(b => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+        dec.frame7Counts[phaseKey] = (dec.frame7Counts[phaseKey] || 0) + 1;
         if (dec.frame7First === null) dec.frame7First = word[0];
+        if (dec.frame7Last !== word[0] && parityOk(...word)) dec.evidence.push({
+          type: word[0] & 0x40 ? "RESULT_PHASE" : "SELF_TEST_PHASE", mode, frame: 7, slot: 2,
+          rawBytes: [...word], rxTimeUs: fr.slotTimes[2], receivedAt: fr.slotUtc[2], frameReceivedAt: fr.receivedAt, previous: dec.frame7Last,
+          interpretation: "General response phase only; no authenticated operator cue", source: "bridge",
+        });
         dec.frame7Last = word[0];
         if (word[0] & 0x40) dec.selfTestComplete = true;
       }
@@ -73,6 +85,9 @@ export function createCartDecoder(pidSet = null, { onSample = null, historyLimit
       if (fr.fid === 11) high = word[0];
     }
     if (low !== null && high !== null) dec.rom = { low, high };
+    const complete = block.length === 16 && block.every((frame, i) => frame.fid === i);
+    if (complete && mode === 0x25) ++dec.completeBlocks25;
+    if (complete && mode === 0x26) ++dec.completeBlocks26;
     if (mode === 0x25) dec.blocks25 += 1;
     if (mode === 0x26) dec.blocks26 += 1;
     if (mode === 0x22) {
@@ -93,8 +108,9 @@ export function createCartDecoder(pidSet = null, { onSample = null, historyLimit
           continue;
         }
         const code = formatCode(wordData(b0, b1));
-        if (dec.codeSeen.has(code)) continue;
-        dec.codeSeen.add(code);
+        dec.codeCounts[`${mode}:${code}`] = (dec.codeCounts[`${mode}:${code}`] || 0) + 1;
+        if (dec.codeSeen.has(`${mode}:${code}`)) continue;
+        dec.codeSeen.add(`${mode}:${code}`);
         dec.codes.push({
           code,
           mode,
@@ -102,8 +118,12 @@ export function createCartDecoder(pidSet = null, { onSample = null, historyLimit
           slot,
           rawBytes: [b0, b1],
           rawData: wordData(b0, b1),
-          rxTimeUs: fr.t,
+          rxTimeUs: fr.slotTimes[slot],
+          receivedAt: fr.slotUtc[slot],
+          frameTimeUs: fr.t,
+          frameReceivedAt: fr.receivedAt,
         });
+        dec.evidence.push({ type: "DTC", ...dec.codes.at(-1), source: "bridge", authenticatedOperatorCue: false });
       }
     }
   }
@@ -159,15 +179,22 @@ export function createCartDecoder(pidSet = null, { onSample = null, historyLimit
       if (dec.frame) closeFrame(dec.frame);
       dec.frame = {
         t: w[0].t,
+        receivedAt: w[0].receivedAt,
         fid: nxt[1].b & 15,
         idb0: nxt[0].b,
         slots: {},
+        slotTimes: {},
+        slotUtc: {},
       };
       return;
     }
     if (dec.frame && w.length === 2) {
       const slot = pyRoundDiv(w[0].t - dec.frame.t, SLOT_US);
-      if (dec.frame.slots[slot] === undefined) dec.frame.slots[slot] = [w[0].b, w[1].b];
+      if (dec.frame.slots[slot] === undefined) {
+        dec.frame.slots[slot] = [w[0].b, w[1].b];
+        dec.frame.slotTimes[slot] = w[0].t;
+        dec.frame.slotUtc[slot] = w[0].receivedAt;
+      }
     }
   }
 
@@ -177,7 +204,7 @@ export function createCartDecoder(pidSet = null, { onSample = null, historyLimit
   }
 
   return {
-    pushRx(t, b) {
+    pushRx(t, b, receivedAt = null) {
       if (dec.closed) return;
       // The wire clock is uint32 microseconds (~71.6 minutes per wrap).
       // Preserve monotonic sample times across multiple wraps during a trip.
@@ -191,11 +218,11 @@ export function createCartDecoder(pidSet = null, { onSample = null, historyLimit
       t = unwrappedTime;
       const pending = dec.pending;
       if (pending.length && t - pending[pending.length - 1].t <= WORD_GAP_US && pending.length < 2) {
-        pending.push({ t, b });
+        pending.push({ t, b, receivedAt });
         return;
       }
       if (pending.length) onWord(pending);
-      dec.pending = [{ t, b }];
+      dec.pending = [{ t, b, receivedAt }];
     },
     finish() {
       if (dec.closed) return dec;

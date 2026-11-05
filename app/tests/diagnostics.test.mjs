@@ -118,3 +118,15 @@ test("journal write failure retains queued evidence and marks the snapshot incom
   assert.equal(snapshot.samples.filter(item => item.runId === run.id).length, 1);
   assert.ok(snapshot.events.some(item => item.runId === run.id && item.type === "FAILURE_TEST"));
 });
+
+test("focused history reads avoid raw/sample stores and retain complete event provenance",async()=>{
+  globalThis.indexedDB=new fake.IDBFactory();globalThis.IDBKeyRange=fake.IDBKeyRange;
+  const d=await import("../js/diagnostics.js?focused-history");await d.startDiagnosticRun();
+  await d.recordDiagnosticEvent("KLINE_SESSION",{channel:"KLINE",source:"simulation",hardwareVerified:false},"kline");
+  const request=indexedDB.open("sme105-diagnostics",1);
+  const database=await new Promise((resolve,reject)=>{request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
+  const proto=Object.getPrototypeOf(database),original=proto.transaction;
+  proto.transaction=function(stores,...args){assert.ok(![stores].flat().some(s=>["raw","samples"].includes(s)));return original.call(this,stores,...args);};
+  try {const events=await d.diagnosticHistory();assert.equal(events.find(e=>e.type==="KLINE_SESSION").detail.source,"simulation");}
+  finally {proto.transaction=original;database.close();await d.closeDiagnosticRun("test");}
+});

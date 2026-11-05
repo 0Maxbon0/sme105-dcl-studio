@@ -1,0 +1,8 @@
+{
+  "method": "passive UART0 receive after EN reset; zero serial command bytes sent",
+  "bootLines": [
+    "BOOT SME105_USB_BRIDGE_V1 no_auto_tx=1 DE=LOW source_commands_unverified=1"
+  ],
+  "bootBannerObserved": true,
+  "unexpectedSessionOutput": false
+}
