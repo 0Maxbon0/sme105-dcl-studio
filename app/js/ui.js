@@ -392,7 +392,7 @@ function renderPinned(state, manual, idleCheck, pins) {
   $("dashboard-density").value = readPrefs().density;
   $("arrange-dashboard").textContent = arranging ? 'Done' : 'Arrange';
   $("arrange-dashboard").setAttribute('aria-pressed', String(arranging));
-  $("dashboard-hint").textContent = arranging ? 'Drag cards into order. Keyboard: focus a card and use the arrow keys. Tap Done when finished.' : pins.length ? 'Tap a reading for its chart. Star other readings below to add them.' : 'Star a reading below to build this dashboard.';
+  $("dashboard-hint").textContent = arranging ? 'Swipe cards to scroll. Drag the ↕ handle to reorder. Keyboard: focus a card and use the arrow keys. Tap Done when finished.' : pins.length ? 'Tap a reading for its chart. Star other readings below to add them.' : 'Star a reading below to build this dashboard.';
   const container = $("pinned-readings");
   container.dataset.density = readPrefs().density;
   container.classList.toggle("arranging", arranging);
@@ -426,8 +426,16 @@ function renderPinned(state, manual, idleCheck, pins) {
     setState(item.querySelector(".state-label"), health.colorState);
     setText(item.querySelector(".state-label"), health.dtc ? `DTC ${health.dtc.code} · saved` : health.verdict?.level === "warn" ? health.verdict.text : health.freshness.label);
     item.querySelector(".state-label").hidden = !item.querySelector(".state-label").textContent;
+    let handle = item.querySelector('.reorder-handle');
+    if (!handle) {
+      handle = document.createElement('button'); handle.type = 'button';
+      handle.className = 'reorder-handle'; handle.dataset.dragPid = name;
+      handle.textContent = '↕'; item.append(handle);
+    }
+    handle.hidden = !arranging;
+    handle.setAttribute('aria-label', `Drag to reorder ${sensor.title}`);
     item.tabIndex = arranging ? 0 : -1;
-    item.setAttribute('aria-label', `${sensor.title}${arranging ? ', drag to reorder' : ''}`);
+    item.setAttribute('aria-label', `${sensor.title}${arranging ? ', use arrow keys to reorder' : ''}`);
     item.querySelector(".pinned-value").dataset.state = health.colorState;
     desired.push(item);
   }

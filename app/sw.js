@@ -1,4 +1,4 @@
-const CACHE = "eeciv-v1.8.7-dashboard-1";
+const CACHE = "eeciv-v1.8.8-arrange-1";
 const FILES = [
   "./",
   "./index.html",

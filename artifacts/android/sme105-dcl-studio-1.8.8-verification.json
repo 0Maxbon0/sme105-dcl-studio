@@ -1,0 +1,36 @@
+{
+  "versionName": "1.8.8",
+  "versionCode": 10,
+  "package": "com.maximizotech.sme105dclstudio",
+  "apkSha256": "81e3be54e133b41b17ed9185860fb3b8781419de6e682cf4cb3ee27115082d04",
+  "installed": false,
+  "signingCertificateSha256": "bf29b03fa7c5e7b4003a4df0fce71e4e1b6fe1ea81657542450a955722194505",
+  "signingContinuity": "Matches 1.8.7 artifact",
+  "fix": "Arrange mode permits native vertical scrolling on card bodies; only the dedicated drag handle captures reorder gestures",
+  "nodeTestsPassed": 128,
+  "nodeTestsFailed": 0,
+  "nodeTestsSkipped": 0,
+  "regressionChecks": [
+    "More than eight pinned cards",
+    "Card body swipe is not cancelled and never reorders",
+    "Handle drag persists new order",
+    "Keyboard reordering",
+    "Cancelled drag cleanup",
+    "Handle hidden outside Arrange",
+    "Scroll and handle touch-action CSS declarations"
+  ],
+  "androidBuild": "testDebugUnitTest lintDebug assembleDebug: BUILD SUCCESSFUL",
+  "androidLint": {
+    "errors": 0,
+    "warnings": 19
+  },
+  "nativeUnitTests": "NO-SOURCE",
+  "runtimeAssetsByteMatched": 37,
+  "evidenceFilesUnchanged": 156,
+  "limitations": [
+    "Native touch scrolling requires verification on the updated Samsung WebView; no installation performed for this build"
+  ],
+  "firmwareChanged": false,
+  "flashed": false,
+  "realEcuCommandsSent": false
+}

@@ -90,8 +90,12 @@ main { display: grid; gap: 16px; max-width: 1024px; margin: 0 auto; padding-top:
 .dashboard-tools select { min-height:44px; padding:6px; max-width:88px; }
 #arrange-dashboard { min-height:44px; padding:7px 14px; }
 #arrange-dashboard[aria-pressed="true"] { border-color:var(--cyan); color:var(--cyan); }
-.arranging .pinned-card { touch-action:none; user-select:none; cursor:grab; border-style:dashed; }
-.arranging .pinned-open { touch-action:none; }
+.arranging .pinned-card { touch-action:pan-y; user-select:none; border-style:dashed; }
+.arranging .pinned-open { touch-action:pan-y; padding-bottom:48px; }
+.pinned-card > .reorder-handle { top:auto; bottom:2px; right:1px; touch-action:none; cursor:grab; }
+.pinned-card.dragging > .reorder-handle { cursor:grabbing; }
+.pinned-grid[data-density="compact"].arranging .pinned-open { padding-bottom:15px; padding-right:94px; }
+.pinned-grid[data-density="compact"] .reorder-handle { top:3px; bottom:auto; right:45px; }
 .pinned-card.dragging { border-color:var(--cyan); background:var(--cyan-dim); box-shadow:0 0 0 2px var(--cyan); }
 .pinned-grid[data-density="compact"] { grid-template-columns:1fr; }
 .pinned-grid[data-density="compact"] .pinned-open { grid-template-columns:minmax(0,1fr) auto; align-items:center; min-height:90px; padding-right:49px; }

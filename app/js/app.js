@@ -432,13 +432,15 @@ function wire() {
     setDashboardDensity(event.target.value); renderApp(controller.state);
   });
   document.getElementById("arrange-dashboard").addEventListener("click", () => {
+    if (isDashboardArranging()) endDrag();
     toggleDashboardArrangement(); renderApp(controller.state);
   });
   const pinnedGrid = document.getElementById('pinned-readings');
   let dragging = null;
   pinnedGrid.addEventListener('pointerdown', event => {
-    const card = event.target.closest('.pinned-card');
-    if (!isDashboardArranging() || !card || event.target.closest('[data-pin-pid]')) return;
+    const handle = event.target.closest('[data-drag-pid]');
+    const card = handle?.closest('.pinned-card');
+    if (!isDashboardArranging() || !card || dragging || event.isPrimary === false || event.button > 0) return;
     event.preventDefault();
     dragging = { pid: card.dataset.pid, pointer: event.pointerId };
     pinnedGrid.setPointerCapture(event.pointerId); card.classList.add('dragging');
@@ -447,18 +449,20 @@ function wire() {
     if (!dragging || event.pointerId !== dragging.pointer) return;
     event.preventDefault();
     const target = document.elementFromPoint(event.clientX,event.clientY)?.closest('.pinned-card');
-    if (target && target.dataset.pid !== dragging.pid) {
+    if (target && pinnedGrid.contains(target) && target.dataset.pid !== dragging.pid) {
       reorderPinnedSensor(dragging.pid, target.dataset.pid); renderApp(controller.state);
     }
   });
   const endDrag = () => {
     if (!dragging) return;
-    pinnedGrid.querySelectorAll('.dragging').forEach(card => card.classList.remove('dragging'));
-    if (pinnedGrid.hasPointerCapture(dragging.pointer)) pinnedGrid.releasePointerCapture(dragging.pointer);
+    const pointer = dragging.pointer;
     dragging = null;
+    pinnedGrid.querySelectorAll('.dragging').forEach(card => card.classList.remove('dragging'));
+    if (pinnedGrid.hasPointerCapture(pointer)) pinnedGrid.releasePointerCapture(pointer);
   };
   pinnedGrid.addEventListener('pointerup', endDrag);
   pinnedGrid.addEventListener('pointercancel', endDrag);
+  pinnedGrid.addEventListener('lostpointercapture', endDrag);
   pinnedGrid.addEventListener('keydown', event => {
     if (!isDashboardArranging() || !event.target.matches('.pinned-card')) return;
     const offset = ['ArrowLeft','ArrowUp'].includes(event.key) ? -1 : ['ArrowRight','ArrowDown'].includes(event.key) ? 1 : 0;

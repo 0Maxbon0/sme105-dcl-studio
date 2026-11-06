@@ -34,8 +34,15 @@ test('actual app entry boots existing recording into offline dashboard and wires
     const grid=$('pinned-readings');
     const order=()=>[...grid.children].map(n=>n.dataset.pid);
     const saved=()=>JSON.parse(localStorage.getItem('sme105-dashboard-prefs-v1'));
+    assert.ok(order().length > 8);
     assert.equal(order()[0],'THROTTLE_PERCENT');
+    const style=document.createElement('style');style.textContent=readFileSync(new URL('../styles.css',import.meta.url),'utf8');document.head.append(style);
     $('arrange-dashboard').click();
+    // JSDOM does not compute touch-action; inspect the actual parsed CSS declarations.
+    const touch=selector=>[...style.sheet.cssRules].find(rule=>rule.selectorText===selector).style.getPropertyValue('touch-action');
+    assert.equal(touch('.arranging .pinned-card'),'pan-y');
+    assert.equal(touch('.arranging .pinned-open'),'pan-y');
+    assert.equal(touch('.pinned-card > .reorder-handle'),'none');
     $('throttle-percent-card').dispatchEvent(new window.KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));
     assert.equal(order()[1],'THROTTLE_PERCENT');
     assert.equal(saved().layouts.ALL[1],'THROTTLE_PERCENT');
@@ -43,10 +50,24 @@ test('actual app entry boots existing recording into offline dashboard and wires
     grid.setPointerCapture=()=>{};grid.hasPointerCapture=()=>false;
     document.elementFromPoint=()=>grid.firstElementChild;
     const pointer=type=>{const e=new window.Event(type,{bubbles:true,cancelable:true});Object.defineProperty(e,'pointerId',{value:1});return e;};
-    $('throttle-percent-card').dispatchEvent(pointer('pointerdown'));
+    const beforeScroll=order();
+    const swipe=pointer('pointerdown');
+    $('throttle-percent-card').querySelector('.pinned-open').dispatchEvent(swipe);
+    assert.equal(swipe.defaultPrevented,false); // Native page scrolling remains available.
+    grid.dispatchEvent(pointer('pointermove'));grid.dispatchEvent(pointer('pointerup'));
+    assert.deepEqual(order(),beforeScroll);
+    const handle=$('throttle-percent-card').querySelector('.reorder-handle');
+    assert.equal(handle.hidden,false);
+    const drag=pointer('pointerdown');handle.dispatchEvent(drag);
+    assert.equal(drag.defaultPrevented,true);
     grid.dispatchEvent(pointer('pointermove'));grid.dispatchEvent(pointer('pointerup'));
     assert.equal(order()[0],'THROTTLE_PERCENT');
+    // Cancelled drags cannot reorder on subsequent movement.
+    handle.dispatchEvent(pointer('pointerdown'));grid.dispatchEvent(pointer('pointercancel'));
+    const afterCancel=order();document.elementFromPoint=()=>grid.lastElementChild;
+    grid.dispatchEvent(pointer('pointermove'));assert.deepEqual(order(),afterCancel);
     $('arrange-dashboard').click();
+    assert.equal(handle.hidden,true);
     $('throttle-percent-card').querySelector('[data-pin-pid]').click();
     assert.equal($('throttle-percent-card'),null);
     assert.ok(!saved().layouts.ALL.includes('THROTTLE_PERCENT'));
