@@ -1,8 +1,10 @@
-import { dashboardReading, throttlePercent } from "./throttle-display.js";
+import { formatMeasurement, formattedReading, formatReplayTime } from './display-format.js';
+import { renderBitPanel } from './bit-presentation.js';
+import { dashboardReading } from "./throttle-display.js";
 /** Stable, keyed dashboard rendering for browser and native WebView. */
 
 import { lookupCode } from "./codes-db.js";
-import { AUTOMATIC_PIDS, bitRows, formatValue, judgeReading, PID_TEXT, PIDS, rowsToCsv, summarizeSeries } from "./pids.js";
+import { AUTOMATIC_PIDS, judgeReading, PID_TEXT, PIDS, rowsToCsv, summarizeSeries } from "./pids.js";
 import { combinedSnapshot } from "./combined.js";
 import { reasonText, stageText, VARIANTS } from "./protocol.js";
 import { STR } from "./strings.js";
@@ -11,14 +13,13 @@ import { LIVE_GROUP_HELP, LIVE_GROUP_TITLES, sensorsForGroup, sensorFreshness } 
 import { redactDiagnostic } from "./diagnostics.js";
 import { saveOrShare } from "./exports.js";
 import { listRecordings, recordingBlob } from "./recording.js";
-import { normalizeDashboardPrefs, dashboardSensors, dashboardChannels, reorderedPins } from "./dashboard-layout.js";
-import { chartPoints, chartEnvelope, chartBounds, chartClock, sensorSamplesFromCsv } from "./chart-series.js";
+import { normalizeDashboardPrefs, dashboardSensors, dashboardChannels, dashboardSensor, reorderedPins } from "./dashboard-layout.js";
+import { chartPoints, chartEnvelope, chartBounds, sensorSamplesFromCsv } from "./chart-series.js";
 
 const $ = (id) => document.getElementById(id);
 const cardNodes = new Map();
 const pinnedNodes = new Map();
 const fmemNodes = new Map();
-const fmemBitNodes = new Map();
 let detailPid = null;
 let detailPercent = false;
 let detailRange = "30";
@@ -73,7 +74,7 @@ function setReadingValue(node, name, summary, manual) {
     const unit = document.createElement('small'); unit.className = 'reading-unit'; node.append(number, unit);
   }
   const reading = summary ? dashboardReading(name, summary.last, { unitSystem: unitSystem() }) : null;
-  setText(number, reading ? formatValue(reading.value) : '—');
+  setText(number, reading ? formatMeasurement(name, reading.value, reading.unit) : '—');
   node.classList.toggle('long-number', number.textContent.length > 6);
   setText(node.querySelector('.reading-unit'), reading ? reading.unit : '');
 }
@@ -156,26 +157,19 @@ function renderFailureMemory(state) {
     let block = fmemNodes.get(name);
     if (!block) {
       block = document.createElement("section"); block.className = "fmem-byte";
-      const title = document.createElement("strong"); title.className = "fmem-title";
-      const value = document.createElement("p"); value.className = "meta";
-      const list = document.createElement("ul"); list.className = "bits";
-      block.append(title, value, list); fmemNodes.set(name, block);
+      fmemNodes.set(name, block);
     }
     const samples = sensorSeries(state, name)?.samples || [];
     const latest = samples.at(-1);
-    setText(block.querySelector(".fmem-title"), name === "FMEM_FLAGS" ? "Failure-memory byte 1" : "Failure-memory byte 2");
-    setText(block.querySelector("p"), latest ? `Raw byte: ${hexByte(latest.raw & 0xff)} · received ${latest.receivedAt ? new Date(latest.receivedAt).toISOString() : "time unavailable"}` : "No sample in the selected capture.");
-    const bits = block.querySelector("ul");
-    const bitList = latest ? bitRows(name, latest.value) : [];
-    let nodes = fmemBitNodes.get(name);
-    if (!nodes) { nodes = new Map(); fmemBitNodes.set(name, nodes); }
-    syncChildren(bits, bitList.map((bit) => {
-      let li = nodes.get(bit.bit);
-      if (!li) { li = document.createElement("li"); nodes.set(bit.bit, li); }
-      li.classList.toggle("on", bit.on);
-      setText(li, `${bit.on ? "●" : "○"} Bit ${bit.bit}: ${bit.on ? "set" : "clear"} · ${bit.label}`);
-      return li;
-    }));
+    renderBitPanel(block, name, latest?.raw);
+    const title = document.createElement('strong');
+    title.textContent = name === 'FMEM_FLAGS' ? 'Failure-memory byte 1' : 'Failure-memory byte 2';
+    block.prepend(title);
+    const time = document.createElement('p'); time.className = 'meta';
+    time.textContent = !latest ? '' : state.review?.active
+      ? `Recorded Data — Offline Review · sample ${formatReplayTime(latest.t)}`
+      : `Received ${latest.receivedAt ? new Date(latest.receivedAt).toISOString() : 'time unavailable'}`;
+    block.append(time);
     desired.push(block);
   }
   syncChildren(container, desired);
@@ -190,6 +184,7 @@ function progressValue(state) {
 }
 
 export function sensorSeries(state, name) {
+  if (name === "THROTTLE_PERCENT") name = "ITP";
   if (state.review?.active) return state.review.pids[name] || null;
   const snap = activeSnap(state);
   const live = state.combined ? combinedSnapshot(state.combined) : null;
@@ -218,9 +213,9 @@ const DTC_SENSOR_LINKS = Object.freeze({ "113": ["ACT"], "122": ["ITP"], "214": 
 function sensorValue(name, summary, { manual = true } = {}) {
   if (!summary) return "—";
   if (manual && AUTOMATIC_PIDS.has(name)) return "N/A · manual";
-  if (RAW_SIGNALS.has(name)) return `${formatValue(summary.last)} counts`;
+  if (RAW_SIGNALS.has(name)) return `${formatMeasurement(name, summary.last, "counts")} counts`;
   const view = dashboardReading(name, summary.last, { unitSystem: unitSystem() });
-  return `${formatValue(view.value)} ${view.unit}`.trim();
+  return `${formatMeasurement(name, view.value, view.unit)} ${view.unit}`.trim();
 }
 
 function sensorExplanation(name, summary, freshness, { manual = true, idleCheck = false, verdict = null, dtc = null } = {}) {
@@ -277,11 +272,11 @@ function drawTimeChart(canvas, samples, range = "30", color = "#42d9e8") {
   for(let value=min;value<=max+step/100;value+=step) {
     const yy=y(value);
     ctx.beginPath();ctx.moveTo(left,yy);ctx.lineTo(right,yy);ctx.stroke();
-    ctx.textAlign='right';ctx.fillText(formatValue(value),left-7,yy+4);
+    ctx.textAlign='right';ctx.fillText(formatMeasurement(detailPercent ? "THROTTLE_PERCENT" : detailPid, value, dashboardReading(detailPercent ? "THROTTLE_PERCENT" : detailPid, 0, {unitSystem:unitSystem()}).unit),left-7,yy+4);
   }
   for(let tick=0;tick<=2;tick++) {
     const time=first+duration*tick/2;
-    ctx.textAlign=tick===0?'left':tick===2?'right':'center';ctx.fillText(chartClock(time),x(time),height-8);
+    ctx.textAlign=tick===0?'left':tick===2?'right':'center';ctx.fillText(formatReplayTime(time / 1000),x(time),height-8);
   }
   const gaps=points.slice(1).map((point,index)=>point.time-points[index].time).filter(gap=>gap>0).sort((a,b)=>a-b);
   const gapLimit=gaps.length?Math.max(gaps[Math.floor(gaps.length/2)]*3,1):Infinity;
@@ -305,7 +300,7 @@ function drawTimeChart(canvas, samples, range = "30", color = "#42d9e8") {
     const point=low>0&&Math.abs(points[low-1].time-time)<Math.abs(points[low].time-time)?points[low-1]:points[low];
     ctx.strokeStyle=textColor;ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(x(point.time),top);ctx.lineTo(x(point.time),bottom);ctx.stroke();ctx.setLineDash([]);
     ctx.fillStyle=color;ctx.beginPath();ctx.arc(x(point.time),y(point.value),4,0,Math.PI*2);ctx.fill();
-    setText($("chart-reading"),`${chartClock(point.time)} · ${formatValue(point.value)} ${dashboardReading(detailPercent ? "THROTTLE_PERCENT" : detailPid,0,{unitSystem:unitSystem()}).unit}`);
+    setText($("chart-reading"),`${formatReplayTime(point.time / 1000)} · ${formatMeasurement(detailPercent ? "THROTTLE_PERCENT" : detailPid, point.value, dashboardReading(detailPercent ? "THROTTLE_PERCENT" : detailPid, 0, {unitSystem:unitSystem()}).unit)} ${dashboardReading(detailPercent ? "THROTTLE_PERCENT" : detailPid,0,{unitSystem:unitSystem()}).unit}`);
   } else setText($("chart-reading"),'Drag across the chart to inspect a recorded sample.');
 }
 
@@ -341,7 +336,7 @@ function syncChildren(container, nodes) {
 function sensorHealth(name, series, state, manual, idleCheck) {
   const samples = series?.samples || [];
   const summary = series?.summary || (samples.length ? summarizeSeries(samples) : null);
-  const freshness = series?.saved ? { state:'historical', label: state.review?.active ? `Recorded · sample ${series.sampleTime?.toFixed(3) ?? samples.at(-1)?.t.toFixed(3)}s · ${series.newAtPosition ? 'sample at position' : 'last known'}` : 'Saved reading' } : sensorFreshness(samples, { active: activeStream(state), now: Date.now() });
+  const freshness = series?.saved ? { state:'historical', label: state.review?.active ? `Recorded · sample ${formatReplayTime(series.sampleTime ?? samples.at(-1)?.t)} · ${series.newAtPosition ? 'sample at position' : 'last known'}` : 'Saved reading' } : sensorFreshness(samples, { active: activeStream(state), now: Date.now() });
   const dtc = !state.review?.active && state.lastSession?.verdict?.valid
     ? (state.lastSession.codes || []).find(code => (DTC_SENSOR_LINKS[code.code] || []).includes(name))
       ? { ...state.lastSession.codes.find(code => (DTC_SENSOR_LINKS[code.code] || []).includes(name)), variant: state.lastSession.variant,
@@ -401,15 +396,16 @@ function renderPinned(state, manual, idleCheck, pins) {
   const container = $("pinned-readings");
   container.dataset.density = readPrefs().density;
   container.classList.toggle("arranging", arranging);
-  const percentCard = $("throttle-percent-card");
-  percentCard.hidden = !dashboardChannels(dashboardSet()).includes("ITP");
-  const itp = sensorHealth("ITP", sensorSeries(state, "ITP"), state, manual, idleCheck);
-  const percent = throttlePercent(itp.summary?.rawLast);
-  setText($("throttle-percent-value"), percent == null ? "—" : String(percent));
-  percentCard.querySelector(".pinned-value").dataset.state = itp.colorState;
-  setState(percentCard.querySelector(".state-label"), itp.colorState);
-  setText(percentCard.querySelector(".state-label"), itp.freshness.label);
-  const desired = [percentCard];
+  // Reuse the approved card markup, but let the normal layout own its placement.
+  const approved = $("throttle-percent-card");
+  if (approved && !pinnedNodes.has('THROTTLE_PERCENT')) {
+    approved.dataset.pid = 'THROTTLE_PERCENT';
+    const remove = document.createElement('button'); remove.type = 'button';
+    remove.dataset.pinPid = 'THROTTLE_PERCENT'; remove.textContent = '★';
+    remove.setAttribute('aria-label', 'Unpin Throttle'); approved.append(remove);
+    pinnedNodes.set('THROTTLE_PERCENT', approved);
+  }
+  const desired = [];
   for (const name of pins) {
     let item = pinnedNodes.get(name);
     if (!item) {
@@ -422,7 +418,7 @@ function renderPinned(state, manual, idleCheck, pins) {
       const remove = document.createElement("button"); remove.type = "button"; remove.dataset.pinPid = name; remove.setAttribute("aria-label", `Unpin ${name}`); remove.textContent = "★";
       item.append(open, remove); pinnedNodes.set(name, item);
     }
-    const sensor = sensorsForGroup("advanced", { manual: false }).find((entry) => entry.name === name);
+    const sensor = dashboardSensor(name);
     if (!sensor) continue;
     const health = sensorHealth(name, sensorSeries(state, name), state, manual, idleCheck);
     setText(item.querySelector(".pinned-title"), sensor.title);
@@ -483,7 +479,7 @@ function renderSensorDrawer(state) {
       if (!saved.loading && received.samples[0].t-lastTime > Math.max(cadence*3,1)) void loadChartHistory(state,name);
     }
   }
-  setText($("chart-history-note"), state.review?.active ? `Selected recording ${state.review.metadata.id} · recent recorded samples through ${state.review.position.toFixed(3)}s` : saved?.message || 'Recent received samples');
+  setText($("chart-history-note"), state.review?.active ? `Selected recording ${state.review.metadata.id} · recent recorded samples through ${formatReplayTime(state.review.position)}` : saved?.message || 'Recent received samples');
   const summary = health.summary;
   const reference = readingReference(name, { manual: $("manual-gearbox-settings").checked });
   setText($("drawer-group"), [...Object.keys(LIVE_GROUP_TITLES)].find((group) => LIVE_GROUPSForUi(group).includes(name))
@@ -493,12 +489,12 @@ function renderSensorDrawer(state) {
   setText($("drawer-title"), detailPercent ? "Throttle" : title);
   setText($("drawer-state"), `${health.freshness.label} · ${health.explanation}`);
   $("drawer-state").dataset.state = health.colorState;
-  setText($("drawer-value"), summary ? formatValue(dashboardReading(displayName,summary.last,{unitSystem:unitSystem()}).value) : "—");
+  setText($("drawer-value"), summary ? formattedReading(displayName, summary.last, {unitSystem:unitSystem()}).text : "—");
   $("drawer-value").dataset.state = health.colorState;
   setText($("drawer-unit"), detailPercent ? "%" : RAW_SIGNALS.has(name) ? "raw ECU counts" : dashboardReading(name, summary?.last ?? 0, { unitSystem: unitSystem() }).unit);
   setText($("drawer-raw"), summary ? `${summary.rawLast} (0x${Math.trunc(summary.rawLast).toString(16).toUpperCase().padStart(3,"0")})` : "No sample");
-  setText($("drawer-min"), summary ? formatValue(dashboardReading(displayName, summary.min, { unitSystem: unitSystem() }).value) : "—");
-  setText($("drawer-max"), summary ? formatValue(dashboardReading(displayName, summary.max, { unitSystem: unitSystem() }).value) : "—");
+  setText($("drawer-min"), summary ? formattedReading(displayName, summary.min, {unitSystem:unitSystem()}).text : "—");
+  setText($("drawer-max"), summary ? formattedReading(displayName, summary.max, {unitSystem:unitSystem()}).text : "—");
   setText($("drawer-count"), summary?.n ?? 0);
   const latest = health.samples.at(-1);
   setText($("drawer-time"), `PID 0x${pid.toString(16).toUpperCase().padStart(2, "0")}`);
@@ -506,9 +502,11 @@ function renderSensorDrawer(state) {
   setText($("drawer-reference"), detailPercent ? "179 counts = 0%; 970 counts = 100%." : reference.normal);
   setText($("drawer-source"), detailPercent ? "Owner-defined display range. Original raw counts are retained." : `${reference.meaning} ${reference.source ? `Source: ${reference.source}` : "No vehicle-specific limit source verified."}`);
   const pins = pinnedSensors();
-  setText($("drawer-pin"), pins.includes(name) ? "Unpin reading" : "Pin reading");
-  $("drawer-pin").dataset.pinPid = name;
-  $("drawer-pin").hidden = detailPercent;
+  setText($("drawer-pin"), pins.includes(displayName) ? "Unpin reading" : "Pin reading");
+  $("drawer-pin").dataset.pinPid = displayName;
+  $("drawer-export-sensor").dataset.sourcePid = name;
+  $("drawer-pin").hidden = !dashboardChannels(dashboardSet()).includes(displayName);
+  renderBitPanel($("drawer-bit-panel"), name, latest?.raw);
   drawTimeChart($("sensor-chart"), chartSamples, detailRange, chartColor(health.freshness.state));
 }
 
@@ -571,7 +569,7 @@ export function render(state) {
   const rom = state.review?.active ? null : state.rom || activeSnap(state)?.rom;
   $("rom-value").textContent = rom ? `${hexByte(rom.low)} ${hexByte(rom.high)}` : STR.notKnown;
   const vbat = state.review?.active ? activeSnap(state)?.pids?.VBAT?.samples?.at(-1)?.value : state.battery ?? activeSnap(state)?.pids?.VBAT?.samples?.at(-1)?.value;
-  $("battery-value").textContent = vbat == null ? STR.notKnown : `${formatValue(vbat)} V`;
+  $("battery-value").textContent = vbat == null ? STR.notKnown : `${formatMeasurement("VBAT", vbat, "V")} V`;
   $("status-raw").textContent = redactDiagnostic(state.status?.raw || state.identity.hello || "");
 
   const actions = ["read-codes-btn", "koeo-btn", "koer-btn", "live-start", "offline-btn", "bench-btn", "reboot-btn", "clear-btn", "mem-btn"];
@@ -681,7 +679,7 @@ export function render(state) {
   $("export-group-btn").disabled = !!state.review?.active;
   $("drawer-export-sensor").disabled = !!state.review?.active;
   const captureTime = state.archive?.started || result?.startedAt;
-  $("live-meta").textContent = state.review?.active ? `Recorded Data — Offline Review · ${state.review.metadata?.id} · ${state.review.position.toFixed(3)}s` : activeStream(state) ? 'Recording automatically on this device' : captureTime ? `Capture · ${new Date(captureTime).toLocaleString()}` : '';
+  $("live-meta").textContent = state.review?.active ? `Recorded Data — Offline Review · ${state.review.metadata?.id} · ${formatReplayTime(state.review.position)}` : activeStream(state) ? 'Recording automatically on this device' : captureTime ? `Capture · ${new Date(captureTime).toLocaleString()}` : '';
   $("recording-status").textContent = state.archive?.error
     ? `Saving needs attention: ${state.archive.error}`
     : `${activeStream(state) ? "Recording and saving automatically. Stop ends this session. " : "Saved sessions remain on this phone. "}Exports save to Downloads/SME105 DCL Studio, then open the share sheet.`;

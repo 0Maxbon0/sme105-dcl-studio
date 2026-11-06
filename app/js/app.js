@@ -55,7 +55,7 @@ function renderApp(state) {
   render(state);
 }
 
-const ignitionReview = createIgnitionReview({ controller, render: renderApp, refreshWarnings });
+const ignitionReview = createIgnitionReview({ controller, render: renderApp, refreshWarnings, refreshRecordings });
 const refreshPendingIgnition = show => ignitionReview.refresh(show);
 
 function acceptText(chunk) {
@@ -534,7 +534,7 @@ function wire() {
     toggleSensorPin(event.currentTarget.dataset.pinPid); renderApp(controller.state);
   });
   document.getElementById("drawer-export-sensor").addEventListener("click", () => {
-    exportSensorCsv(document.getElementById("drawer-pin").dataset.pinPid, { unitSystem: currentUnits() })
+    exportSensorCsv(document.getElementById("drawer-export-sensor").dataset.sourcePid, { unitSystem: currentUnits() })
       .catch(error => { controller.state.message = `Sensor export failed: ${error.message}`; renderApp(controller.state); });
   });
   document.getElementById("export-group-btn").addEventListener("click", () => {

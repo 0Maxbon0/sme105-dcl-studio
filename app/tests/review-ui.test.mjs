@@ -6,7 +6,7 @@ import * as fake from 'fake-indexeddb';
 import { createController } from '../js/controller.js';
 import { createRecording } from '../js/recording.js';
 import { createReviewControls } from '../js/review-controls.js';
-import { render, applyStaticStrings, openSensorDetails, closeSensorDetails } from '../js/ui.js';
+import { render, showView, applyStaticStrings, openSensorDetails, inspectSensorChart, closeSensorDetails } from '../js/ui.js';
 import { EXPECTED_HELLO, EXPECTED_PINS } from '../js/protocol.js';
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const until = async fn => { for (let i=0; i<200; i++) { if (fn()) return; await new Promise(r => setTimeout(r, 5)); } throw new Error('UI did not settle'); };
@@ -17,11 +17,14 @@ test('real dashboard DOM selects older/newer recordings, plays/seeks, shows norm
   globalThis.indexedDB = new fake.IDBFactory(); globalThis.IDBKeyRange = fake.IDBKeyRange;
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { storage: { estimate: async () => ({quota: 10*1024**3, usage:0}) } } });
   window.HTMLCanvasElement.prototype.getContext = () => new Proxy({}, { get: (_, key) => key === 'measureText' ? () => ({ width: 10 }) : () => {} });
+  window.HTMLCanvasElement.prototype.getBoundingClientRect = () => ({width:360,height:200,left:0});
   globalThis.requestAnimationFrame = fn => { fn(); return 1; };
   globalThis.getComputedStyle = dom.window.getComputedStyle.bind(dom.window);
   const $ = id => document.getElementById(id), click = id => $(id).click();
   const older = await createRecording('ALL');
+  older.sample({t:0,name:'VS',raw:0,value:0});older.sample({t:0,name:'VSBAR',raw:0,value:0});
   for (let i=0; i<=20; i++) older.sample({t:i/5, name:'ITP', raw:i<11?103:179, value:i<11?103:179});
+  for (const [name,raw,value] of [['VS',381,381/32],['VSBAR',22,11],['BITMAP_1',0x88,0x88],['FMEM_FLAGS',0x81,0x81]]) older.sample({t:4,name,raw,value});
   older.sample({t:5,name:'ITP',raw:970,value:970}); older.line('END reason=15'); await older.finish({valid:true,status:'VALID'});
   const newer = await createRecording('LIVE'); newer.sample({t:0,name:'N',raw:100,value:1600}); newer.sample({t:2,name:'N',raw:200,value:3200}); await newer.finish({valid:false,status:'INCOMPLETE',reasons:['test']});
   let now=0; const commands=[]; const controller=createController({send:c=>commands.push(c)});
@@ -53,6 +56,29 @@ test('real dashboard DOM selects older/newer recordings, plays/seeks, shows norm
   assert.equal(card().querySelector('.reading-number').textContent,'103');
   $('review-position').value=4; $('review-position').dispatchEvent(new window.Event('input')); await until(()=>state.review.position===4);
   assert.equal(percent(),'0');
+  assert.equal($('review-clock').textContent,'4.0s / 5.0s');
+  const sourceValue=state.review.pids.VS.summary.last;
+  openSensorDetails(state,'VS');
+  assert.equal($('drawer-value').textContent,'19.2');
+  assert.equal($('drawer-min').textContent,'0.0');
+  assert.equal($('drawer-max').textContent,'19.2');
+  assert.equal(state.review.pids.VS.summary.last,sourceValue);
+  assert.equal(sourceValue,381/32);
+  inspectSensorChart(346);
+  assert.equal($('chart-reading').textContent,'4.0s · 19.2 km/h');
+  assert.equal(document.querySelector('#live-cards [data-pid=VS] .reading-number').textContent,'19.2');
+  openSensorDetails(state,'VSBAR');assert.equal($('drawer-value').textContent,'17.7');
+  openSensorDetails(state,'BITMAP_1');
+  assert.match($('drawer-bit-panel').querySelector('[data-bit="3"]').textContent,/ON.*A\/C selected/);
+  assert.match($('drawer-bit-panel').querySelector('[data-bit="7"]').textContent,/ON.*Air Management 2/);
+  openSensorDetails(state,'FMEM_FLAGS');
+  assert.match($('drawer-bit-panel').textContent,/Raw byte: 0x81/);
+  assert.equal($('drawer-bit-panel').querySelectorAll('li').length,8);
+  showView('codes');paint();paint();
+  assert.match($('fmem-values').textContent,/Raw byte: 0x81/);
+  assert.match($('fmem-values').textContent,/not authenticated DTC/);
+  assert.match($('fmem-values').textContent,/Recorded Data — Offline Review · sample 4.0s/);
+  showView('live');paint();
   openSensorDetails(state,'ITP'); assert.match($('drawer-raw').textContent,/179/);
   assert.equal($('drawer-value').textContent,'179'); assert.equal($('drawer-unit').textContent,'raw ECU counts');
   openSensorDetails(state,'THROTTLE_PERCENT');
@@ -65,7 +91,7 @@ test('real dashboard DOM selects older/newer recordings, plays/seeks, shows norm
   assert.deepEqual(commands,[]);
   assert.equal(controller.requestVehicle('LIVE').ok,false); assert.deepEqual(commands,[]);
   $('live-set').value='LIVE3'; paint();
-  assert.equal(card(),null); assert.equal($('throttle-percent-card').hidden,true); // LIVE3 does not request ITP.
+  assert.equal(card(),null); assert.equal($('throttle-percent-card'),null); // LIVE3 does not request ITP.
   $('live-set').value='ALL'; paint();
   assert.ok(card());
   // The same selection restores without a calibration profile or a vehicle operation.

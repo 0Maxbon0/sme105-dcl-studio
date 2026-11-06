@@ -1,3 +1,4 @@
+import { formatReplayTime } from './display-format.js';
 import { listRecordings } from './recording.js';
 import { createRecordingPlayer, recordingLabel } from './recording-review.js';
 export function createReviewControls({ state, render, closeDetails = () => {}, document: doc = globalThis.document, storage = globalThis.localStorage, now, load, list = listRecordings }) {
@@ -15,7 +16,7 @@ export function createReviewControls({ state, render, closeDetails = () => {}, d
     node('review-position').max = s.duration;
     node('review-position').value = s.position;
     node('review-position').disabled = s.loading || !s.count || !!s.error;
-    node('review-clock').textContent = `${s.position.toFixed(3)}s / ${s.duration.toFixed(3)}s`;
+    node('review-clock').textContent = `${formatReplayTime(s.position)} / ${formatReplayTime(s.duration)}`;
     node('review-play').disabled = s.loading || !s.count || !!s.error || s.playing || s.position >= s.duration;
     node('review-pause').disabled = !s.playing;
     node('review-restart').disabled = s.loading || !s.count || !!s.error;

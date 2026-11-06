@@ -1,0 +1,64 @@
+{
+  "versionName": "1.8.7",
+  "versionCode": 9,
+  "package": "com.maximizotech.sme105dclstudio",
+  "installed": false,
+  "apkSha256": "68a5b768542a56ce8284934ea6e437f2045dc608aa3989054d0c6328f6d92e57",
+  "signing": {
+    "scheme": "v2",
+    "type": "Android debug",
+    "certificateSha256": "bf29b03fa7c5e7b4003a4df0fce71e4e1b6fe1ea81657542450a955722194505",
+    "matchesPriorArtifact": "1.8.6"
+  },
+  "runtimeAssetsByteMatched": 37,
+  "node": {
+    "passed": 128,
+    "failed": 0,
+    "skipped": 0,
+    "privateOfflineReplayEnabled": true
+  },
+  "python": {
+    "run": 273,
+    "passed": 264,
+    "skipped": 9,
+    "failed": 0,
+    "skipReason": "Older private vehicle fixtures unavailable in this checkout"
+  },
+  "android": {
+    "tasks": [
+      "testDebugUnitTest",
+      "lintDebug",
+      "assembleDebug"
+    ],
+    "result": "BUILD SUCCESSFUL",
+    "nativeUnitTests": "NO-SOURCE",
+    "lint": {
+      "android/app/build/reports/lint-results-debug.xml": {
+        "Warning": 19
+      },
+      "android/capacitor-cordova-android-plugins/build/reports/lint-results-debug.xml": {
+        "Warning": 3
+      }
+    },
+    "gradleWarnings": "Existing flatDir repository warnings"
+  },
+  "evidence": {
+    "unchangedFiles": 156,
+    "manifestChecks": "Original phone exports, recovered TPS sessions and all 24 later archived sessions verified offline"
+  },
+  "limitations": [
+    "Browser security approval denied the local visual preview; no workaround attempted",
+    "No phone installation, device UI instrumentation or physical vehicle verification",
+    "Published BITMAP assignments and FMEM per-bit semantics remain unverified for this ECU",
+    "Throttle endpoints 179/970 remain owner-defined relative display references, not verified butterfly angle"
+  ],
+  "safety": {
+    "phoneAccessed": false,
+    "installed": false,
+    "firmwareChanged": false,
+    "flashed": false,
+    "realEcuCommandsSent": false,
+    "evidenceModified": false,
+    "pushed": false
+  }
+}

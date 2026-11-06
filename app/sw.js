@@ -1,4 +1,4 @@
-const CACHE = "eeciv-v1.8.6-throttle-1";
+const CACHE = "eeciv-v1.8.7-dashboard-1";
 const FILES = [
   "./",
   "./index.html",
@@ -30,6 +30,8 @@ const FILES = [
   "./js/recording-review.js",
   "./js/review-controls.js",
   "./js/throttle-display.js",
+  "./js/display-format.js",
+  "./js/bit-presentation.js",
   "./js/diagnostics.js",
   "./js/exports.js",
   "./js/codes-db.js",

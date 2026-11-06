@@ -30,6 +30,37 @@ test('actual app entry boots existing recording into offline dashboard and wires
     $('review-position').value=5; $('review-position').dispatchEvent(new window.Event('input'));
     await until(()=>percent()==='100');
     assert.match($('live-banner').textContent,/INCOMPLETE/);
+    // The derived card uses the same handlers and persisted order as real channels.
+    const grid=$('pinned-readings');
+    const order=()=>[...grid.children].map(n=>n.dataset.pid);
+    const saved=()=>JSON.parse(localStorage.getItem('sme105-dashboard-prefs-v1'));
+    assert.equal(order()[0],'THROTTLE_PERCENT');
+    $('arrange-dashboard').click();
+    $('throttle-percent-card').dispatchEvent(new window.KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));
+    assert.equal(order()[1],'THROTTLE_PERCENT');
+    assert.equal(saved().layouts.ALL[1],'THROTTLE_PERCENT');
+    // Exercise actual pointer drag handlers offline (WebView capture APIs stubbed).
+    grid.setPointerCapture=()=>{};grid.hasPointerCapture=()=>false;
+    document.elementFromPoint=()=>grid.firstElementChild;
+    const pointer=type=>{const e=new window.Event(type,{bubbles:true,cancelable:true});Object.defineProperty(e,'pointerId',{value:1});return e;};
+    $('throttle-percent-card').dispatchEvent(pointer('pointerdown'));
+    grid.dispatchEvent(pointer('pointermove'));grid.dispatchEvent(pointer('pointerup'));
+    assert.equal(order()[0],'THROTTLE_PERCENT');
+    $('arrange-dashboard').click();
+    $('throttle-percent-card').querySelector('[data-pin-pid]').click();
+    assert.equal($('throttle-percent-card'),null);
+    assert.ok(!saved().layouts.ALL.includes('THROTTLE_PERCENT'));
+    callbacks.forEach(fn=>fn()); // Subsequent renders must not restore an unpinned card.
+    assert.equal($('throttle-percent-card'),null);
+    const regular=document.querySelector('#live-cards [data-pid="THROTTLE_PERCENT"]');
+    assert.equal(regular.querySelector('.reading-number').textContent,'100');
+    regular.querySelector('[data-open-pid]').click();
+    assert.equal($('drawer-pin').hidden,false);
+    assert.equal($('drawer-export-sensor').dataset.sourcePid,'ITP');
+    $('drawer-pin').click();$('drawer-close').click();
+    assert.equal(order().at(-1),'THROTTLE_PERCENT');
+    const restored=(await import('../js/dashboard-layout.js')).normalizeDashboardPrefs(saved());
+    assert.deepEqual(restored.layouts.ALL,order());
     $('review-exit').click();assert.equal($('review-mode').hidden,true);
     assert.ok(callbacks.length>=2);
     assert.doesNotMatch($('message').textContent,/Application error|failed|unavailable/);

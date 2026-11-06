@@ -34,13 +34,13 @@ export const BITMAP_BITS = {
     11: "A/C clutch disengaged",
   },
   BITMAP_1: {
-    0: "closed loop fuel",
-    1: "power steering switch closed",
-    2: "A/C selected",
+    0: "closed-loop fuel control",
+    1: "power-steering pressure switch",
+    3: "A/C selected",
     4: "IDM input high",
-    5: "AM1 on",
-    6: "AM2 on",
-    8: "overdrive cancel",
+    5: "Air Management 1",
+    7: "Air Management 2",
+    8: "overdrive cancel / alternate shift mode",
   },
 };
 
@@ -213,15 +213,14 @@ export function scaleWord(pid, raw) {
 export function bitRows(name, raw) {
   const map = BITMAP_BITS[name];
   if (map) {
-    return Object.keys(map)
-      .map((key) => Number(key))
-      .sort((a, b) => a - b)
-      .map((bit) => ({ bit, label: map[bit], on: ((raw >> bit) & 1) === 1 }));
+    return Array.from({ length: 12 }, (_, bit) => ({ bit,
+      label: map[bit] || 'Unknown assignment', reference: !!map[bit],
+      on: ((raw >> bit) & 1) === 1 }));
   }
   if (name === "FMEM_FLAGS" || name === "FMEM_FLAG2") {
     const rows = [];
     for (let bit = 0; bit < 8; bit += 1) {
-      rows.push({ bit, label: `Flag ${bit + 1} — meaning not documented for this ECU`, on: ((raw >> bit) & 1) === 1 });
+      rows.push({ bit, label: `Meaning unverified for this ECU`, on: ((raw >> bit) & 1) === 1 });
     }
     return rows;
   }

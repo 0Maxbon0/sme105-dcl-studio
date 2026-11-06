@@ -19,11 +19,11 @@ test('each dashboard uses only its requested channels and permanently omits unsu
 });
 
 test('custom order, empty dashboards and view survive preference serialization; legacy hidden pins cannot reappear', () => {
-  const preferences = normalizeDashboardPrefs({ layouts: { ALL: ['MAF','N','ECT','GR_CM','N','missing'], LIVE: [] }, density: 'compact' });
+  const preferences = normalizeDashboardPrefs({ version: 2, layouts: { ALL: ['MAF','N','ECT','GR_CM','N','missing'], LIVE: [] }, density: 'compact' });
   assert.deepEqual(preferences.layouts.ALL, ['MAF','N','ECT']);
   assert.deepEqual(preferences.layouts.LIVE, []);
   assert.deepEqual(normalizeDashboardPrefs(JSON.parse(JSON.stringify(preferences))), preferences);
-  assert.deepEqual(normalizeDashboardPrefs({ pins: ['N','MAP','GR_CM','MAF'] }).layouts.ALL, ['N','MAF']);
+  assert.deepEqual(normalizeDashboardPrefs({ pins: ['N','MAP','GR_CM','MAF'] }).layouts.ALL, ['THROTTLE_PERCENT','N','MAF']);
   assert.deepEqual(reorderedPins(preferences.layouts.ALL, 'ECT', 'MAF'), ['ECT','MAF','N']);
   assert.deepEqual(reorderedPins(preferences.layouts.ALL, 'MAF', 'ECT'), ['N','ECT','MAF']);
   assert.deepEqual(normalizeDashboardPrefs(null), normalizeDashboardPrefs());
@@ -60,4 +60,17 @@ test('raw-count chart axes use readable ticks without suggesting negative sensor
   assert.equal(constant.min,0);assert.ok(constant.max>constant.min);
   const correction=chartBounds([{value:-12.5},{value:6.25}]);
   assert.ok(correction.min<=-12.5 && correction.max>=6.25);
+});
+
+
+test('derived throttle migrates once and remains selectable only in modes requesting actual ITP', () => {
+  const old = normalizeDashboardPrefs({layouts:{ALL:['N','ITP']}});
+  assert.deepEqual(old.layouts.ALL,['THROTTLE_PERCENT','N','ITP']);
+  old.layouts.ALL=old.layouts.ALL.filter(name=>name!=='THROTTLE_PERCENT');
+  assert.deepEqual(normalizeDashboardPrefs(JSON.parse(JSON.stringify(old))).layouts.ALL,['N','ITP']);
+  for (const variant of ['LIVE','LIVE2','ALL']) {
+    assert.ok(dashboardChannels(variant).includes('THROTTLE_PERCENT'));
+    assert.ok(dashboardSensors('engine',variant).some(s=>s.name==='THROTTLE_PERCENT' && s.source==='ITP' && s.pid===undefined));
+  }
+  assert.ok(!dashboardChannels('LIVE3').includes('THROTTLE_PERCENT'));
 });

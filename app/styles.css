@@ -272,3 +272,16 @@ body.reduce-motion *, body.reduce-motion *::before, body.reduce-motion *::after 
 #review-selected { overflow-wrap: anywhere; }
 #review-position { width: 100%; min-height: 44px; accent-color: var(--cyan); }
 #review-clock { display: block; font-variant-numeric: tabular-nums; margin-top: 6px; }
+
+/* Global, non-modal pending outcome reminder: available on every screen. */
+#ignition-notice { position: fixed; z-index: 9; left: 12px; right: 12px; bottom: calc(76px + env(safe-area-inset-bottom)); max-width: 720px; margin: auto; pointer-events: none; }
+#ignition-notice > :not([hidden]) { pointer-events: auto; }
+#ignition-confirmation { padding: 14px; border: 2px solid var(--cyan); border-radius: 16px; background: var(--bg); box-shadow: 0 4px 24px #0009; max-height: 45dvh; overflow-y: auto; }
+#ignition-question { font-weight: 800; margin-top: 0; }
+#ignition-confirmation .row { flex-wrap: wrap; }
+#ignition-confirmation:not([hidden]) + #ignition-review { display: none; }
+#ignition-review { width: 100%; border-color: var(--cyan); background: var(--bg); }
+.bits { list-style: none; padding: 0; font-size: .85rem; }
+.bits li { padding: 5px 0; color: var(--muted); }
+.bits li.on { color: var(--cyan); }
+.bit-raw { font-variant-numeric: tabular-nums; }

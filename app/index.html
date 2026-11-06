@@ -56,7 +56,7 @@
         <div id="review-controls" hidden>
           <div class="recording-export-actions"><button id="review-play" type="button">Play</button><button id="review-pause" type="button">Pause</button><button id="review-restart" type="button">Restart from beginning</button><button id="review-exit" type="button">Exit offline review</button></div>
           <label class="stack">Recording position<input id="review-position" type="range" min="0" max="0" step="0.001" value="0"></label>
-          <output id="review-clock">0.000s / 0.000s</output>
+          <output id="review-clock">0.0s / 0.0s</output>
         </div>
       </section>
       <section id="dashboard-overview" class="dashboard-overview" aria-label="Selected dashboard">
@@ -88,12 +88,6 @@
         <div class="section-heading"><h2 id="recordings-title">Recordings &amp; exports</h2><span class="tag">On this phone</span></div>
         <p class="help recording-intro">Start &amp; save records automatically. Saved sessions stay available after you close the app.</p>
         <button id="csv-btn" type="button" class="primary" disabled>Export current session · CSV</button>
-        <section id="ignition-confirmation" hidden aria-labelledby="ignition-question">
-          <p id="ignition-question">Live data stopped because the ECU is no longer responding. Did you switch off the ignition yourself?</p>
-          <p id="ignition-session" class="help"></p>
-          <div class="row"><button id="ignition-yes" type="button">Yes, I switched it off</button><button id="ignition-no" type="button">No, I didn't</button><button id="ignition-later" type="button">Decide later</button></div>
-        </section>
-        <button id="ignition-review" type="button" hidden>Review pending confirmation</button>
         <p id="recording-status" class="help">Files save to Downloads/SME105 DCL Studio, then open the share sheet.</p>
         <details class="recording-progress"><summary>Capture progress</summary><progress id="live-progress" max="100" value="0" aria-label="Capture progress"></progress></details>
       </section>
@@ -250,6 +244,7 @@
       <canvas id="sensor-chart" class="detail-chart" aria-label="Recorded sensor values over elapsed capture time"></canvas>
       <p id="chart-reading" class="chart-reading">Drag across the chart to inspect a recorded sample.</p>
       <p id="chart-history-note" class="help"></p>
+      <section id="drawer-bit-panel" aria-label="Raw bits and reference assignments" hidden></section>
       <p id="drawer-meaning" class="help"></p>
       <details><summary>More · source and reference</summary><p id="drawer-reference" class="help"></p><p id="drawer-source" class="help"></p></details>
       <button id="drawer-pin" type="button">Pin reading</button>
@@ -265,6 +260,15 @@
         <button id="modal-ok" type="button" class="primary"></button>
       </div>
     </div>
+  </div>
+  <div id="ignition-notice">
+    <section id="ignition-confirmation" hidden role="alert" aria-live="assertive" aria-labelledby="ignition-question">
+      <p id="ignition-question">Did you switch off the ignition yourself?</p>
+      <p class="help">Live data stopped because the ECU is no longer responding.</p>
+      <p id="ignition-session" class="help"></p>
+      <div class="row"><button id="ignition-yes" type="button">Yes, I switched it off</button><button id="ignition-no" type="button">No, I didn't</button><button id="ignition-later" type="button">Decide later</button></div>
+    </section>
+    <button id="ignition-review" type="button" hidden>Ignition confirmation pending · Review</button>
   </div>
   <script src="vendor/jszip.min.js"></script>
   <script type="module" src="js/app.js?v=17"></script>

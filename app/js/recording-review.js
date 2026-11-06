@@ -1,3 +1,4 @@
+import { formatReplayTime } from './display-format.js';
 /** Read-only, bounded CSV index over the existing recording Blob. No transport imports. */
 import { PIDS, summarizeSeries } from './pids.js';
 import { listRecordings, recordingBlob } from './recording.js';
@@ -97,7 +98,7 @@ export async function indexRecording(blob, { progress = () => {}, cancelled = ()
 export function recordingLabel(item) {
   const start = item.started || Date.parse(item.id);
   const duration = item.duration ?? (item.ended && item.started ? (item.ended - item.started) / 1000 : null);
-  return `${Number.isFinite(start) ? new Date(start).toLocaleString() : item.id} · ${item.variant || 'Unknown'} · ${duration == null ? 'duration unknown' : duration.toFixed(1) + 's'} · ${item.sampleCount == null ? 'samples not indexed' : item.sampleCount + ' samples'} · ${item.verdict?.status || 'Unfinished'}${item.outcome ? ' · ' + item.outcome.replaceAll('_', ' ').toLowerCase() : ''} · ${item.id.slice(-8)}`;
+  return `${Number.isFinite(start) ? new Date(start).toLocaleString() : item.id} · ${item.variant || 'Unknown'} · ${duration == null ? 'duration unknown' : formatReplayTime(duration)} · ${item.sampleCount == null ? 'samples not indexed' : item.sampleCount + ' samples'} · ${item.verdict?.status || 'Unfinished'}${item.outcome ? ' · ' + item.outcome.replaceAll('_', ' ').toLowerCase() : ''} · ${item.id.slice(-8)}`;
 }
 export function createRecordingPlayer({ load = async id => {
   const metadata = (await listRecordings()).find(item => item.id === id);
