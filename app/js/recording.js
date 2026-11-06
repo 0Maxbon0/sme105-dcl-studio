@@ -22,7 +22,7 @@ export async function listRecordings() {
   const database = await db();
   return new Promise((resolve, reject) => {
     const request = database.transaction("captures").objectStore("captures").getAll();
-    request.onsuccess = () => resolve(request.result.sort((a,b) => b.id.localeCompare(a.id)));
+    request.onsuccess = () => resolve(request.result.sort((a,b) => (b.started || Date.parse(b.id) || 0) - (a.started || Date.parse(a.id) || 0) || b.id.localeCompare(a.id)));
     request.onerror = () => reject(request.error);
   });
 }
@@ -63,6 +63,7 @@ export async function createRecording(variant, onError = () => {}, unitSystem = 
   });
   let raw = [], csv = [], pendingBytes = 0, seq = 0, failure = null;
   let flushing = false, closed = false, finishTask = null;
+  let sampleCount = 0, duration = 0;
   const queue = [];
   let idle = Promise.resolve();
   const fail = error => {
@@ -109,6 +110,7 @@ export async function createRecording(variant, onError = () => {}, unitSystem = 
     },
     sample(sample) {
       if (closed) return;
+      sampleCount++; duration = Math.max(duration, sample.t || 0);
       const line = rowsToCsv([sample], { unitSystem }).slice(HEADER.length);
       csv.push(line); checkBacklog(line.length);
     },
@@ -119,7 +121,7 @@ export async function createRecording(variant, onError = () => {}, unitSystem = 
         await flush();
         // Preserve a final validity record beside the original received evidence.
         const transaction = database.transaction("captures", "readwrite");
-        transaction.objectStore("captures").put({ ...metadata, verdict: failure ? { ...verdict, valid: false, status: "INCOMPLETE", reasons: [...(verdict.reasons || []), failure.message] } : verdict, ...outcomeDetails, ...(failure ? { outcome: "STORAGE_FAILURE" } : {}), error: failure?.message || "", ended: Date.now() });
+        transaction.objectStore("captures").put({ ...metadata, sampleCount, duration, verdict: failure ? { ...verdict, valid: false, status: "INCOMPLETE", reasons: [...(verdict.reasons || []), failure.message] } : verdict, ...outcomeDetails, ...(failure ? { outcome: "STORAGE_FAILURE" } : {}), error: failure?.message || "", ended: Date.now() });
         await new Promise((resolve, reject) => { transaction.oncomplete = resolve; transaction.onabort = transaction.onerror = () => reject(transaction.error || new Error("Recording metadata write failed")); });
       })();
       return finishTask;

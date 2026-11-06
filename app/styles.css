@@ -266,3 +266,13 @@ body.reduce-motion *, body.reduce-motion *::before, body.reduce-motion *::after 
 .recording-export-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .recording-export-actions button { min-width: 0; padding-inline: 8px; }
 .recording-progress { border-top: 1px solid var(--line); padding-top: 6px; }
+
+/* Review shares dashboard cards; controls remain separate from vehicle Start/Stop. */
+#review-mode { display: block; margin-bottom: 12px; }
+#review-selected { overflow-wrap: anywhere; }
+#review-position { width: 100%; min-height: 44px; accent-color: var(--cyan); }
+#review-clock { display: block; font-variant-numeric: tabular-nums; margin-top: 6px; }
+.tps-derived { display: block; white-space: normal; font-size: .72rem; font-weight: 400; line-height: 1.35; color: var(--muted); margin-top: 6px; }
+[aria-label="TPS display calibration"] input[type="number"] { width: 100%; min-height: 44px; padding: 8px; background: var(--surface-raised); border: 1px solid var(--line); border-radius: 8px; }
+[aria-label="TPS display calibration"] details > button { width: 100%; margin: 6px 0 12px; }
+[aria-label="TPS display calibration"] input[type="checkbox"] { min-width: 20px; min-height: 20px; vertical-align: middle; }

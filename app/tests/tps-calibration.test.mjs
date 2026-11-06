@@ -1,0 +1,43 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { defaultTpsProfiles, validateTpsReferences, tpsPercent, stableTpsReference, createTpsProfiles, calibratedTpsReading } from '../js/tps-calibration.js';
+const store = () => { const m = new Map(); return { getItem: k => m.get(k), setItem: (k,v) => m.set(k,v) }; };
+const refs = { freeRest: 103, mountedClosed: 179, maximum: 970 };
+const stable = raw => Array.from({ length: 11 }, (_, i) => ({ t: i / 5, raw }));
+test('mounted travel and optional unloaded reference use different zero points', () => {
+  assert.equal(tpsPercent(179, refs).throttle, 0);
+  assert.ok(Math.abs(tpsPercent(500, refs).throttle - 40.581542) < .001);
+  assert.equal(tpsPercent(970, refs).throttle, 100);
+  for (const raw of [68, 102, 103, 170, 178]) assert.equal(tpsPercent(raw, refs).throttle, 0);
+  assert.equal(tpsPercent(103, refs).sensor, 0);
+  assert.ok(tpsPercent(179, refs).sensor > 8);
+  assert.equal(tpsPercent(990, refs).throttle, 100);
+  for (const raw of [null, undefined, NaN, 0, 1013, 1023, 1024, -1]) assert.equal(tpsPercent(raw, refs).throttle, null);
+});
+test('profiles are independent, optional, suggested before explicit acceptance, persistent and reversible', () => {
+  const storage = store(), p = createTpsProfiles(storage, () => '2026-11-06T12:00:00Z');
+  assert.equal(p.state.profiles.spare.status, 'suggested');
+  assert.equal(calibratedTpsReading(179, p.state).throttle, null);
+  p.save('spare', refs, { confirmed: true, source: 'Operator accepted November 6 references' });
+  assert.equal(calibratedTpsReading(179, p.state).throttle, 0);
+  assert.equal(calibratedTpsReading(500, p.state, { active: true, sensorProfile: null }).throttle, null);
+  assert.ok(calibratedTpsReading(500, p.state, { active: true, sensorProfile: 'spare' }).throttle > 40);
+  p.save('original', { freeRest: 102, mountedClosed: 170, maximum: 968 }, { confirmed: true });
+  p.select('original');
+  assert.equal(tpsPercent(170, p.state.profiles.original).throttle, 0);
+  const reopened = createTpsProfiles(storage);
+  assert.equal(reopened.state.active, 'original');
+  assert.equal(reopened.state.profiles.spare.mountedClosed, 179);
+  assert.equal(reopened.state.profiles.original.updatedAt, '2026-11-06T12:00:00Z');
+  reopened.select('none'); assert.equal(calibratedTpsReading(500, reopened.state).throttle, null);
+  reopened.reset('spare'); assert.equal(reopened.state.profiles.spare.status, 'suggested');
+  assert.deepEqual(defaultTpsProfiles().profiles.spare.maximum, 970);
+});
+test('ordering, nontrivial span, missing, noise, stale, disconnected and saturated references fail closed', () => {
+  for (const bad of [{ ...refs, freeRest: null }, { ...refs, mountedClosed: 103 }, { ...refs, maximum: 180 }, { ...refs, maximum: 1013 }, { ...refs, mountedClosed: 179.5 }]) assert.throws(() => validateTpsReferences(bad));
+  for (const raw of [102, 103, 170, 179, 970]) assert.equal(stableTpsReference(stable(raw), 2), raw);
+  const original = stable(179); const before = structuredClone(original);
+  assert.equal(stableTpsReference(original, 2), 179); assert.deepEqual(original, before);
+  for (const bad of [[], [{ t: 0, raw: 68 }], stable(0), stable(1013), stable(179).map((s,i) => ({...s, raw: i === 5 ? 970 : 179})), stable(179).map((s,i) => ({...s, t: i === 5 ? .2 : s.t}))]) assert.throws(() => stableTpsReference(bad, 2));
+  assert.throws(() => stableTpsReference(stable(179), 3));
+});

@@ -442,6 +442,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
   }
 
   function beginPrecheck(op) {
+    if (state.review?.active) return "Exit offline review before a vehicle operation";
     if (state.link !== "ready") return "not connected";
     if (state.transport === "ble" && state.identity.auth !== "OK") return "bridge authentication pending";
     if (state.phase !== "idle") return "busy";
@@ -582,6 +583,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       return { ok: true };
     },
     requestReboot() {
+      if (state.review?.active) return { ok: false, error: "Exit offline review before a bridge operation" };
       if (state.combined?.active) return { ok: false, error: "busy" };
       if (state.link !== "ready") return { ok: false, error: "not connected" };
       if (state.transport === "ble" && state.identity.auth !== "OK") return { ok: false, error: "bridge authentication pending" };

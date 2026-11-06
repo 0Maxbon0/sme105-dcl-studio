@@ -1,8 +1,8 @@
-const CACHE = "eeciv-v1.8.1-lifecycle-2";
+const CACHE = "eeciv-v1.8.1-review-tps-1";
 const FILES = [
   "./",
   "./index.html",
-  "./styles.css?v=9",
+  "./styles.css?v=10",
   "./manifest.webmanifest",
   "./sw.js",
   "./icons/icon.svg",
@@ -27,6 +27,10 @@ const FILES = [
   "./js/pids.js",
   "./js/reference.js",
   "./js/recording.js",
+  "./js/recording-review.js",
+  "./js/review-controls.js",
+  "./js/tps-calibration.js",
+  "./js/tps-controls.js",
   "./js/diagnostics.js",
   "./js/exports.js",
   "./js/codes-db.js",

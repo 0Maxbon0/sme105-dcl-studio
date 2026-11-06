@@ -1,3 +1,4 @@
+import { calibratedTpsReading } from "./tps-calibration.js";
 /** Stable, keyed dashboard rendering for browser and native WebView. */
 
 import { lookupCode } from "./codes-db.js";
@@ -11,7 +12,7 @@ import { redactDiagnostic } from "./diagnostics.js";
 import { saveOrShare } from "./exports.js";
 import { listRecordings, recordingBlob } from "./recording.js";
 import { normalizeDashboardPrefs, dashboardSensors, dashboardChannels, reorderedPins } from "./dashboard-layout.js";
-import { chartPoints, chartEnvelope, chartBounds, chartClock, sensorSamplesFromCsv, dashboardSeriesFromCsv } from "./chart-series.js";
+import { chartPoints, chartEnvelope, chartBounds, chartClock, sensorSamplesFromCsv } from "./chart-series.js";
 
 const $ = (id) => document.getElementById(id);
 const cardNodes = new Map();
@@ -25,7 +26,6 @@ let arranging = false;
 let detailHistory = null;
 let detailLoad = 0;
 let chartProbe = null;
-const savedDashboards = new Map();
 let activeView = "live";
 
 const PREF_KEY = "sme105-dashboard-prefs-v1";
@@ -134,6 +134,7 @@ function hexByte(value) {
 }
 
 function activeCodes(state) {
+  if (state.review?.active) return [];
   if (state.trust === "progress" && state.cart) {
     return state.cart.snapshot().codes.map((entry) => ({
       ...entry,
@@ -145,7 +146,7 @@ function activeCodes(state) {
   return state.lastSession?.codes || [];
 }
 
-function activeSnap(state) { return state.cart?.snapshot() || null; }
+function activeSnap(state) { return state.review?.active ? state.review : state.cart?.snapshot() || null; }
 
 function renderFailureMemory(state) {
   const container = $("fmem-values");
@@ -187,13 +188,15 @@ function progressValue(state) {
   return Math.max(0, Math.min(100, (elapsed / spec.expectMs) * 100));
 }
 
-function sensorSeries(state, name) {
+export function sensorSeries(state, name) {
+  if (state.review?.active) return state.review.pids[name] || null;
   const snap = activeSnap(state);
   const live = state.combined ? combinedSnapshot(state.combined) : null;
-  return live?.pids?.[name] || snap?.pids?.[name] || state.lastSession?.pids?.[name] || savedDashboards.get(dashboardSet())?.pids?.[name] || null;
+  return live?.pids?.[name] || snap?.pids?.[name] || state.lastSession?.pids?.[name] || null;
 }
 
 function activeStream(state) {
+  if (state.review?.active) return false;
   return !!(state.op?.kind === "live" && state.phase === "read") || !!state.combined?.active;
 }
 
@@ -337,8 +340,8 @@ function syncChildren(container, nodes) {
 function sensorHealth(name, series, state, manual, idleCheck) {
   const samples = series?.samples || [];
   const summary = series?.summary || (samples.length ? summarizeSeries(samples) : null);
-  const freshness = series?.saved ? { state:'historical', label:'Saved reading' } : sensorFreshness(samples, { active: activeStream(state), now: Date.now() });
-  const dtc = state.lastSession?.verdict?.valid
+  const freshness = series?.saved ? { state:'historical', label: state.review?.active ? `Recorded · sample ${series.sampleTime?.toFixed(3) ?? samples.at(-1)?.t.toFixed(3)}s · ${series.newAtPosition ? 'sample at position' : 'last known'}` : 'Saved reading' } : sensorFreshness(samples, { active: activeStream(state), now: Date.now() });
+  const dtc = !state.review?.active && state.lastSession?.verdict?.valid
     ? (state.lastSession.codes || []).find(code => (DTC_SENSOR_LINKS[code.code] || []).includes(name))
       ? { ...state.lastSession.codes.find(code => (DTC_SENSOR_LINKS[code.code] || []).includes(name)), variant: state.lastSession.variant,
         description: lookupCode(state.lastSession.codes.find(code => (DTC_SENSOR_LINKS[code.code] || []).includes(name)).code).description }
@@ -360,6 +363,17 @@ function sensorHealth(name, series, state, manual, idleCheck) {
   return { samples, summary, freshness, verdict, dtc, colorState, explanation: sensorExplanation(name, summary, freshness, { manual, idleCheck, verdict, dtc }) };
 }
 
+function tpsDetail(state, raw) {
+  const r = calibratedTpsReading(raw, state.tpsProfiles, state.review);
+  return `Calibrated throttle travel (%): ${r.throttle == null ? '—' : r.throttle.toFixed(1)} · ${r.message}`;
+}
+function tpsCard(node, name, state, raw) {
+  let label = node.querySelector('.tps-derived');
+  if (name !== 'ITP') return;
+  if (!label) { label = document.createElement('small'); label.className = 'tps-derived'; node.append(label); }
+  setText(label, state.tpsProfiles ? tpsDetail(state, raw) : 'Not calibrated');
+}
+
 function updateCard(card, sensor, state, manual, idleCheck, pins) {
   const { name, title, unit, notApplicable } = sensor;
   const series = sensorSeries(state, name);
@@ -369,6 +383,7 @@ function updateCard(card, sensor, state, manual, idleCheck, pins) {
   const value = card.querySelector(".sensor-value");
   setReadingValue(value, name, health.summary, manual);
   value.dataset.state = health.colorState;
+  tpsCard(card.querySelector("[data-open-pid]"), name, state, health.samples.at(-1)?.raw);
   setState(card.querySelector(".state-label"), notApplicable ? "na" : health.colorState);
   const status = card.querySelector(".state-label");
   setText(status, notApplicable ? "NOT APPLICABLE" : health.freshness.label);
@@ -421,28 +436,14 @@ function renderPinned(state, manual, idleCheck, pins) {
     item.tabIndex = arranging ? 0 : -1;
     item.setAttribute('aria-label', `${sensor.title}${arranging ? ', drag to reorder' : ''}`);
     item.querySelector(".pinned-value").dataset.state = health.colorState;
+    tpsCard(item.querySelector(".pinned-open"), name, state, health.samples.at(-1)?.raw);
     desired.push(item);
   }
   syncChildren(container, desired);
 }
 
-export async function restoreDashboardCapture(state) {
-  const variant = dashboardSet();
-  if (savedDashboards.has(variant)) return;
-  savedDashboards.set(variant, { loading:true, pids:{} });
-  try {
-    const capture = (await listRecordings()).find(entry => entry.variant === variant || entry.variant === 'ALL');
-    if (!capture) { savedDashboards.set(variant,{pids:{}}); return; }
-    const pids = await dashboardSeriesFromCsv(await recordingBlob(capture.id,'csv'),dashboardChannels(variant));
-    savedDashboards.set(variant,{ ...capture,pids });
-    if (latestState) render(latestState);
-  } catch (error) {
-    savedDashboards.set(variant,{pids:{},error:error.message});
-    if (latestState) render(latestState);
-  }
-}
-
 async function loadChartHistory(state, name) {
+  if (state.review?.active) { detailHistory = null; return; }
   const token = ++detailLoad;
   detailHistory = { name, samples: [], loading: true, message: 'Loading saved capture…' };
   try {
@@ -486,7 +487,7 @@ function renderSensorDrawer(state) {
       if (!saved.loading && received.samples[0].t-lastTime > Math.max(cadence*3,1)) void loadChartHistory(state,name);
     }
   }
-  setText($("chart-history-note"), saved?.message || 'Recent received samples');
+  setText($("chart-history-note"), state.review?.active ? `Selected recording ${state.review.metadata.id} · recent recorded samples through ${state.review.position.toFixed(3)}s` : saved?.message || 'Recent received samples');
   const summary = health.summary;
   const reference = readingReference(name, { manual: $("manual-gearbox-settings").checked });
   setText($("drawer-group"), [...Object.keys(LIVE_GROUP_TITLES)].find((group) => LIVE_GROUPSForUi(group).includes(name))
@@ -504,7 +505,7 @@ function renderSensorDrawer(state) {
   setText($("drawer-count"), summary?.n ?? 0);
   const latest = health.samples.at(-1);
   setText($("drawer-time"), `PID 0x${pid.toString(16).toUpperCase().padStart(2, "0")}`);
-  setText($("drawer-meaning"), health.explanation);
+  setText($("drawer-meaning"), name === "ITP" && state.tpsProfiles ? `${health.explanation} ${tpsDetail(state, latest?.raw)}` : health.explanation);
   setText($("drawer-reference"), reference.normal);
   setText($("drawer-source"), `${reference.meaning} ${reference.source ? `Source: ${reference.source}` : "No vehicle-specific limit source verified."}`);
   const pins = pinnedSensors();
@@ -568,14 +569,14 @@ export function render(state) {
   $("de-value").textContent = fields.DE || STR.notKnown;
   $("stage-value").textContent = fields.stage != null ? stageText(fields.stage) : STR.notKnown;
   $("bench-value").textContent = state.bench.pass ? STR.benchPass : STR.benchNeeded;
-  const rom = state.rom || activeSnap(state)?.rom;
+  const rom = state.review?.active ? null : state.rom || activeSnap(state)?.rom;
   $("rom-value").textContent = rom ? `${hexByte(rom.low)} ${hexByte(rom.high)}` : STR.notKnown;
-  const vbat = state.battery ?? activeSnap(state)?.pids?.VBAT?.samples?.at(-1)?.value;
+  const vbat = state.review?.active ? activeSnap(state)?.pids?.VBAT?.samples?.at(-1)?.value : state.battery ?? activeSnap(state)?.pids?.VBAT?.samples?.at(-1)?.value;
   $("battery-value").textContent = vbat == null ? STR.notKnown : `${formatValue(vbat)} V`;
   $("status-raw").textContent = redactDiagnostic(state.status?.raw || state.identity.hello || "");
 
   const actions = ["read-codes-btn", "koeo-btn", "koer-btn", "live-start", "offline-btn", "bench-btn", "reboot-btn", "clear-btn", "mem-btn"];
-  for (const id of actions) $(id).disabled = !linked || busy || !!state.recovering;
+  for (const id of actions) $(id).disabled = !linked || busy || !!state.recovering || !!state.review?.active;
   $("stored-code-mode").disabled = busy;
   $("live-set").disabled = busy || !!state.recovering;
 
@@ -586,6 +587,7 @@ export function render(state) {
   };
   banner($("codes-banner"));
   banner($("live-banner"));
+  if (state.review?.active) { $("live-banner").hidden = false; $("live-banner").className = "banner"; $("live-banner").textContent = `Recorded Data — Offline Review · ${state.review.metadata?.verdict?.status || "Unfinished"}`; }
   const pct = progressValue(state);
   const variant = state.op?.variant || state.lastSession?.variant;
   $("codes-progress").value = ["KOEO", "KOER", "0E", "A4"].includes(variant) ? pct : 0;
@@ -597,7 +599,7 @@ export function render(state) {
   promptBox.textContent = `${state.koerGuide?.phase || "PREPARATION"} · No authenticated ECU operator prompt is available. Do not act on a countdown or fault code.`;
 
   const snap = activeSnap(state);
-  const result = state.op ? null : state.lastSession;
+  const result = state.review?.active ? state.review.metadata : state.op ? null : state.lastSession;
   const diagnosticVariant = state.op?.variant || result?.variant || "";
   const expectedMode = ["0E", "A4"].includes(diagnosticVariant) ? 0x26
     : ["KOEO", "KOER"].includes(diagnosticVariant) ? 0x25 : null;
@@ -661,7 +663,7 @@ export function render(state) {
   const group = $("live-group").value;
   setText($("group-title"), 'Add readings');
   setText($("group-help"), 'Star a reading to move it to your dashboard.');
-  setText($("live-set-help"), `${dashboardChannels(variantSet).length} dashboard channels. Start records the selected set automatically.`);
+  setText($("live-set-help"), state.review?.active ? `${dashboardChannels(variantSet).length} dashboard channels · recorded samples only. Use the timeline to inspect values.` : `${dashboardChannels(variantSet).length} dashboard channels. Start records the selected set automatically.`);
   const cards = $("live-cards");
   cards.hidden = false;
   const sensors = dashboardSensors(group, variantSet).filter(sensor => !pins.includes(sensor.name));
@@ -676,10 +678,11 @@ export function render(state) {
 
   const live = state.combined ? combinedSnapshot(state.combined) : (snap || result);
   const rows = live?.rows || [];
-  $("csv-btn").disabled = rows.length === 0;
-  const restoredCapture = savedDashboards.get(variantSet);
-  const captureTime = Object.keys(snap?.pids || {}).length ? state.archive?.started || result?.startedAt : restoredCapture?.started;
-  $("live-meta").textContent = activeStream(state) ? 'Recording automatically on this device' : captureTime ? `Saved capture · ${new Date(captureTime).toLocaleString()}` : restoredCapture?.loading ? 'Loading saved readings…' : '';
+  $("csv-btn").disabled = !!state.review?.active || rows.length === 0;
+  $("export-group-btn").disabled = !!state.review?.active;
+  $("drawer-export-sensor").disabled = !!state.review?.active;
+  const captureTime = state.archive?.started || result?.startedAt;
+  $("live-meta").textContent = state.review?.active ? `Recorded Data — Offline Review · ${state.review.metadata?.id} · ${state.review.position.toFixed(3)}s` : activeStream(state) ? 'Recording automatically on this device' : captureTime ? `Capture · ${new Date(captureTime).toLocaleString()}` : '';
   $("recording-status").textContent = state.archive?.error
     ? `Saving needs attention: ${state.archive.error}`
     : `${activeStream(state) ? "Recording and saving automatically. Stop ends this session. " : "Saved sessions remain on this phone. "}Exports save to Downloads/SME105 DCL Studio, then open the share sheet.`;

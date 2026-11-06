@@ -12,7 +12,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=9">
+  <link rel="stylesheet" href="styles.css?v=10">
 </head>
 <body>
   <header class="top">
@@ -46,6 +46,38 @@
       </div>
       <p id="live-set-help" class="help"></p>
       <p id="live-meta" class="meta"></p>
+      <section class="recording-panel" aria-label="Saved recording review">
+        <strong id="review-mode" class="banner" hidden>Recorded Data — Offline Review</strong>
+        <div class="saved-recording-controls">
+          <label class="stack" for="saved-recordings">Select recording<select id="saved-recordings"></select></label>
+          <div class="recording-export-actions"><button id="saved-csv" type="button" disabled>Readings · CSV</button><button id="saved-log" type="button" disabled>Raw log · TXT</button></div>
+        </div>
+        <p id="review-selected" class="help" role="status"></p>
+        <div id="review-controls" hidden>
+          <div class="recording-export-actions"><button id="review-play" type="button">Play</button><button id="review-pause" type="button">Pause</button><button id="review-restart" type="button">Restart from beginning</button><button id="review-exit" type="button">Exit offline review</button></div>
+          <label class="stack">Recording position<input id="review-position" type="range" min="0" max="0" step="0.001" value="0"></label>
+          <output id="review-clock">0.000s / 0.000s</output>
+        </div>
+      </section>
+      <section class="recording-panel" aria-label="TPS display calibration">
+        <p id="tps-raw">ITP raw: no sample</p>
+        <strong id="tps-travel">Calibrated throttle travel (%): —</strong>
+        <p id="tps-context" class="help">Not calibrated</p>
+        <details><summary>TPS profiles &amp; references</summary>
+          <p class="help">Local display only. Free-rest is the unloaded sensor position; mounted closed is zero throttle travel. References do not certify butterfly angle or sensor health.</p>
+          <label class="stack">Active display profile<select id="tps-profile"><option value="none">No calibration</option><option value="original">Original TPS</option><option value="spare">Spare TPS</option></select></label>
+          <p id="tps-source" class="help"></p>
+          <label class="stack">Free-rest reference<input id="tps-freeRest" type="number" min="1" max="999" step="1"></label><button id="tps-capture-freeRest" type="button">Use stable sample for free-rest</button>
+          <label class="stack">Mounted closed reference<input id="tps-mountedClosed" type="number" min="1" max="999" step="1"></label><button id="tps-capture-mountedClosed" type="button">Use stable sample for mounted closed</button>
+          <label class="stack">Upper reference<input id="tps-maximum" type="number" min="1" max="999" step="1"></label><button id="tps-capture-maximum" type="button">Use stable sample for upper reference</button>
+          <p class="help">Spare suggestion: 103 / 179 / 970 from November 6 recordings and operator observations. The final stationary recording verifies 179, not mechanical wide-open. Stable samples alone do not identify a physical position.</p>
+          <label><input id="tps-confirm" type="checkbox">I accept these references for this profile</label>
+          <div class="recording-export-actions"><button id="tps-save" type="button">Save references</button><button id="tps-reset" type="button">Reset profile</button></div>
+          <p id="tps-message" class="help" role="status"></p>
+          <p id="tps-sensor-reference" class="help"></p>
+        </details>
+        <label id="tps-history-apply" hidden><input id="tps-history-profile" type="checkbox">Apply current profile for comparison. Historical sensor identity is unrecorded.</label>
+      </section>
       <section id="dashboard-overview" class="dashboard-overview" aria-label="Selected dashboard">
         <section id="pinned-section" class="pinned-section">
           <div class="section-heading"><h2 id="dashboard-title">My diagnostics</h2><button id="arrange-dashboard" type="button" aria-pressed="false">Arrange</button></div>
@@ -67,10 +99,6 @@
         <div class="section-heading"><h2 id="recordings-title">Recordings &amp; exports</h2><span class="tag">On this phone</span></div>
         <p class="help recording-intro">Start &amp; save records automatically. Saved sessions stay available after you close the app.</p>
         <button id="csv-btn" type="button" class="primary" disabled>Export current session · CSV</button>
-        <div class="saved-recording-controls">
-          <label class="stack" for="saved-recordings">Choose a saved session<select id="saved-recordings"></select></label>
-          <div class="recording-export-actions"><button id="saved-csv" type="button" disabled>Readings · CSV</button><button id="saved-log" type="button" disabled>Raw log · TXT</button></div>
-        </div>
         <section id="ignition-confirmation" hidden aria-labelledby="ignition-question">
           <p id="ignition-question">Live data stopped because the ECU is no longer responding. Did you switch off the ignition yourself?</p>
           <p id="ignition-session" class="help"></p>

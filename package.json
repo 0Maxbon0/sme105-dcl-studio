@@ -20,6 +20,7 @@
   "devDependencies": {
     "@capacitor/cli": "8.6.0",
     "esbuild": "0.28.2",
-    "fake-indexeddb": "6.2.7"
+    "fake-indexeddb": "6.2.7",
+    "jsdom": "^26.1.0"
   }
 }

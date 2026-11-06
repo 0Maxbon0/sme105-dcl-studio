@@ -1,3 +1,5 @@
+import { createTpsControls } from "./tps-controls.js";
+import { createReviewControls } from "./review-controls.js";
 import { createIgnitionReview } from "./ignition-review.js";
 import { reconcileOutcome } from "./session-history.js";
 import { sessionWarning } from "./session-outcome.js";
@@ -10,7 +12,7 @@ import { APP_VERSION, createLineBuffer } from "./protocol.js";
 import { createMockTransport, createReplay } from "./mock-transport.js";
 import { STR } from "./strings.js";
 import { createRecording, listRecordings, recordingBlob } from "./recording.js";
-import { applyStaticStrings, confirmDialog, exportCsv, exportLog, reorderPinnedSensor, pinnedSensors, isDashboardArranging, toggleDashboardArrangement, setDashboardDensity, inspectSensorChart, closeSensorDetails, restoreDashboardCapture, openSensorDetails, refreshDashboardCharts, render, renderEventHistory, renderWarningHistory, setSensorChartRange, showView, toggleSensorPin } from "./ui.js";
+import { applyStaticStrings, confirmDialog, exportCsv, exportLog, reorderPinnedSensor, pinnedSensors, isDashboardArranging, toggleDashboardArrangement, setDashboardDensity, inspectSensorChart, closeSensorDetails, openSensorDetails, refreshDashboardCharts, render, renderEventHistory, renderWarningHistory, setSensorChartRange, showView, toggleSensorPin } from "./ui.js";
 import { closeDiagnosticRun, flushDiagnosticQueue, diagnosticHistory, recentDiagnosticEvents, recordDiagnosticEvent, recordDiagnosticWarning, setDiagnosticStorageErrorHandler, startDiagnosticRun } from "./diagnostics.js";
 import { exportDiagnosticZip, exportGroupCsv, exportSensorCsv, saveOrShare } from "./exports.js";
 import { lookupCode } from "./codes-db.js";
@@ -48,7 +50,15 @@ const controller = createController({
   },
 });
 
-const ignitionReview = createIgnitionReview({ controller, render, refreshWarnings });
+const reviewControls = createReviewControls({ state: controller.state, render: renderApp, closeDetails: closeSensorDetails });
+const tpsControls = createTpsControls({ state: controller.state, changed: () => renderApp(controller.state) });
+function renderApp(state) {
+  reviewControls.update();
+  tpsControls.update();
+  render(state);
+}
+
+const ignitionReview = createIgnitionReview({ controller, render: renderApp, refreshWarnings });
 const refreshPendingIgnition = show => ignitionReview.refresh(show);
 
 function acceptText(chunk) {
@@ -61,7 +71,7 @@ const ble = new BleTransport({
   onError(error) {
     controller.onDisconnected();
     controller.state.message = `Bluetooth transport failed: ${error?.message || String(error)}`;
-    render(controller.state);
+    renderApp(controller.state);
   },
 });
 
@@ -142,6 +152,7 @@ function auditState(state) {
     codeParityRejects: session.codeParityRejects,
   };
   recordDiagnosticEvent("SESSION_RESULT", evidence, "session").then(refreshTestHistory);
+  if (state.archive?.finished) void state.archive.finished.then(() => refreshRecordings());
   const warning = sessionWarning(session);
   if (warning) recordDiagnosticWarning(`session-${session.variant}-${session.completedAt}`, true, { ...warning, evidence });
   for (const {key, warning} of warningsForDiagnosticSession(session)) recordDiagnosticWarning(key, true, warning);
@@ -151,7 +162,7 @@ function auditState(state) {
     void (async () => {
       await state.archive?.finished;
       await refreshPendingIgnition(true);
-    })().catch(error => { state.message = `Could not save confirmation: ${error.message}`; render(state); });
+    })().catch(error => { state.message = `Could not save confirmation: ${error.message}`; renderApp(state); });
   }
 }
 
@@ -184,7 +195,7 @@ async function reconcileBridgeConnection() {
   if (resumeWork) return resumeWork;
   transport = ble;
   controller.state.recovering = true;
-  render(controller.state);
+  renderApp(controller.state);
   resumeWork = (async () => {
     const result = await ble.reconcile();
     recordDiagnosticEvent("BLE_FOREGROUND_CHECK", { connected: result.connected, reconnected: !!result.reconnected }, "bluetooth");
@@ -201,7 +212,7 @@ async function reconcileBridgeConnection() {
   }).finally(() => {
     controller.state.recovering = false;
     resumeWork = null;
-    render(controller.state);
+    renderApp(controller.state);
   });
   return resumeWork;
 }
@@ -237,10 +248,10 @@ async function connect() {
   } catch (error) {
     controller.state.message = error?.message || String(error);
     recordDiagnosticEvent("BLE_CONNECT_FAILED", { message: controller.state.message }, "error");
-    render(controller.state);
+    renderApp(controller.state);
   } finally {
     button.disabled = false;
-    render(controller.state);
+    renderApp(controller.state);
   }
 }
 
@@ -252,7 +263,7 @@ async function ask(title, body, action) {
   if (controller.state.phase !== "idle") return;
   const result = await action();
   if (result && result.ok === false) controller.state.message = result.error;
-  render(controller.state);
+  renderApp(controller.state);
 }
 
 function selectedLive() {
@@ -277,6 +288,7 @@ function applyDisplayPreferences() {
 }
 
 async function startLive() {
+  if (controller.state.review?.active) return { ok: false, error: "Exit offline review before starting a recording" };
   const variant = selectedLive();
   try {
     const archive = await createRecording(variant, error => controller.failRecording(`Recording stopped: ${error.message}`), readStorage("eeciv-unit-system") || "metric");
@@ -295,19 +307,7 @@ async function startLive() {
   }
 }
 
-async function refreshRecordings() {
-  const select = document.getElementById("saved-recordings");
-  const previous = select.value;
-  try {
-    const entries = await listRecordings();
-    select.replaceChildren(...entries.map(entry => new Option(`${entry.started ? new Date(entry.started).toLocaleString() : entry.id} · ${entry.variant} · ${entry.outcome || entry.verdict?.status || "Recording"}`, entry.id)));
-    if (entries.some(entry => entry.id === previous)) select.value = previous;
-    document.getElementById("saved-csv").disabled = !entries.length;
-    document.getElementById("saved-log").disabled = !entries.length;
-  } catch (error) {
-    document.getElementById("recording-status").textContent = `Recording storage unavailable: ${error.message}`;
-  }
-}
+async function refreshRecordings() { await reviewControls.refresh(); }
 
 async function downloadSaved(kind) {
   try {
@@ -329,10 +329,10 @@ async function saveFullDiagnostic() {
   try {
     const result = await exportDiagnosticZip({ activeArchive: controller.state.archive, unitSystem: currentUnits() });
     controller.state.message = `Diagnostic ZIP integrity verified · ${result.size.toLocaleString()} bytes · SHA-256 ${result.sha256}`;
-    render(controller.state);
+    renderApp(controller.state);
   } catch (error) {
     controller.state.message = `Diagnostic ZIP failed: ${error.message}`;
-    render(controller.state);
+    renderApp(controller.state);
   } finally { button.disabled = false; }
 }
 
@@ -367,7 +367,7 @@ async function exportSavedTests(all = false) {
     await saveOrShare(new Blob([selected.map(diagnosticTestReport).join("\n\n")], { type: "text/plain" }), `sme105-${all ? "all-tests" : selected[0].detail.variant}-codes-${stamp}.txt`);
   } catch (error) {
     controller.state.message = `Code export failed: ${error.message}`;
-    render(controller.state);
+    renderApp(controller.state);
   }
 }
 
@@ -420,22 +420,22 @@ function wire() {
     const value = event.target.checked;
     document.getElementById("manual-gearbox-settings").checked = value;
     writeStorage("eeciv-manual-gearbox", value ? "1" : "0");
-    render(controller.state);
+    renderApp(controller.state);
   });
   for (const id of ["idle-check-settings"]) document.getElementById(id).addEventListener("change", (event) => {
     const value = event.target.checked;
     document.getElementById("idle-check-settings").checked = value;
     writeStorage("eeciv-idle-check", value ? "1" : "0");
-    render(controller.state);
+    renderApp(controller.state);
   });
   document.getElementById("live-set").addEventListener("change", event => {
-    writeStorage("eeciv-live-set", event.target.value); closeSensorDetails(); render(controller.state); void restoreDashboardCapture(controller.state);
+    writeStorage("eeciv-live-set", event.target.value); closeSensorDetails(); renderApp(controller.state);
   });
   document.getElementById("dashboard-density").addEventListener("change", event => {
-    setDashboardDensity(event.target.value); render(controller.state);
+    setDashboardDensity(event.target.value); renderApp(controller.state);
   });
   document.getElementById("arrange-dashboard").addEventListener("click", () => {
-    toggleDashboardArrangement(); render(controller.state);
+    toggleDashboardArrangement(); renderApp(controller.state);
   });
   const pinnedGrid = document.getElementById('pinned-readings');
   let dragging = null;
@@ -451,7 +451,7 @@ function wire() {
     event.preventDefault();
     const target = document.elementFromPoint(event.clientX,event.clientY)?.closest('.pinned-card');
     if (target && target.dataset.pid !== dragging.pid) {
-      reorderPinnedSensor(dragging.pid, target.dataset.pid); render(controller.state);
+      reorderPinnedSensor(dragging.pid, target.dataset.pid); renderApp(controller.state);
     }
   });
   const endDrag = () => {
@@ -468,20 +468,20 @@ function wire() {
     if (!offset) return;
     event.preventDefault();
     const pins = pinnedSensors(), name = event.target.dataset.pid, target = pins[pins.indexOf(name)+offset];
-    if (target) { reorderPinnedSensor(name,target); render(controller.state); event.target.focus(); }
+    if (target) { reorderPinnedSensor(name,target); renderApp(controller.state); event.target.focus(); }
   });
   const sensorChart = document.getElementById('sensor-chart');
   sensorChart.addEventListener('pointerdown', event => { sensorChart.setPointerCapture(event.pointerId); inspectSensorChart(event.clientX); });
   sensorChart.addEventListener('pointermove', event => { if (event.buttons || event.pointerType === 'mouse') inspectSensorChart(event.clientX); });
   document.getElementById("live-group").addEventListener("change", (event) => {
     writeStorage("eeciv-live-group", event.target.value);
-    render(controller.state);
+    renderApp(controller.state);
   });
   document.getElementById("theme-mode").addEventListener("change", (event) => {
     writeStorage("eeciv-theme", event.target.value); applyDisplayPreferences();
   });
   document.getElementById("unit-system").addEventListener("change", (event) => {
-    writeStorage("eeciv-unit-system", event.target.value); render(controller.state);
+    writeStorage("eeciv-unit-system", event.target.value); renderApp(controller.state);
   });
   document.getElementById("font-size").addEventListener("change", (event) => {
     writeStorage("eeciv-font-size", event.target.value); applyDisplayPreferences();
@@ -505,7 +505,7 @@ function wire() {
       recordDiagnosticEvent("SCREEN_VIEW", { view: button.dataset.view }, "ui");
       if (button.dataset.view === "codes") refreshTestHistory();
       if (button.dataset.view === "log") { refreshWarnings(); refreshJournal(); }
-      render(controller.state);
+      renderApp(controller.state);
     });
   });
   document.getElementById("connect-btn").addEventListener("click", () => { connect(); });
@@ -514,7 +514,7 @@ function wire() {
   document.getElementById("view-live").addEventListener("click", (event) => {
     const pinButton = event.target.closest("[data-pin-pid]");
     if (pinButton) {
-      event.stopPropagation(); toggleSensorPin(pinButton.dataset.pinPid); render(controller.state); return;
+      event.stopPropagation(); toggleSensorPin(pinButton.dataset.pinPid); renderApp(controller.state); return;
     }
     if (isDashboardArranging() && event.target.closest('#pinned-readings')) return;
     const openButton = event.target.closest("[data-open-pid]");
@@ -534,15 +534,15 @@ function wire() {
     }
   });
   document.getElementById("drawer-pin").addEventListener("click", (event) => {
-    toggleSensorPin(event.currentTarget.dataset.pinPid); render(controller.state);
+    toggleSensorPin(event.currentTarget.dataset.pinPid); renderApp(controller.state);
   });
   document.getElementById("drawer-export-sensor").addEventListener("click", () => {
     exportSensorCsv(document.getElementById("drawer-pin").dataset.pinPid, { unitSystem: currentUnits() })
-      .catch(error => { controller.state.message = `Sensor export failed: ${error.message}`; render(controller.state); });
+      .catch(error => { controller.state.message = `Sensor export failed: ${error.message}`; renderApp(controller.state); });
   });
   document.getElementById("export-group-btn").addEventListener("click", () => {
     exportGroupCsv(document.getElementById("live-group").value, { unitSystem: currentUnits(), manual: document.getElementById("manual-gearbox-settings").checked })
-      .catch(error => { controller.state.message = `Group export failed: ${error.message}`; render(controller.state); });
+      .catch(error => { controller.state.message = `Group export failed: ${error.message}`; renderApp(controller.state); });
   });
   for (const id of ["warning-filter", "warning-sensor-filter", "warning-date-filter"]) document.getElementById(id).addEventListener("change", refreshWarnings);
   document.getElementById("export-diagnostics").addEventListener("click", saveFullDiagnostic);
@@ -580,18 +580,20 @@ function wire() {
   document.getElementById("bench-btn").addEventListener("click", () => {
     const result = controller.requestBench();
     if (result && result.ok === false) controller.state.message = result.error;
-    render(controller.state);
+    renderApp(controller.state);
   });
-  const reportExportError = error => { controller.state.message = `Export failed: ${error.message}`; render(controller.state); };
+  const reportExportError = error => { controller.state.message = `Export failed: ${error.message}`; renderApp(controller.state); };
   document.getElementById("export-btn").addEventListener("click", () => exportLog(controller.state).catch(reportExportError));
   document.getElementById("csv-btn").addEventListener("click", () => exportCsv(controller.state).catch(reportExportError));
   document.getElementById("saved-csv").addEventListener("click", () => downloadSaved("csv"));
   document.getElementById("saved-log").addEventListener("click", () => downloadSaved("raw"));
-  refreshRecordings();
-  void refreshPendingIgnition(true).catch(error => { controller.state.message = `Recording storage unavailable: ${error.message}`; render(controller.state); });
+  reviewControls.wire();
+  tpsControls.wire();
+  void reviewControls.refresh({ restore: true });
+  void refreshPendingIgnition(true).catch(error => { controller.state.message = `Recording storage unavailable: ${error.message}`; renderApp(controller.state); });
   ignitionReview.wire();
   refreshTestHistory();
-  void restoreDashboardCapture(controller.state);
+
   document.getElementById("saved-tests").addEventListener("change", showSavedTest);
   document.getElementById("export-saved-test").addEventListener("click", () => exportSavedTests());
   document.getElementById("export-all-tests").addEventListener("click", () => exportSavedTests(true));
@@ -618,11 +620,11 @@ function wire() {
     renderPending = true;
     requestAnimationFrame(() => {
       renderPending = false;
-      render(controller.state);
+      renderApp(controller.state);
     });
   };
   controller.subscribe(state => { scheduleRender(); auditState(state); });
-  setInterval(() => { if (!controller.state.recovering) controller.tick(); }, 250);
+  setInterval(() => { if (!controller.state.recovering) controller.tick(); void reviewControls.player.tick().catch(error => { controller.state.message = `Playback failed: ${error.message}`; renderApp(controller.state); }); }, 250);
   setInterval(() => {
     if (controller.state.combined || controller.state.op?.kind === "live" || !document.getElementById("sensor-drawer").hidden) scheduleRender();
     auditFreshness(controller.state);
@@ -630,6 +632,7 @@ function wire() {
   document.addEventListener("visibilitychange", () => {
     recordDiagnosticEvent(document.hidden ? "APP_BACKGROUND" : "APP_FOREGROUND", { phase: controller.state.phase }, "lifecycle");
     if (document.hidden) {
+      reviewControls.player.pause();
       void flushDiagnosticQueue();
       if ((!nativeApp() || transport !== ble) && controller.state.phase !== "idle") {
         recordDiagnosticEvent("BACKGROUND_CAPTURE_STOP_REQUESTED", { reason: "browser/demo left foreground" }, "lifecycle");
@@ -645,11 +648,11 @@ function wire() {
   if ("serviceWorker" in navigator && !window.Capacitor?.isNativePlatform?.()) {
     navigator.serviceWorker.register("./sw.js").catch((error) => {
       controller.state.message = `Offline cache unavailable: ${error.message}`;
-      render(controller.state);
+      renderApp(controller.state);
     });
   }
   showView("live");
-  render(controller.state);
+  renderApp(controller.state);
   wired = true;
   auditState(controller.state);
   refreshWarnings();
@@ -662,7 +665,7 @@ async function boot() {
     if (controller.state.op || controller.state.combined?.active) controller.failRecording(message);
     else {
       controller.state.message = message;
-      if (wired) render(controller.state);
+      if (wired) renderApp(controller.state);
     }
   });
   try {
@@ -674,13 +677,13 @@ async function boot() {
   window.addEventListener("error", event => {
     recordDiagnosticEvent("UNCAUGHT_ERROR", { message: event.message, source: event.filename, line: event.lineno, stack: event.error?.stack || "" }, "error");
     controller.state.message = `Application error: ${event.message}`;
-    if (wired) render(controller.state);
+    if (wired) renderApp(controller.state);
   });
   window.addEventListener("unhandledrejection", event => {
     const error = event.reason;
     recordDiagnosticEvent("UNHANDLED_REJECTION", { message: error?.message || String(error), stack: error?.stack || "" }, "error");
     controller.state.message = `Application task failed: ${error?.message || String(error)}`;
-    if (wired) render(controller.state);
+    if (wired) renderApp(controller.state);
   });
   window.addEventListener("pagehide", () => {
     if (nativeApp()) void flushDiagnosticQueue();
