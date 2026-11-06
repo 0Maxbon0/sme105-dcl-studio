@@ -20,6 +20,8 @@ test('actual app entry boots existing recording into offline dashboard and wires
     await import('../js/app.js');
     const $=id=>document.getElementById(id);
     await until(()=>$('review-selected').textContent.includes('2 samples') && $('tps-raw').textContent.includes('179 counts'));
+    assert.equal($('tps-calibration-card').parentElement.id,'pinned-readings');
+    assert.match($('tps-calibration-card').textContent,/Throttle calibrated/);
     assert.equal($('saved-recordings').value,rec.id);
     assert.equal($('review-mode').hidden,false);
     assert.equal($('live-start').disabled,true);

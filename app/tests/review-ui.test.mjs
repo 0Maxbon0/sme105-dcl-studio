@@ -34,6 +34,13 @@ test('real dashboard DOM selects older/newer recordings, plays/seeks, confirms p
   review=createReviewControls({state, render:paint, closeDetails:closeSensorDetails, now:()=>now});
   tps=createTpsControls({state, changed:paint});
   applyStaticStrings(); review.wire(); tps.wire(); await review.refresh({restore:true}); paint();
+  assert.equal($('tps-calibration-card').parentElement.id,'pinned-readings');
+  assert.equal($('tps-calibration-card').hidden,false);
+  assert.match($('tps-calibration-card').textContent,/Throttle calibrated/);
+  assert.equal($('tps-profile-details').open,false);
+  click('tps-card-open');
+  assert.equal($('tps-profile-details').open,true);
+  assert.equal($('tps-profile-details').parentElement.previousElementSibling.id,'live-cards');
   assert.equal($('saved-recordings').options.length,2);
   assert.equal($('saved-recordings').value,newer.id);
   assert.equal($('review-mode').textContent,'Recorded Data — Offline Review');
@@ -53,18 +60,25 @@ test('real dashboard DOM selects older/newer recordings, plays/seeks, confirms p
   assert.match($('tps-context').textContent,/identity unrecorded/);
   $('tps-history-profile').checked=true; $('tps-history-profile').dispatchEvent(new window.Event('change'));
   assert.match($('tps-travel').textContent,/0.0$/);
+  assert.match($('tps-calibration-card').textContent,/103 counts/);
   $('review-position').value=4; $('review-position').dispatchEvent(new window.Event('input')); await until(()=>state.review.position===4);
   assert.match($('tps-raw').textContent,/179 counts/);
+  assert.match($('tps-calibration-card').textContent,/179 counts/);
   assert.match($('tps-travel').textContent,/0.0$/);
-  assert.match(document.querySelector('[data-pid="ITP"] .tps-derived').textContent,/0.0/);
+  assert.equal(document.querySelector('[data-pid="ITP"] .tps-derived'),null); // Raw ITP stays separate from the calibrated card.
   openSensorDetails(state,'ITP'); assert.match($('drawer-raw').textContent,/179/); assert.match($('drawer-meaning').textContent,/Calibrated throttle travel/);
   click('drawer-close'); closeSensorDetails();
   click('review-play'); now=1000; await review.player.tick();
   assert.equal(state.review.position,5); assert.match($('tps-travel').textContent,/100.0$/);
+  assert.equal($('tps-calibration-card').parentElement.id,'pinned-readings');
   click('review-restart'); await until(()=>state.review.position===0); assert.equal(state.review.playing,false);
   click('review-play'); now=2000; await review.player.tick(); click('review-pause'); now=4000; await review.player.tick(); assert.equal(state.review.position,1);
   assert.deepEqual(commands,[]);
   assert.equal(controller.requestVehicle('LIVE').ok,false); assert.deepEqual(commands,[]);
+  $('live-set').value='LIVE3'; paint();
+  assert.equal($('tps-calibration-card').hidden,true); // LIVE3 does not request ITP.
+  $('live-set').value='ALL'; paint();
+  assert.equal($('tps-calibration-card').hidden,false);
   // A new controller and UI instance restore the persisted explicit selection and profiles.
   const next=createController({send:c=>commands.push(c)}).state;
   let restoredTps; const restored=createReviewControls({state:next, render:()=>restoredTps?.update()});

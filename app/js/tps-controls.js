@@ -26,7 +26,7 @@ export function createTpsControls({ state, changed, document: doc = globalThis.d
     context = { samples, position, raw: latest?.raw ?? null };
     const reading = calibratedTpsReading(context.raw, profiles.state, state.review);
     node('tps-raw').textContent = context.raw == null ? 'ITP raw: no sample at this position' : `ITP raw: ${context.raw} counts · sample ${latest.t.toFixed(3)}s`;
-    node('tps-travel').textContent = `Calibrated throttle travel (%): ${reading.throttle == null ? '—' : reading.throttle.toFixed(1)}`;
+    node('tps-travel').textContent = reading.throttle == null ? '—' : reading.throttle.toFixed(1);
     node('tps-sensor-reference').textContent = `Sensor reference position (%): ${reading.sensor == null ? '—' : reading.sensor.toFixed(1)} · unloaded reference, not mounted opening`;
     node('tps-context').textContent = reading.message;
     node('tps-history-apply').hidden = !state.review?.active;
@@ -35,6 +35,12 @@ export function createTpsControls({ state, changed, document: doc = globalThis.d
   }
   function wire() {
     fields();
+    node('tps-card-open').addEventListener('click', () => {
+      const details = node('tps-profile-details');
+      details.open = true;
+      details.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+      details.querySelector('summary')?.focus();
+    });
     node('tps-profile').addEventListener('change', () => error(() => { profiles.select(node('tps-profile').value); if (state.review) state.review.sensorProfile = null; fields(); }));
     node('tps-save').addEventListener('click', () => error(() => {
       const values = Object.fromEntries(['freeRest', 'mountedClosed', 'maximum'].map(key => [key, node(`tps-${key}`).value.trim() === '' ? null : Number(node(`tps-${key}`).value)]));

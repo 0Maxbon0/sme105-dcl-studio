@@ -367,13 +367,6 @@ function tpsDetail(state, raw) {
   const r = calibratedTpsReading(raw, state.tpsProfiles, state.review);
   return `Calibrated throttle travel (%): ${r.throttle == null ? '—' : r.throttle.toFixed(1)} · ${r.message}`;
 }
-function tpsCard(node, name, state, raw) {
-  let label = node.querySelector('.tps-derived');
-  if (name !== 'ITP') return;
-  if (!label) { label = document.createElement('small'); label.className = 'tps-derived'; node.append(label); }
-  setText(label, state.tpsProfiles ? tpsDetail(state, raw) : 'Not calibrated');
-}
-
 function updateCard(card, sensor, state, manual, idleCheck, pins) {
   const { name, title, unit, notApplicable } = sensor;
   const series = sensorSeries(state, name);
@@ -383,7 +376,6 @@ function updateCard(card, sensor, state, manual, idleCheck, pins) {
   const value = card.querySelector(".sensor-value");
   setReadingValue(value, name, health.summary, manual);
   value.dataset.state = health.colorState;
-  tpsCard(card.querySelector("[data-open-pid]"), name, state, health.samples.at(-1)?.raw);
   setState(card.querySelector(".state-label"), notApplicable ? "na" : health.colorState);
   const status = card.querySelector(".state-label");
   setText(status, notApplicable ? "NOT APPLICABLE" : health.freshness.label);
@@ -412,7 +404,11 @@ function renderPinned(state, manual, idleCheck, pins) {
   const container = $("pinned-readings");
   container.dataset.density = readPrefs().density;
   container.classList.toggle("arranging", arranging);
-  const desired = [];
+  // This is a derived display card, not an ECU PID. Keep it next to the normal
+  // dashboard cards without adding a synthetic channel to capture/export maps.
+  const calibrationCard = $("tps-calibration-card");
+  calibrationCard.hidden = !dashboardChannels(dashboardSet()).includes("ITP");
+  const desired = [calibrationCard];
   for (const name of pins) {
     let item = pinnedNodes.get(name);
     if (!item) {
@@ -436,7 +432,6 @@ function renderPinned(state, manual, idleCheck, pins) {
     item.tabIndex = arranging ? 0 : -1;
     item.setAttribute('aria-label', `${sensor.title}${arranging ? ', drag to reorder' : ''}`);
     item.querySelector(".pinned-value").dataset.state = health.colorState;
-    tpsCard(item.querySelector(".pinned-open"), name, state, health.samples.at(-1)?.raw);
     desired.push(item);
   }
   syncChildren(container, desired);

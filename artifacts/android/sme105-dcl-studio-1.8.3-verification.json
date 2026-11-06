@@ -1,0 +1,28 @@
+{
+  "package": "com.maximizotech.sme105dclstudio",
+  "versionName": "1.8.3",
+  "versionCode": 5,
+  "apk": "artifacts/android/sme105-dcl-studio-1.8.3-debug.apk",
+  "apkBytes": 4773234,
+  "sha256": "4c9bfed753a8f7039ff093fe4457e74573c2cb0436e1a70792dc2f357caa6e2c",
+  "debugSigningCertificateSha256": "bf29b03fa7c5e7b4003a4df0fce71e4e1b6fe1ea81657542450a955722194505",
+  "nodeTests": {
+    "tests": 121,
+    "passed": 119,
+    "skipped": 2,
+    "failed": 0
+  },
+  "pythonTests": {
+    "tests": 273,
+    "passed": 263,
+    "skipped": 10,
+    "failed": 0
+  },
+  "android": {
+    "gradle": "testDebugUnitTest lintDebug assembleDebug BUILD SUCCESSFUL",
+    "installation": "NOT ATTEMPTED; currently installed application remains 1.8.2 until safely upgraded"
+  },
+  "esp32Firmware": "v24 unchanged, not flashed",
+  "vehicleCommands": "none performed during this work",
+  "rawEvidence": "read-only inspection only; no recordings or backups altered"
+}

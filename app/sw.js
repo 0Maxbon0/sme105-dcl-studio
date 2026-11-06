@@ -1,14 +1,14 @@
-const CACHE = "eeciv-v1.8.2-review-tps-1";
+const CACHE = "eeciv-v1.8.3-calibrated-card-1";
 const FILES = [
   "./",
   "./index.html",
-  "./styles.css?v=10",
+  "./styles.css?v=11",
   "./manifest.webmanifest",
   "./sw.js",
   "./icons/icon.svg",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
-  "./js/app.js?v=16",
+  "./js/app.js?v=17",
   "./js/ui.js",
   "./js/strings.js",
   "./js/protocol.js",

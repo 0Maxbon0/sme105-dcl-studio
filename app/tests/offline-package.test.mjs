@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { APP_VERSION } from "../js/protocol.js";
 test("every runtime local module is present and pre-cached for offline use",()=>{
   const app=fileURLToPath(new URL("../",import.meta.url));
   const sw=readFileSync(resolve(app,"sw.js"),"utf8");
@@ -14,5 +15,5 @@ test("every runtime local module is present and pre-cached for offline use",()=>
     for(const match of source.matchAll(/(?:from\s*|import\s*\()(["'])(\.{1,2}\/[^"']+)\1/g))queue.push(resolve(dirname(path),match[2].split("?")[0]));
   }
   assert.ok(seen.has(resolve(app,"js/kline.js")));assert.ok(seen.has(resolve(app,"js/koer-guide.js")));
-  assert.match(sw,/eeciv-v1\.8\.2/);
+  assert.ok(sw.includes(`eeciv-v${APP_VERSION}`), 'offline cache version must match the app');
 });

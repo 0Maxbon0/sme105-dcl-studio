@@ -12,7 +12,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=10">
+  <link rel="stylesheet" href="styles.css?v=11">
 </head>
 <body>
   <header class="top">
@@ -59,11 +59,34 @@
           <output id="review-clock">0.000s / 0.000s</output>
         </div>
       </section>
+      <section id="dashboard-overview" class="dashboard-overview" aria-label="Selected dashboard">
+        <section id="pinned-section" class="pinned-section">
+          <div class="section-heading"><h2 id="dashboard-title">My diagnostics</h2><button id="arrange-dashboard" type="button" aria-pressed="false">Arrange</button></div>
+          <div class="dashboard-tools"><p id="dashboard-hint" class="help">Tap a reading for its chart. Star other readings below to add them.</p><label>View<select id="dashboard-density"><option value="comfortable">Cards</option><option value="compact">List</option></select></label></div>
+          <div id="pinned-readings" class="pinned-grid">
+            <div id="tps-calibration-card" class="pinned-card tps-calibration-card">
+              <button id="tps-card-open" type="button" class="pinned-open" aria-label="Open calibrated throttle travel and TPS settings">
+                <span class="pinned-title">Throttle calibrated</span>
+                <span class="pinned-value"><strong id="tps-travel">—</strong><small class="reading-unit">%</small></span>
+                <small id="tps-raw" class="tps-card-raw">ITP raw: no sample</small>
+                <small id="tps-context" class="tps-card-context">Not calibrated</small>
+              </button>
+            </div>
+          </div>
+        </section>
+      </section>
+      <div class="group-heading"><h2 id="group-title">Overview</h2><div class="group-actions"><label class="group-picker">View<select id="live-group" aria-label="Live sensor group">
+        <option value="overview">All available</option>
+        <option value="engine">Engine / Idle</option>
+        <option value="fuel">Fuel / Combustion</option>
+        <option value="temp">Temp / Air</option>
+        <option value="switches">Switches / Electrical</option>
+        <option value="advanced">Technical inputs</option>
+      </select></label><button id="export-group-btn" type="button">Export CSV</button></div></div>
+      <p id="group-help" class="help group-help"></p>
+      <div id="live-cards" class="cards" aria-live="polite"></div>
       <section class="recording-panel" aria-label="TPS display calibration">
-        <p id="tps-raw">ITP raw: no sample</p>
-        <strong id="tps-travel">Calibrated throttle travel (%): —</strong>
-        <p id="tps-context" class="help">Not calibrated</p>
-        <details><summary>TPS profiles &amp; references</summary>
+        <details id="tps-profile-details"><summary>TPS profiles &amp; references</summary>
           <p class="help">Local display only. Free-rest is the unloaded sensor position; mounted closed is zero throttle travel. References do not certify butterfly angle or sensor health.</p>
           <label class="stack">Active display profile<select id="tps-profile"><option value="none">No calibration</option><option value="original">Original TPS</option><option value="spare">Spare TPS</option></select></label>
           <p id="tps-source" class="help"></p>
@@ -78,23 +101,6 @@
         </details>
         <label id="tps-history-apply" hidden><input id="tps-history-profile" type="checkbox">Apply current profile for comparison. Historical sensor identity is unrecorded.</label>
       </section>
-      <section id="dashboard-overview" class="dashboard-overview" aria-label="Selected dashboard">
-        <section id="pinned-section" class="pinned-section">
-          <div class="section-heading"><h2 id="dashboard-title">My diagnostics</h2><button id="arrange-dashboard" type="button" aria-pressed="false">Arrange</button></div>
-          <div class="dashboard-tools"><p id="dashboard-hint" class="help">Tap a reading for its chart. Star other readings below to add them.</p><label>View<select id="dashboard-density"><option value="comfortable">Cards</option><option value="compact">List</option></select></label></div>
-          <div id="pinned-readings" class="pinned-grid"></div>
-        </section>
-      </section>
-      <div class="group-heading"><h2 id="group-title">Overview</h2><div class="group-actions"><label class="group-picker">View<select id="live-group" aria-label="Live sensor group">
-        <option value="overview">All available</option>
-        <option value="engine">Engine / Idle</option>
-        <option value="fuel">Fuel / Combustion</option>
-        <option value="temp">Temp / Air</option>
-        <option value="switches">Switches / Electrical</option>
-        <option value="advanced">Technical inputs</option>
-      </select></label><button id="export-group-btn" type="button">Export CSV</button></div></div>
-      <p id="group-help" class="help group-help"></p>
-      <div id="live-cards" class="cards" aria-live="polite"></div>
       <section class="recording-panel" aria-labelledby="recordings-title">
         <div class="section-heading"><h2 id="recordings-title">Recordings &amp; exports</h2><span class="tag">On this phone</span></div>
         <p class="help recording-intro">Start &amp; save records automatically. Saved sessions stay available after you close the app.</p>
@@ -278,6 +284,6 @@
     </div>
   </div>
   <script src="vendor/jszip.min.js"></script>
-  <script type="module" src="js/app.js?v=16"></script>
+  <script type="module" src="js/app.js?v=17"></script>
 </body>
 </html>
