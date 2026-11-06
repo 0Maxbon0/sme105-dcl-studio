@@ -30,8 +30,54 @@ function identify(controller, { pass = "0", de = "LOW", stage = "0", auto = "0",
   controller.handleLine("AUTH OK transport=BLE");
   controller.handleLine(EXPECTED_HELLO);
   controller.handleLine(EXPECTED_PINS);
-  controller.handleLine(`STATUS SME105_USB_BRIDGE_V1 stage=${stage} DE=${de} auto_tx=${auto} gate4=${gate} tx2_bench_pass=${pass} tx2_bench_used=${pass} fault=0`);
+  controller.handleLine(`STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=${stage} DE=${de} auto_tx=${auto} gate4=${gate} tx2_bench_pass=${pass} tx2_bench_used=${pass} fault=0`);
 }
+
+test("BLE authorization is cleared on reconnect and required for vehicle operations", () => {
+  const { controller, sent } = harness();
+  identify(controller);
+  controller.onDisconnected();
+  controller.onConnected("SME105-DCL");
+  controller.handleLine(EXPECTED_HELLO);
+  controller.handleLine(EXPECTED_PINS);
+  controller.handleLine("STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0");
+  assert.equal(controller.requestVehicle("LIVE").ok, false);
+  assert.equal(sent.some(command => command.startsWith("ARM_")), false);
+  controller.handleLine("AUTH OK transport=BLE");
+  assert.equal(controller.requestVehicle("LIVE").ok, true);
+});
+
+test("an idle bridge with its read latch set is not rearmed", () => {
+  const { controller, sent } = harness();
+  identify(controller, { pass: "1" });
+  assert.equal(controller.requestVehicle("LIVE").ok, true);
+  controller.handleLine("STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 read_used=1 fault=19 out_overflow=0 transport_lost=0 usb_skipped=0");
+  assert.equal(controller.state.lastSession.verdict.status, "BRIDGE_READ_ALREADY_USED");
+  assert.equal(sent.some(command => command.startsWith("ARM_") || command.startsWith("READ_")), false);
+});
+
+test("used latch with transport loss is not called a clean read lock or armed", () => {
+  const { controller, sent } = harness();
+  identify(controller, { pass: "1" });
+  controller.requestVehicle("LIVE");
+  controller.handleLine("STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 read_used=1 fault=19 out_overflow=1 transport_lost=0 usb_skipped=0");
+  assert.equal(controller.state.lastSession.verdict.status, "INCOMPLETE");
+  assert.equal(sent.some(command => command.startsWith("ARM_")), false);
+});
+
+test("repeated fault while stopping sends STOP only once", () => {
+  const { controller, sent } = harness();
+  identify(controller, { pass: "1" });
+  controller.requestVehicle("LIVE");
+  controller.handleLine("STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 read_used=0 fault=0");
+  controller.handleLine("EVENT read_armed variant=LIVE valid_ms=15000 no_tx_yet=1");
+  controller.handleLine("EVENT session=READ_CANDIDATE epoch=2 boot_id=77");
+  controller.handleLine("FAULT reason=19 cause=RX_SILENCE no_auto_retry=1 DE=LOW");
+  controller.requestStop();
+  controller.handleLine("FAULT reason=19 cause=RX_SILENCE no_auto_retry=1 DE=LOW");
+  assert.equal(sent.filter(command => command === "STOP").length, 1);
+  assert.notEqual(controller.state.op.operatorStop, true);
+});
 
 test("ble module imports without a browser", () => {
   assert.equal(typeof ble.BleTransport, "function");
@@ -43,7 +89,7 @@ test("demo transcript answers HELLO, PINS and a stored-code read", () => {
   assert.equal(replay.respond("HELLO")[0], EXPECTED_HELLO);
   assert.equal(replay.respond("PINS")[0], EXPECTED_PINS);
   const { controller, sent } = harness();
-  controller.onConnected("demo");
+  controller.onConnected("demo"); controller.handleLine("AUTH OK transport=BLE");
   for (const line of replay.respond("HELLO")) controller.handleLine(line);
   for (const line of replay.respond("PINS")) controller.handleLine(line);
   for (const line of replay.respond("STATUS")) controller.handleLine(line);
@@ -67,7 +113,7 @@ test("demo transcript answers HELLO, PINS and a stored-code read", () => {
 test("KOEO demo replay keeps code 113 and the firmware block count", () => {
   const replay = createReplay(demo("koeo.txt"));
   const { controller } = harness();
-  controller.onConnected("demo");
+  controller.onConnected("demo"); controller.handleLine("AUTH OK transport=BLE");
   for (const line of replay.respond("HELLO")) controller.handleLine(line);
   for (const line of replay.respond("PINS")) controller.handleLine(line);
   for (const line of replay.respond("STATUS")) controller.handleLine(line);
@@ -95,14 +141,14 @@ test("unsafe status, denial, timeout and disconnect do not produce a trusted rea
   const unsafe = harness();
   identify(unsafe.controller, { de: "HIGH" });
   assert.equal(unsafe.controller.requestVehicle("0E").ok, true);
-  unsafe.controller.handleLine("STATUS SME105_USB_BRIDGE_V1 stage=0 DE=HIGH auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0");
+  unsafe.controller.handleLine("STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=0 DE=HIGH auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0");
   assert.equal(unsafe.sent.includes("ARM_0E"), false);
   assert.equal(unsafe.controller.state.trust, "untrusted");
 
   const denied = harness();
   identify(denied.controller, { pass: "1" });
   denied.controller.requestVehicle("0E");
-  denied.controller.handleLine("STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0");
+  denied.controller.handleLine("STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0");
   assert.equal(denied.sent.at(-1), "ARM_0E");
   denied.controller.handleLine("DENIED arm_required_or_consumed");
   assert.equal(denied.sent.includes("READ_0E"), false);
@@ -111,7 +157,7 @@ test("unsafe status, denial, timeout and disconnect do not produce a trusted rea
   const timed = harness();
   identify(timed.controller, { pass: "1" });
   timed.controller.requestVehicle("KOEO");
-  timed.controller.handleLine("STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0");
+  timed.controller.handleLine("STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0");
   timed.controller.handleLine("EVENT read_armed variant=KOEO valid_ms=15000 no_tx_yet=1");
   assert.equal(timed.sent.at(-1), "READ_KOEO");
   timed.advance(TIMEOUTS.KOEO + 1);
@@ -124,7 +170,7 @@ test("unsafe status, denial, timeout and disconnect do not produce a trusted rea
   const dropped = harness();
   identify(dropped.controller, { pass: "1" });
   dropped.controller.requestVehicle("OFF");
-  dropped.controller.handleLine("STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0");
+  dropped.controller.handleLine("STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0");
   dropped.controller.handleLine("EVENT read_armed variant=OFF valid_ms=15000 no_tx_yet=1");
   dropped.controller.onDisconnected();
   assert.equal(dropped.controller.state.link, "disconnected");
@@ -135,10 +181,39 @@ test("an already-passed bench is not repeated before ARM", () => {
   const { controller, sent } = harness();
   identify(controller, { pass: "1" });
   controller.requestVehicle("A4");
-  controller.handleLine("STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0");
+  controller.handleLine("STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0");
   assert.equal(sent.includes("TX2_BENCH"), false);
   assert.equal(sent.at(-1), "ARM_A4");
   controller.handleLine("EVENT read_armed variant=A4 valid_ms=15000 no_tx_yet=1");
   assert.equal(sent.at(-1), "READ_A4");
   assert.deepEqual(sent.filter((command) => command.startsWith("ARM_") || command.startsWith("READ_")), ["ARM_A4", "READ_A4"]);
+});
+
+test("start failures preserve mismatched counters and never retry", () => {
+  for (const reason of [3, 4, 19]) {
+    const { controller, sent } = harness();
+    identify(controller, { pass: "1" });
+    controller.requestVehicle("LIVE");
+    controller.handleLine("STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 read_used=0 fault=0");
+    controller.handleLine("EVENT read_armed variant=LIVE valid_ms=15000 no_tx_yet=1");
+    controller.handleLine("EVENT session=READ_CANDIDATE epoch=2 boot_id=77");
+    controller.handleLine("EVENT ack=candidate_11_echo_plus_01 source=UNVERIFIED");
+    controller.handleLine(`FAULT reason=${reason} cause=RX_SILENCE DE=LOW`);
+    controller.handleLine(`END reason=${reason} ro_bytes=93380 ro_lost=0 uart_errors=0 DE=LOW`);
+    assert.equal(controller.state.lastSession.outcome, "NOT_STARTED_ECU_NO_RESPONSE");
+    assert.match(controller.state.lastSession.verdict.reasons.join(" "), /RX lines 0 != ro_bytes 93380/);
+    assert.equal(sent.filter(x => x === "READ_LIVE").length, 1);
+    assert.equal(sent.filter(x => x === "ARM_LIVE").length, 1);
+    assert.equal(sent.filter(x => x === "STOP").length, 1);
+  }
+});
+
+test("busy or hardware-faulted bridges are not described as a clean read lock", () => {
+  for (const [stage, fault] of [["2", "19"], ["0", "17"], ["0", "11"]]) {
+    const { controller, sent } = harness(); identify(controller, { pass: "1" });
+    controller.requestVehicle("LIVE");
+    controller.handleLine(`STATUS SME105_USB_BRIDGE_V1 stage=${stage} DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 read_used=1 fault=${fault} out_overflow=0 transport_lost=0 usb_skipped=0`);
+    assert.notEqual(controller.state.lastSession.verdict.status, "BRIDGE_READ_ALREADY_USED");
+    assert.equal(sent.some(x => x.startsWith("ARM_")), false);
+  }
 });

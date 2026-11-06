@@ -91,7 +91,7 @@ export const STR = {
   confirmKoeoTitle: "KOEO self-test",
   confirmKoeoBody: "Ignition ON, engine OFF, gear in P/N, feet off the pedals. The test takes about 60 seconds. The app sends one request and does not retry.",
   confirmKoerTitle: "Engine-running test",
-  confirmKoerBody: "Do not proceed with raw-petrol odor or unstable idle. A qualified technician must validate the vehicle procedure and safe conditions first: outdoors, stationary, manual gearbox in neutral and parking brake applied. No authenticated ECU action cue is available; the app will not request pedal, steering or brake actions from elapsed time or trouble codes. A four-minute capture limit is not proof of test completion. Stop aborts; there is no retry. / لا تبدأ مع رائحة بنزين خام أو خمول غير مستقر. يلزم فني وإجراء موثق ومكان مفتوح وسيارة ثابتة وعلى المحايد وفرامل اليد مفعلة. لا توجد إشارة موثقة لحركات المشغّل. انتهاء التسجيل لا يثبت نجاح الاختبار. الإيقاف يلغي دون إعادة تلقائية.",
+  confirmKoerBody: "Do not proceed with raw-petrol odor or unstable idle. A qualified technician must validate the vehicle procedure and safe conditions first: outdoors, stationary, manual gearbox in neutral and parking brake applied. No authenticated ECU action cue is available; the app will not request pedal, steering or brake actions from elapsed time or trouble codes. A four-minute capture limit is not proof of test completion. Stop aborts; there is no retry.",
   confirmLiveTitle: "Live data",
   confirmLiveBody: "Vehicle parked. The engine may be running. The numbers keep updating until you tap Stop, or for 3 hours. The app does not retry.",
   confirmOffTitle: "Go offline",

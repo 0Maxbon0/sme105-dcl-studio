@@ -1,3 +1,6 @@
+import { createIgnitionReview } from "./ignition-review.js";
+import { reconcileOutcome } from "./session-history.js";
+import { sessionWarning } from "./session-outcome.js";
 import { warningsForDiagnosticSession } from "./dtc-history.js";
 import { wireKline } from "./kline-ui.js";
 import { createKoerGuide } from "./koer-guide.js";
@@ -45,6 +48,9 @@ const controller = createController({
   },
 });
 
+const ignitionReview = createIgnitionReview({ controller, render, refreshWarnings });
+const refreshPendingIgnition = show => ignitionReview.refresh(show);
+
 function acceptText(chunk) {
   for (const line of buffer.push(chunk)) controller.handleLine(line);
 }
@@ -71,7 +77,7 @@ async function refreshKoerJournal() {
   try {
     const events = await diagnosticHistory();
     document.getElementById("koer-operator-history").textContent = events.filter(e => e.type.startsWith("KOER_")).slice(-40)
-      .map(e => `${e.utc} · ${e.type} · ${e.detail.source || "app"} · ${e.detail.action || e.detail.phase || e.detail.type || ""}`).join("\n") || "No operator markers saved. / لا توجد علامات مشغّل محفوظة.";
+      .map(e => `${e.utc} · ${e.type} · ${e.detail.source || "app"} · ${e.detail.action || e.detail.phase || e.detail.type || ""}`).join("\n") || "No operator markers saved.";
   } catch (error) { document.getElementById("koer-operator-history").textContent = `Journal unavailable: ${error.message}`; }
 }
 
@@ -89,7 +95,7 @@ function auditState(state) {
   if (state.op?.variant === "KOER") {
     if (koerGuide.state.sessionId !== state.op.startedAt) { koerGuide.start(state.op.startedAt); koerEvidenceCount = 0; }
     const evidence = state.cart?.snapshot()?.evidence || [];
-    for (; koerEvidenceCount < evidence.length; ++koerEvidenceCount) koerGuide.evidence({ ...evidence[koerEvidenceCount], source: state.transport === "demo" ? "simulation" : "bridge" });
+    for (; koerEvidenceCount < evidence.length; ++koerEvidenceCount) koerGuide.evidence({ ...evidence[koerEvidenceCount], source: state.op.source });
   }
 
   state.koerGuide = koerGuide.state;
@@ -121,14 +127,14 @@ function auditState(state) {
   previousSessionKey = key;
   if (session.variant === "KOER") {
     const evidence = session.ecuEvidence || [];
-    for (; koerEvidenceCount < evidence.length; ++koerEvidenceCount) koerGuide.evidence({ ...evidence[koerEvidenceCount], source: state.transport === "demo" ? "simulation" : "bridge" });
+    for (; koerEvidenceCount < evidence.length; ++koerEvidenceCount) koerGuide.evidence({ ...evidence[koerEvidenceCount], source: session.source });
     koerGuide.finish({ disconnected: session.verdict?.reasons?.includes("link lost"),
     aborted: session.verdict?.end?.reason === 15, timedOut: session.verdict?.end?.reason === 16,
     captureIntegrity: session.verdict?.status });
   }
   const evidence = {
-    channel: "DCL", source: state.transport === "demo" ? "simulation" : "bridge", hardwareVerified: false, variant: session.variant, kind: session.kind, startedAt: session.startedAt, completedAt: session.completedAt,
-    verdict: session.verdict, requestedMode: session.requestedMode, observedModes: session.observedModes,
+    recordingId: session.recordingId, bridgeStatus: session.bridgeStatus, denial: session.denial, channel: "DCL", source: session.source, hardwareVerified: false, variant: session.variant, kind: session.kind, startedAt: session.startedAt, completedAt: session.completedAt,
+    verdict: session.verdict, outcome: session.outcome || null, requestedMode: session.requestedMode, observedModes: session.observedModes,
     dtcVerified: session.dtcVerified, selfTestComplete: session.selfTestComplete,
     integrity: session.integrity, ecuEvidence: session.ecuEvidence,
     codes: session.codes, blocks25: session.blocks25, blocks26: session.blocks26,
@@ -136,16 +142,17 @@ function auditState(state) {
     codeParityRejects: session.codeParityRejects,
   };
   recordDiagnosticEvent("SESSION_RESULT", evidence, "session").then(refreshTestHistory);
-  if (!session.verdict?.valid) {
-    const failed = session.verdict?.status === "FAILED";
-    const warningKey = `session-${session.variant}-${session.completedAt}`;
-    recordDiagnosticWarning(warningKey, true, { severity: failed ? "red" : "amber", sensor: "Session",
-      ruleId: `SESSION-${session.verdict?.status || "INCOMPLETE"}`, reason: (session.verdict?.reasons || ["Session incomplete"]).join("; "),
-      source: `${session.variant} session validity checks`, evidence });
-  }
+  const warning = sessionWarning(session);
+  if (warning) recordDiagnosticWarning(`session-${session.variant}-${session.completedAt}`, true, { ...warning, evidence });
   for (const {key, warning} of warningsForDiagnosticSession(session)) recordDiagnosticWarning(key, true, warning);
   // New datasets never resolve older warnings or imply a memory clear.
   refreshWarnings();
+  if (session.outcome === "OPERATOR_CONFIRMATION_PENDING") {
+    void (async () => {
+      await state.archive?.finished;
+      await refreshPendingIgnition(true);
+    })().catch(error => { state.message = `Could not save confirmation: ${error.message}`; render(state); });
+  }
 }
 
 function auditFreshness(state) {
@@ -293,7 +300,7 @@ async function refreshRecordings() {
   const previous = select.value;
   try {
     const entries = await listRecordings();
-    select.replaceChildren(...entries.map(entry => new Option(`${entry.started ? new Date(entry.started).toLocaleString() : entry.id} · ${entry.variant}`, entry.id)));
+    select.replaceChildren(...entries.map(entry => new Option(`${entry.started ? new Date(entry.started).toLocaleString() : entry.id} · ${entry.variant} · ${entry.outcome || entry.verdict?.status || "Recording"}`, entry.id)));
     if (entries.some(entry => entry.id === previous)) select.value = previous;
     document.getElementById("saved-csv").disabled = !entries.length;
     document.getElementById("saved-log").disabled = !entries.length;
@@ -368,7 +375,9 @@ async function restoreLastDiagnosticResult() {
   const events = await diagnosticHistory();
   const resultEvent = events.filter(event => event.type === "SESSION_RESULT").at(-1);
   if (!resultEvent?.detail) return;
-  const detail = resultEvent.detail;
+  const detail = { ...resultEvent.detail };
+  const recording = (await listRecordings()).find(item => item.id === detail.recordingId);
+  if (recording?.outcome) Object.assign(detail, { outcome: recording.outcome, operatorConfirmation: recording.operatorConfirmation });
   controller.state.lastSession = { ...detail, rows: [], pids: {}, mem: {}, rom: null, totalRows: 0 };
   controller.state.trust = detail.verdict?.valid ? "valid" : "untrusted";
   if (detail.variant === "KOER") Object.assign(koerGuide.state, { phase: "ENDED_UNVERIFIED", sessionId: detail.startedAt, prompt: null, verifiedSuccess: false });
@@ -399,7 +408,7 @@ function wire() {
   wireKline();
   void refreshKoerJournal();
   document.querySelectorAll("[data-operator-marker]").forEach(button => button.addEventListener("click", async () => {
-    try { const event = koerGuide.confirm(button.dataset.operatorMarker); if (!await operatorSave) throw new Error("Operator marker was not saved; diagnostic storage failed"); await refreshKoerJournal(); document.getElementById("operator-marker-status").textContent = `Human report saved: ${new Date(event.at).toLocaleTimeString()} · not ECU confirmed / تقرير بشري غير مؤكد من وحدة التحكم`; }
+    try { const event = koerGuide.confirm(button.dataset.operatorMarker); if (!await operatorSave) throw new Error("Operator marker was not saved; diagnostic storage failed"); await refreshKoerJournal(); document.getElementById("operator-marker-status").textContent = `Human report saved: ${new Date(event.at).toLocaleTimeString()} · not ECU confirmed`; }
     catch (error) { document.getElementById("operator-marker-status").textContent = error.message; }
   }));
   const storedMode = readStorage("eeciv-stored-code-mode");
@@ -579,6 +588,8 @@ function wire() {
   document.getElementById("saved-csv").addEventListener("click", () => downloadSaved("csv"));
   document.getElementById("saved-log").addEventListener("click", () => downloadSaved("raw"));
   refreshRecordings();
+  void refreshPendingIgnition(true).catch(error => { controller.state.message = `Recording storage unavailable: ${error.message}`; render(controller.state); });
+  ignitionReview.wire();
   refreshTestHistory();
   void restoreDashboardCapture(controller.state);
   document.getElementById("saved-tests").addEventListener("change", showSavedTest);
@@ -657,6 +668,7 @@ async function boot() {
   try {
     await startDiagnosticRun();
     await restoreLastDiagnosticResult();
+    for (const item of await listRecordings()) if (item.operatorConfirmation && item.session) await reconcileOutcome(item);
   }
   catch (error) { document.getElementById("message").textContent = `Diagnostic storage is unavailable: ${error.message}`; }
   window.addEventListener("error", event => {

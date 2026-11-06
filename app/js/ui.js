@@ -594,7 +594,7 @@ export function render(state) {
   const promptBox = $("koer-prompt");
   promptBox.hidden = variant !== "KOER";
   promptBox.setAttribute("role", "status");
-  promptBox.textContent = `${state.koerGuide?.phase || "PREPARATION"} · No authenticated ECU operator prompt is available. Do not act on a countdown or fault code. لا توجد إشارة موثقة من وحدة التحكم؛ لا تضغط الوقود أو تحرك المقود أو الفرامل اعتماداً على الوقت أو كود عطل.`;
+  promptBox.textContent = `${state.koerGuide?.phase || "PREPARATION"} · No authenticated ECU operator prompt is available. Do not act on a countdown or fault code.`;
 
   const snap = activeSnap(state);
   const result = state.op ? null : state.lastSession;
@@ -694,6 +694,8 @@ export function render(state) {
   if (activeView === "log") {
     const verdict = result?.verdict;
     const summary = [];
+    if (result?.outcome) summary.push(`Session ending: ${result.outcome.replaceAll("_", " ").toLowerCase()}`);
+    if (result?.operatorConfirmation) summary.push(`Operator response saved: ${new Date(result.operatorConfirmation.confirmedAt).toLocaleString()}`);
     if (!verdict) summary.push(STR.notKnown);
     else {
       const label = verdict.valid ? STR.valid : verdict.status === "FAILED" ? STR.failed : STR.incomplete;

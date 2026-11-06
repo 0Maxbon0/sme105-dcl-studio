@@ -42,11 +42,11 @@ test("writes are newline-terminated and chunked at 180 bytes", () => {
 });
 
 test("status safety and reason 16 text", () => {
-  const ok = parseLine("STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 fw=17 tx2_bench_pass=1 fault=0");
+  const ok = parseLine("STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=0 DE=LOW auto_tx=0 gate4=1 fw=17 tx2_bench_pass=1 fault=0");
   assert.equal(ok.type, "status");
   assert.equal(ok.fields.fw, "17");
   assert.equal(statusSafe(ok), true);
-  const bad = parseLine("STATUS SME105_USB_BRIDGE_V1 stage=6 DE=HIGH auto_tx=1 gate4=0 fault=8");
+  const bad = parseLine("STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=6 DE=HIGH auto_tx=1 gate4=0 fault=8");
   assert.equal(statusSafe(bad), false);
   assert.match(reasonText(16), /CAPTURE_TIMEOUT/);
   assert.equal(parseLine(EXPECTED_HELLO).ok, true);
@@ -66,4 +66,13 @@ test("RX, pad, end and denial lines", () => {
   assert.equal(end.reasonName, "CAPTURE_TIMEOUT");
   assert.equal(parseLine("DENIED remote_busy").type, "denied");
   assert.equal(parseLine("AUTH OK transport=BLE").ok, true);
+});
+
+test("malformed RX cannot enter the decoder as a valid byte", () => {
+  for (const line of ["RX t_us=-1 byte=AA", "RX t_us=1.5 byte=AA", "RX t_us=4294967296 byte=AA", "RX t_us=1 byte=100", "RX t_us=1 byte=1G", "RX t_us=1 byte=aa"]) {
+    const result = parseLine(line);
+    assert.equal(result.type, "fault", line);
+    assert.equal(result.raw, line);
+  }
+  assert.equal(parseLine("RX t_us=4294967295 byte=FF").byte, 255);
 });

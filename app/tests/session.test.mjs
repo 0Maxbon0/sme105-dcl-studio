@@ -183,3 +183,19 @@ test("v21 live RX silence cannot be misreported as a successful capture", () => 
     "END reason=16 ro_bytes=0 ro_lost=0 uart_errors=0 pad_verified=0 words_started=0 ecu_verified=0 dtc_verified=0 DE=LOW",
   ].join("\n"))).valid, true);
 });
+
+test("v24 witness requires four unique complete session-bound rows and cumulative counts", () => {
+  const rows = ["01B0", "FF5F", "4196", "00A0"].map((word, slot) =>
+    `TX_PAD slot=${slot} expected=${word} observed=${word} tx_us=${1000 + slot * 3000} done_us=${3000 + slot * 3000} match=1 evidence=2 epoch=5 boot_id=77 tx_seq=${slot + 1} block=0 complete=1`);
+  const start = "EVENT session=READ_CANDIDATE epoch=5 boot_id=77";
+  const end = "END reason=16 ro_bytes=0 ro_lost=0 uart_errors=0 evidence=2 epoch=5 boot_id=77 witness_started=20 witness_verified=20 pad_verified=4 words_started=4 DE=LOW";
+  const verdict = (pads, final = end) => sessionVerdict(feed([start, ...pads, final].join("\n")));
+  assert.equal(verdict(rows).witnessStatus, "SESSION_BOUND");
+  assert.equal(verdict(rows).valid, true);
+  for (const bad of [[], rows.slice(0, 1), [rows[0], rows[0], rows[2], rows[3]], rows.map(x => x.replace("boot_id=77", "boot_id=78")), rows.map(x => x.replace("complete=1", "complete=0")), rows.map(x => x.replace(/ done_us=\d+/, ""))]) {
+    assert.equal(verdict(bad).valid, false);
+  }
+  assert.equal(verdict(rows, end.replace("witness_verified=20", "witness_verified=0")).valid, false);
+  assert.equal(verdict(rows.map((row, i) => i ? row : `${row} epoch=5`)).valid, false);
+  assert.equal(verdict(rows, `${end} epoch=5`).valid, false);
+});

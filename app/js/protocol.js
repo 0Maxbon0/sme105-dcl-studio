@@ -183,7 +183,7 @@ export function parseLine(line) {
     }
     return { type: "fault", raw, reason: "RX_BATCH_FORMAT" };
   }
-  if (raw.startsWith("AUTH OK")) return { type: "auth", ok: true, raw };
+  if (raw === "AUTH OK" || raw === "AUTH OK transport=BLE") return { type: "auth", ok: true, raw };
   if (raw.startsWith("DENIED") || raw.startsWith("TX2_BENCH_DENIED")) {
     return { type: "denied", raw, reason: raw.replace(/^(DENIED|TX2_BENCH_DENIED)\s*/, "") };
   }
@@ -234,11 +234,9 @@ export function parseLine(line) {
     };
   }
   if (raw.startsWith("RX ")) {
-    const fields = parseFields(raw);
-    const byte = fields.byte ? Number.parseInt(fields.byte, 16) : NaN;
-    const t = fields.t_us !== undefined ? Number(fields.t_us) : NaN;
-    if (!Number.isFinite(byte) || !Number.isFinite(t)) return { type: "other", raw };
-    return { type: "rx", raw, t_us: t, byte };
+    const match = raw.match(/^RX t_us=(\d{1,10}) byte=([0-9A-F]{2})(?: seq=\d{1,20})?$/);
+    if (!match || Number(match[1]) > 0xffffffff) return { type: "fault", raw, reason: "RX_FORMAT" };
+    return { type: "rx", raw, t_us: Number(match[1]), byte: Number.parseInt(match[2], 16) };
   }
   if (raw.startsWith("EVENT read_armed")) {
     const fields = parseFields(raw);

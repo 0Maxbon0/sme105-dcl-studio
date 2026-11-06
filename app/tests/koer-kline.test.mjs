@@ -42,7 +42,7 @@ test("KOEO has the same result bit; neither test can generate a real-time operat
 test("new pad provenance is bound to a single epoch; legacy remains unverified",()=>{
   const s=createSession();for(const line of ["EVENT session=READ_CANDIDATE epoch=5 boot_id=77","TX_PAD slot=2 expected=253E observed=253E match=1 evidence=2 epoch=4 boot_id=77 tx_seq=3 block=0 complete=1","END reason=16 ro_bytes=0 ro_lost=0 uart_errors=0 DE=LOW epoch=5 boot_id=77"])noteSessionLine(s,parseLine(line));
   assert.equal(sessionVerdict(s).valid,false);assert.match(sessionVerdict(s).reasons.join(),/provenance/);
-  s.pads[0].epoch=5;assert.equal(sessionVerdict(s).witnessStatus,"SESSION_BOUND");
+  s.pads[0].epoch=5;assert.equal(sessionVerdict(s).witnessStatus,"LEGACY_UNVERIFIED");assert.equal(sessionVerdict(s).valid,false);
 });
 test("K-Line hardware absent and every import is unverified, with independent clocks and binary provenance",()=>{
   assert.equal(KLINE_CAPABILITY.hardwareEnabled,false);assert.equal(KLINE_CAPABILITY.txEnabled,false);

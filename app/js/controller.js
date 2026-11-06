@@ -11,6 +11,7 @@ import {
 import { createSession, noteSessionLine, sessionVerdict } from "./session.js";
 import { appendCombined, createCombined, finishCombinedSegment, GROUP_WINDOW_MS, LIVE_GROUPS, startCombinedSegment } from "./combined.js";
 import { recordBridgeRaw, recordDiagnosticSample } from "./diagnostics.js";
+import { noResponseFromStart, ignitionConfirmationNeeded, ECU_NO_RESPONSE_MESSAGE } from "./session-outcome.js";
 
 function unique(list) {
   const out = [];
@@ -81,9 +82,12 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     return {
       variant,
       kind: state.op?.kind || "",
+      source: state.op?.source || "bridge",
       startedAt: state.op?.startedAt || null,
       completedAt: now(),
       verdict,
+      bridgeStatus: state.status,
+      denial: state.op?.denial || null,
       requestedMode,
       observedModes: [
         ...((snap?.blocks25 || 0) > 0 ? [0x25] : []),
@@ -115,6 +119,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
   }
 
   function finalize(override) {
+    if (!state.op) return;
     if (state.cart && !state.cart.snapshot().closed) state.cart.finish();
     const session = state.op?.session || null;
     let verdict = session ? sessionVerdict(session, {
@@ -133,6 +138,15 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       verdict = { valid: false, status: "INCOMPLETE", reasons: ["session did not start"], end: null };
     }
     state.lastSession = buildResult(verdict);
+    if (noResponseFromStart(session, state.lastSession, state.op?.operatorStop, override)) {
+      state.lastSession.outcome = "NOT_STARTED_ECU_NO_RESPONSE";
+      verdict.outcome = state.lastSession.outcome;
+    }
+    if (ignitionConfirmationNeeded(session, state.lastSession, state.op, override)) {
+      state.lastSession.outcome = "OPERATOR_CONFIRMATION_PENDING";
+      verdict.outcome = state.lastSession.outcome;
+    }
+    state.lastSession.recordingId = state.archive?.id || null;
     if (state.op?.variant === "ALL" && verdict.valid) {
       const map = state.op.session?.pidMap;
       const complete = [15, 16].includes(verdict.end?.reason) && verdict.end?.de === "LOW"
@@ -164,7 +178,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       }
     }
     state.trust = verdict.valid && !combined?.failed ? "valid" : "untrusted";
-    state.archive?.finish(verdict).catch(error => { state.message = `Recording storage: ${error.message}`; touch(); });
+    if (state.archive) state.archive.finished = state.archive.finish(verdict, { outcome: state.lastSession.outcome || null, session: { variant: state.lastSession.variant, startedAt: state.lastSession.startedAt, completedAt: state.lastSession.completedAt } }).catch(error => { state.message = `Recording storage: ${error.message}`; touch(); return null; });
     if (verdict.valid && state.lastSession.rom) state.rom = state.lastSession.rom;
     const vbat = state.lastSession.pids.VBAT?.summary?.last;
     if (verdict.valid && vbat != null) state.battery = vbat;
@@ -178,14 +192,39 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
         : `Valid — ${verdict.end ? reasonText(verdict.end.reason) : "complete"}`
       : `${verdict.status}: ${verdict.reasons.join("; ")}`;
     if (combined?.error) state.message = combined.error;
+    if (state.lastSession.outcome === "OPERATOR_CONFIRMATION_PENDING") state.message = "Live data stopped. Operator confirmation is pending.";
+    if (state.lastSession.outcome === "NOT_STARTED_ECU_NO_RESPONSE") state.message = ECU_NO_RESPONSE_MESSAGE;
     touch();
   }
 
   function beginArm() {
+    if (state.transport === "ble" && state.identity.auth !== "OK") {
+      finalize({ status: "FAILED", reason: "bridge authentication pending" });
+      return;
+    }
     state.phase = "arm";
     state.message = `Arming ${state.op.variant}`;
     arm(TIMEOUTS.arm);
     send(`ARM_${state.op.variant}`);
+  }
+
+  function checkReadLatch(parsed) {
+    if (!state.op?.variant) return false;
+    if (parsed.fields.read_used !== "1") {
+      if (parsed.fields.read_used !== "0") {
+        finalize({ status: "INCOMPLETE", reason: "Bridge read lock status is unknown." });
+        return true;
+      }
+      return false;
+    }
+    const counters = ["out_overflow", "transport_lost", "usb_skipped"];
+    const keys = [...parsed.raw.matchAll(/(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)=/g)].map(match => match[1]);
+    const clean = parsed.safe && now() - (parsed.receivedAt ?? now()) <= TIMEOUTS.status && parsed.identity === "SME105_USB_BRIDGE_V1" && new Set(keys).size === keys.length &&
+      counters.every(key => parsed.fields[key] === "0") && ["0", "3", "4", "15", "16", "19"].includes(parsed.fields.fault);
+    finalize(clean
+      ? { status: "BRIDGE_READ_ALREADY_USED", reason: "The bridge is locked after a previous read. Restart the bridge safely before starting another read." }
+      : { status: "INCOMPLETE", reason: "Bridge read latch is used; transport status is missing or reports a problem." });
+    return true;
   }
 
   function onStatus(parsed) {
@@ -194,6 +233,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       fields: parsed.fields,
       raw: parsed.raw,
       safe: parsed.safe,
+      receivedAt: now(),
     };
     state.bench.pass = parsed.fields.tx2_bench_pass === "1";
     if (state.phase === "identify_status") {
@@ -202,11 +242,17 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       state.message = parsed.safe ? "Bridge idle" : "Bridge is not in a safe idle state";
       return;
     }
+    const statusKeys = [...parsed.raw.matchAll(/(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)=/g)].map(match => match[1]);
+    const verifiedStatus = parsed.identity === "SME105_USB_BRIDGE_V1" && new Set(statusKeys).size === statusKeys.length &&
+      ["out_overflow", "transport_lost", "usb_skipped"].every(key => parsed.fields[key] === "0" ||
+        (parsed.fields[key] == null && !(Number(parsed.fields.fw) >= 24 || parsed.fields.pad_evidence === "2"))) &&
+      ["0", "3", "4", "15", "16", "19"].includes(parsed.fields.fault);
     if (state.phase === "pre_status") {
-      if (!parsed.safe) {
+      if (!parsed.safe || !verifiedStatus) {
         finalize({ status: "INCOMPLETE", reason: "bridge not idle/safe" });
         return;
       }
+      if (checkReadLatch(parsed)) return;
       const runBench = state.op?.manualBench || parsed.fields.tx2_bench_pass !== "1";
       if (runBench) {
         state.phase = "bench";
@@ -219,7 +265,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       return;
     }
     if (state.phase === "post_status") {
-      if (!parsed.safe || parsed.fields.tx2_bench_pass !== "1") {
+      if (!parsed.safe || !verifiedStatus || parsed.fields.tx2_bench_pass !== "1") {
         finalize({ status: "INCOMPLETE", reason: "bench did not leave the bridge safe" });
         return;
       }
@@ -230,6 +276,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
         state.message = "Bridge self-test passed";
         return;
       }
+      if (checkReadLatch(parsed)) return;
       beginArm();
     }
   }
@@ -243,7 +290,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
         onSample(sample) {
           sample.receivedAt = now();
           state.archive.sample(sample);
-          recordDiagnosticSample(sample, { variant: state.op?.variant || "", source: state.transport === "demo" ? "simulation" : "bridge" });
+          recordDiagnosticSample(sample, { variant: state.op?.variant || "", source: state.op?.source || "bridge" });
         },
       } : {});
     }
@@ -275,7 +322,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
 
   function handleLine(line) {
     const parsed = parseLine(line);
-    recordBridgeRaw(parsed.raw, { source: state.transport === "demo" ? "simulation" : "bridge" });
+    recordBridgeRaw(parsed.raw, { source: state.op?.source || (state.transport === "demo" ? "simulation" : "bridge") });
     state.archive?.line(parsed.raw);
     state.log.push(parsed.raw);
     if (state.archive && state.log.length > 2100) state.log.splice(0, state.log.length - 2000);
@@ -349,21 +396,24 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       return;
     }
     if ((state.phase === "arm" || state.phase === "read" || state.phase === "bench") && parsed.type === "denied") {
+      if (state.op) state.op.denial = parsed.raw;
       if (state.op?.session) noteSessionLine(state.op.session, parsed);
-      finalize({ status: "INCOMPLETE", reason: parsed.raw });
+      if (parsed.reason === "read_used_or_busy" && state.status?.fields.read_used === "1" &&
+          now() - state.status.receivedAt <= TIMEOUTS.status && checkReadLatch(state.status)) return;
+      finalize({ status: "INCOMPLETE", reason: parsed.reason === "read_used_or_busy"
+        ? "Bridge refused the read. Current safe idle and read-lock status could not be verified." : parsed.raw });
       return;
     }
     if (parsed.type === "fault" && (state.phase === "read" || state.phase === "stopping")) {
+      const alreadyStopping = state.phase === "stopping";
       if (state.op) {
         if (!state.op.session) state.op.session = createSession();
         noteSessionLine(state.op.session, parsed);
-        state.op.forceStatus = "INCOMPLETE";
-        state.op.forceReason = parsed.raw;
+        if (!state.op.forceStatus) { state.op.forceStatus = "INCOMPLETE"; state.op.forceReason = parsed.raw; }
       }
       state.phase = "stopping";
       state.message = parsed.raw;
-      arm(TIMEOUTS.stop);
-      send("STOP");
+      if (!alreadyStopping) { arm(TIMEOUTS.stop); send("STOP"); }
       touch();
       return;
     }
@@ -374,7 +424,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     if (parsed.type === "stop" && state.phase === "stopping") {
       // STOP acknowledgement precedes drained RX and END in the real bridge.
       // Keep receiving an established capture until its END or stop timeout.
-      if (state.op?.session?.started && !state.op.forceStatus) return;
+      if (state.op?.session?.started) return;
       const override = state.op?.forceStatus
         ? { status: state.op.forceStatus, reason: state.op.forceReason }
         : { status: "INCOMPLETE", reason: "stopped" };
@@ -393,10 +443,12 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
 
   function beginPrecheck(op) {
     if (state.link !== "ready") return "not connected";
+    if (state.transport === "ble" && state.identity.auth !== "OK") return "bridge authentication pending";
     if (state.phase !== "idle") return "busy";
     if (state.identity.helloOk !== true || state.identity.pinsOk !== true) return "bridge identity not verified";
     if (op.kind !== "live") state.archive = null;
     op.startedAt = now();
+    op.source = state.transport === "demo" ? "simulation" : "bridge";
     state.op = op;
     if (!op.manualBench || op.variant) {
       state.lastSession = null;
@@ -435,6 +487,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     failRecording(message) {
       if (state.op) { state.op.forceStatus = "INCOMPLETE"; state.op.forceReason = message; }
       else if (state.lastSession) {
+        state.lastSession.outcome = "STORAGE_FAILURE";
         state.lastSession.verdict = { ...state.lastSession.verdict, valid: false, status: "INCOMPLETE", reasons: [message] };
         state.trust = "untrusted";
       }
@@ -448,19 +501,19 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     },
     handleLine,
     onConnected(name = "", transport = "ble") {
-      const auth = state.identity.auth;
       state.link = "ready";
       state.deviceName = name;
       state.transport = transport;
       state.log = [];
       state.archive = null;
+      state.status = null;
       state.lastSession = null;
       state.combined = null;
       state.cart = null;
       state.rom = null;
       state.battery = null;
       state.trust = "none";
-      state.identity = { auth, hello: "", helloOk: null, pins: "", pinsOk: null };
+      state.identity = { auth: "", hello: "", helloOk: null, pins: "", pinsOk: null };
       state.phase = "identify_hello";
       state.message = "Checking bridge identity";
       arm(TIMEOUTS.identify);
@@ -472,6 +525,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       if (state.link === "disconnected") return;
       const phase = state.phase;
       state.link = "disconnected";
+      state.identity.auth = "";
       state.deviceName = "";
       state.transport = "";
       if (phase === "idle") {
@@ -530,6 +584,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     requestReboot() {
       if (state.combined?.active) return { ok: false, error: "busy" };
       if (state.link !== "ready") return { ok: false, error: "not connected" };
+      if (state.transport === "ble" && state.identity.auth !== "OK") return { ok: false, error: "bridge authentication pending" };
       if (state.phase !== "idle") return { ok: false, error: "busy" };
       state.phase = "reboot";
       state.message = "Rebooting bridge";
@@ -538,7 +593,10 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       touch();
       return { ok: true };
     },
-    requestStop: stop,
+    requestStop() {
+      if (state.op && state.phase !== "stopping") state.op.operatorStop = true;
+      stop();
+    },
     tick() {
       const combined = state.combined;
       if (combined?.active) {

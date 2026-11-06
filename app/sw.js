@@ -1,4 +1,4 @@
-const CACHE = "eeciv-v1.8.1";
+const CACHE = "eeciv-v1.8.1-lifecycle-2";
 const FILES = [
   "./",
   "./index.html",
@@ -13,6 +13,9 @@ const FILES = [
   "./js/strings.js",
   "./js/protocol.js",
   "./js/session.js",
+  "./js/session-outcome.js",
+  "./js/session-history.js",
+  "./js/ignition-review.js",
   "./js/chart-series.js",
   "./js/dashboard-layout.js",
   "./js/test-history.js",

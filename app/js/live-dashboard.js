@@ -24,7 +24,7 @@ export const LIVE_GROUP_HELP = Object.freeze({
   fuel: "Fuel command and feedback. Requests and raw counts are not measured exhaust results.",
   temp: "ECU temperature readings and raw sensor inputs. Raw counts are not degrees.",
   switches: "Power, switch inputs and failure-memory bytes. Undocumented bits remain unverified.",
-  advanced: "All 39 decoded channels, including hidden automatic-only and equipment-dependent signals. Raw export still retains every channel.",
+  advanced: "Technical readings. Raw export retains all 39 decoded channels, including signals hidden from the dashboard.",
 });
 
 const PID_BY_NAME = new Map(ALL_LIVE_PIDS.filter((pid) => PIDS[pid]).map((pid) => [PIDS[pid][0], pid]));

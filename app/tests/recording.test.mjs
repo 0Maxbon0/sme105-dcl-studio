@@ -52,3 +52,37 @@ test("low available storage blocks capture before starting a writer", options, a
   try { await assert.rejects(createRecording("ALL"), /Less than 1 GB/); }
   finally { navigator.storage.estimate = previous; }
 });
+
+test("pending confirmation survives reopening and resolves once without changing evidence", async () => {
+  const { resolveRecordingOutcome } = await import("../js/recording.js");
+  for (const outcome of ["USER_CONFIRMED_IGNITION_OFF", "UNEXPECTED_ECU_SILENCE"]) {
+    const rec = await createRecording("LIVE");
+    rec.line("FAULT reason=19 cause=RX_SILENCE"); rec.line("END reason=19");
+    const verdict = { valid: false, status: "INCOMPLETE", reasons: ["END reason=19"] };
+    await rec.finish(verdict, { outcome: "OPERATOR_CONFIRMATION_PENDING", session: { variant: "LIVE", completedAt: 12 } });
+    assert.equal((await listRecordings()).find(x => x.id === rec.id).outcome, "OPERATOR_CONFIRMATION_PENDING");
+    const resolved = await resolveRecordingOutcome(rec.id, outcome, 1234);
+    assert.equal(resolved.operatorConfirmation.confirmedAt, 1234);
+    assert.equal(await resolveRecordingOutcome(rec.id, "UNEXPECTED_ECU_SILENCE"), null);
+    const restored = (await listRecordings()).find(x => x.id === rec.id);
+    assert.equal(restored.outcome, outcome); assert.deepEqual(restored.verdict, verdict);
+    assert.equal(await (await recordingBlob(rec.id, "raw")).text(), "FAULT reason=19 cause=RX_SILENCE\nEND reason=19\n");
+  }
+});
+
+test("storage failure cannot persist an ignition confirmation or a valid verdict", async () => {
+  const recording = await createRecording("LIVE");
+  const original = fake.IDBDatabase.prototype.transaction;
+  fake.IDBDatabase.prototype.transaction = function(stores, mode, ...args) {
+    const tx = original.call(this, stores, mode, ...args);
+    if (stores === "chunks" && mode === "readwrite") queueMicrotask(() => tx.abort());
+    return tx;
+  };
+  try {
+    recording.line("END reason=19");
+    await recording.finish({ valid: false, status: "INCOMPLETE" }, { outcome: "OPERATOR_CONFIRMATION_PENDING" });
+    const saved = (await listRecordings()).find(item => item.id === recording.id);
+    assert.equal(saved.outcome, "STORAGE_FAILURE");
+    assert.equal(saved.verdict.valid, false);
+  } finally { fake.IDBDatabase.prototype.transaction = original; }
+});

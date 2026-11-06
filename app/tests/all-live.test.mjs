@@ -96,10 +96,10 @@ test("ALL sends one read, never rotates, and requires map plus all-channel evide
     const good = scenario === "good";
     let now=1000; const sent=[];
     const c=createController({now:()=>now,send:cmd=>sent.push(cmd)});
-    c.onConnected("test"); c.handleLine(EXPECTED_HELLO); c.handleLine(EXPECTED_PINS);
-    c.handleLine("STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0 fw=20");
+    c.onConnected("test"); c.handleLine("AUTH OK transport=BLE"); c.handleLine(EXPECTED_HELLO); c.handleLine(EXPECTED_PINS);
+    c.handleLine("STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0 fw=20");
     assert.equal(c.requestAllLive().ok,false);
-    const status="STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0 live_all=1 rx_batch=1 fw=21";
+    const status="STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0 live_all=1 rx_batch=1 fw=21";
     c.handleLine(status); assert.equal(c.requestAllLive().ok,true);
     c.handleLine(status); assert.equal(sent.at(-1),"ARM_ALL");
     c.handleLine("EVENT read_armed variant=ALL valid_ms=15000 no_tx_yet=1");
@@ -158,8 +158,8 @@ test("three hours of continuous decoding crosses two clock wraps with bounded hi
 test("the recording controller archives every sample while bounding UI/log memory", () => {
   let archivedSamples = 0, archivedLines = 0, completed = 0;
   const c = createController({ send() {} });
-  c.onConnected("test"); c.handleLine(EXPECTED_HELLO); c.handleLine(EXPECTED_PINS);
-  const status="STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0 live_all=1 rx_batch=1 fw=21";
+  c.onConnected("test"); c.handleLine("AUTH OK transport=BLE"); c.handleLine(EXPECTED_HELLO); c.handleLine(EXPECTED_PINS);
+  const status="STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0 live_all=1 rx_batch=1 fw=21";
   c.handleLine(status);
   c.setArchive({ sample() { archivedSamples++; }, line() { archivedLines++; }, finish() { completed++; return Promise.resolve(); } });
   assert.equal(c.requestAllLive().ok,true); c.handleLine(status);

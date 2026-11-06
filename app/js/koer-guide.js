@@ -1,7 +1,7 @@
 /** No validated SME105 operator-cue signature exists in the preserved evidence.
  * Result bits and numeric trouble codes deliberately cannot enter a prompt state.
  */
-export const KOER_CUE_UNAVAILABLE = "Real-time ECU cue unavailable / unverified. لا توجد إشارة لحظية موثقة من وحدة التحكم.";
+export const KOER_CUE_UNAVAILABLE = "Real-time ECU cue unavailable / unverified.";
 export function createKoerGuide({ journal = () => {}, now = Date.now } = {}) {
   const state = { phase: "PREPARATION", sessionId: null, prompt: null, verifiedSuccess: false, operatorEvents: [], evidence: [] };
   const emit = (type, detail) => journal(type, { channel: "DCL", sessionId: state.sessionId, utc: new Date(now()).toISOString(), ...detail });

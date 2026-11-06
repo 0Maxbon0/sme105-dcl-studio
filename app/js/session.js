@@ -10,6 +10,7 @@ export function createSession() {
     epoch: null,
     bootId: null,
     problems: [],
+    faults: [],
     end: null,
     offlineQuietUs: null,
     bridgeBlocks: null,
@@ -24,16 +25,18 @@ export function noteSessionLine(session, parsed) {
     session.kind = parsed.kind || "";
     session.epoch = parsed.fields?.epoch ?? null;
     session.bootId = parsed.fields?.boot_id ?? null;
+    session.startRaw = parsed.raw;
     session.rx = 0;
     session.pads = [];
     session.problems = [];
+    session.faults = [];
     return session;
   }
   if (!session.started) return session;
   if (parsed.type === "rx") session.rx += 1;
   else if (parsed.type === "rx_batch") session.rx += parsed.events.length;
   else if (parsed.type === "pad") session.pads.push(parsed);
-  else if (parsed.type === "fault") session.problems.push(`FAULT reason=${parsed.reason}`);
+  else if (parsed.type === "fault") { session.problems.push(`FAULT reason=${parsed.reason}`); session.faults.push(parsed.raw); }
   else if (parsed.type === "denied") session.problems.push(`DENIED ${parsed.reason}`.trim());
   else if (parsed.type === "uart_errors") session.problems.push("EVENT uart_errors");
   else if (parsed.type === "rx_lost") session.problems.push("EVENT rx_lost");
@@ -101,10 +104,30 @@ export function sessionVerdict(session, flags = {}) {
       }
     }
   }
-  const provenance = session?.pads?.length > 0 && session.epoch !== null && session.bootId !== null &&
-    session.end?.fields?.boot_id === session.bootId && session.end?.fields?.epoch === session.epoch &&
-    session.pads.every(p => p.evidence === 2 && p.fields?.boot_id === session.bootId && String(p.epoch) === session.epoch && p.completed === 1 && p.sequence > 0);
-  if (session?.pads?.some(p => p.evidence === 2) && !provenance) reasons.push("TX_PAD session provenance missing or inconsistent");
+  const fields = session?.end?.fields || {};
+  const uint = value => typeof value === "string" && /^\d{1,10}$/.test(value) && Number(value) <= 0xffffffff;
+  const uniqueFields = raw => {
+    const keys = [...String(raw || "").matchAll(/(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)=/g)].map(match => match[1]);
+    return new Set(keys).size === keys.length;
+  };
+  const versioned = session?.kind === "READ_CANDIDATE" &&
+    (session.epoch !== null || session.bootId !== null || fields.evidence === "2" || session.pads.some(p => p.evidence === 2));
+  const counters = uint(fields.witness_started) && uint(fields.witness_verified) &&
+    Number(fields.witness_started) >= 4 && fields.witness_started === fields.witness_verified;
+  const provenance = versioned && uniqueFields(session.startRaw) && uniqueFields(session.end?.raw) && uint(session.epoch) && uint(session.bootId) &&
+    fields.evidence === "2" && fields.epoch === session.epoch && fields.boot_id === session.bootId && counters &&
+    session.pads.length === 4 && [0, 1, 2, 3].every(slot => {
+      const matches = session.pads.filter(p => p.slot === slot);
+      if (matches.length !== 1) return false;
+      const p = matches[0];
+      return uniqueFields(p.raw) && p.evidence === 2 && p.fields.boot_id === session.bootId && p.fields.epoch === session.epoch &&
+        p.block === 0 && p.sequence === slot + 1 && p.completed === 1 && p.match === 1 &&
+        /^[0-9A-F]{4}$/.test(p.fields.expected || "") && p.fields.expected === p.fields.observed &&
+        uint(p.fields.tx_us) && uint(p.fields.done_us) &&
+        ((Number(p.fields.done_us) - Number(p.fields.tx_us)) >>> 0) > 0 &&
+        ((Number(p.fields.done_us) - Number(p.fields.tx_us)) >>> 0) < 1000000;
+    });
+  if (versioned && !provenance) reasons.push("TX_PAD session provenance missing or inconsistent");
   const forced = flags.disconnect || flags.timeout;
   const valid = reasons.length === 0 && !forced;
   let status = "INCOMPLETE";

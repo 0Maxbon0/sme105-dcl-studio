@@ -5,13 +5,13 @@ import { COMBINED_LIMIT_MS, GROUP_WINDOW_MS } from "../js/combined.js";
 import { ALL_LIVE_PIDS, rowsToCsv } from "../js/pids.js";
 import { EXPECTED_HELLO, EXPECTED_PINS, TIMEOUTS } from "../js/protocol.js";
 
-const STATUS = "STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=15";
+const STATUS = "STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=15";
 
 function harness() {
   let now = 1000;
   const sent = [];
   const c = createController({ now: () => now, send: command => sent.push(command) });
-  c.onConnected("test");
+  c.onConnected("test"); c.handleLine("AUTH OK transport=BLE");
   c.handleLine(EXPECTED_HELLO);
   c.handleLine(EXPECTED_PINS);
   c.handleLine(STATUS);

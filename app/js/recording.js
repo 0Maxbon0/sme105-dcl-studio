@@ -62,7 +62,7 @@ export async function createRecording(variant, onError = () => {}, unitSystem = 
     transaction.onabort = () => reject(transaction.error);
   });
   let raw = [], csv = [], pendingBytes = 0, seq = 0, failure = null;
-  let flushing = false, closed = false;
+  let flushing = false, closed = false, finishTask = null;
   const queue = [];
   let idle = Promise.resolve();
   const fail = error => {
@@ -103,20 +103,26 @@ export async function createRecording(variant, onError = () => {}, unitSystem = 
     ...metadata,
     get error() { return failure?.message || ""; },
     line(line) {
+      if (closed) return;
       const safeLine = redactDiagnostic(line);
       raw.push(safeLine + "\n"); checkBacklog(safeLine.length + 1);
     },
     sample(sample) {
+      if (closed) return;
       const line = rowsToCsv([sample], { unitSystem }).slice(HEADER.length);
       csv.push(line); checkBacklog(line.length);
     },
-    async finish(verdict) {
+    finish(verdict, outcomeDetails = {}) {
+      if (finishTask) return finishTask;
       closed = true; clearInterval(timer);
-      await flush();
-      // Preserve a final validity record beside the original received evidence.
-      const transaction = database.transaction("captures", "readwrite");
-      transaction.objectStore("captures").put({ ...metadata, verdict, error: failure?.message || "", ended: Date.now() });
-      transaction.onerror = () => fail(transaction.error);
+      finishTask = (async () => {
+        await flush();
+        // Preserve a final validity record beside the original received evidence.
+        const transaction = database.transaction("captures", "readwrite");
+        transaction.objectStore("captures").put({ ...metadata, verdict: failure ? { ...verdict, valid: false, status: "INCOMPLETE", reasons: [...(verdict.reasons || []), failure.message] } : verdict, ...outcomeDetails, ...(failure ? { outcome: "STORAGE_FAILURE" } : {}), error: failure?.message || "", ended: Date.now() });
+        await new Promise((resolve, reject) => { transaction.oncomplete = resolve; transaction.onabort = transaction.onerror = () => reject(transaction.error || new Error("Recording metadata write failed")); });
+      })();
+      return finishTask;
     },
     async export(kind) {
       await flush();
@@ -126,4 +132,24 @@ export async function createRecording(variant, onError = () => {}, unitSystem = 
     },
     get closed() { return closed; },
   };
+}
+
+// Resolve once in a single transaction; raw chunks and the integrity verdict never change.
+export async function resolveRecordingOutcome(id, outcome, confirmedAt = Date.now()) {
+  if (!["USER_CONFIRMED_IGNITION_OFF", "UNEXPECTED_ECU_SILENCE"].includes(outcome)) throw new Error("Invalid operator response");
+  const database = await db();
+  return new Promise((resolve, reject) => {
+    const tx = database.transaction("captures", "readwrite");
+    const store = tx.objectStore("captures");
+    const request = store.get(id);
+    let updated = null;
+    request.onsuccess = () => {
+      const item = request.result;
+      if (item?.outcome !== "OPERATOR_CONFIRMATION_PENDING") return;
+      updated = { ...item, outcome, operatorConfirmation: { outcome, answer: outcome === "USER_CONFIRMED_IGNITION_OFF" ? "yes" : "no", confirmedAt, source: "operator" } };
+      store.put(updated);
+    };
+    tx.oncomplete = () => resolve(updated);
+    tx.onabort = tx.onerror = () => reject(tx.error || new Error("Could not save operator response"));
+  });
 }
