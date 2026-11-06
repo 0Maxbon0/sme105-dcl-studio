@@ -563,5 +563,159 @@ class BridgeTerminalTests(unittest.TestCase):
         client.close()
 
 
+
+# Public protocol rows copied from the archived 2026-11-06 09:06:52 capture.
+# No ECU/serial access occurs in these tests.
+V24_START = b"EVENT session=READ_CANDIDATE epoch=2 boot_id=473581354"
+V24_PADS = (
+    b"TX_PAD slot=0 expected=01B0 observed=01B0 tx_us=18973724 done_us=18975815 match=1 evidence=2 epoch=2 boot_id=473581354 tx_seq=1 block=0 complete=1",
+    b"TX_PAD slot=1 expected=FF5F observed=FF5F tx_us=18983729 done_us=18985820 match=1 evidence=2 epoch=2 boot_id=473581354 tx_seq=2 block=0 complete=1",
+    b"TX_PAD slot=2 expected=4196 observed=4196 tx_us=18993724 done_us=18995813 match=1 evidence=2 epoch=2 boot_id=473581354 tx_seq=3 block=0 complete=1",
+    b"TX_PAD slot=3 expected=00A0 observed=00A0 tx_us=19003724 done_us=19005813 match=1 evidence=2 epoch=2 boot_id=473581354 tx_seq=4 block=0 complete=1",
+)
+V24_END = b"END reason=15 ro_bytes=34826 ro_lost=0 uart_errors=0 evidence=2 epoch=2 boot_id=473581354 witness_started=784 witness_verified=784 pad_verified=4 words_started=4 ecu_verified=0 dtc_verified=0 DE=LOW"
+
+
+class V24WitnessTests(unittest.TestCase):
+    def witness(self, pads=V24_PADS, start=V24_START):
+        witness = bridge.SessionWitness("ALL")
+        witness.start(start)
+        for line in pads:
+            witness.pad(line)
+        return witness
+
+    def test_real_v24_first_block_and_cumulative_counters_with_field_order(self):
+        for reorder in (False, True):
+            rows = [b"TX_PAD " + b" ".join(reversed(p.split()[1:])) for p in V24_PADS] if reorder else V24_PADS
+            end = b"END " + b" ".join(reversed(V24_END.split()[1:])) if reorder else V24_END
+            w = self.witness(rows)
+            parsed = w.end(end, 34826)
+            self.assertEqual(w.witness_status, "SESSION_BOUND")
+            self.assertEqual(parsed[b"witness_started"], b"784")
+            self.assertEqual(parsed[b"reason"], b"15")
+            self.assertEqual(parsed[b"ecu_verified"], b"0")
+            self.assertNotEqual(parsed[b"witness_verified"], parsed[b"pad_verified"])
+
+    def test_hostile_pad_evidence_rejected(self):
+        bad_rows = [
+            V24_PADS[0].replace(b" complete=1", b""),
+            V24_PADS[0] + b" epoch=2",
+            V24_PADS[0].replace(b"boot_id=473581354", b"boot_id=473581355"),
+            V24_PADS[0].replace(b"epoch=2", b"epoch=1"),
+            V24_PADS[0].replace(b"tx_seq=1", b"tx_seq=2"),
+            V24_PADS[0].replace(b"block=0", b"block=1"),
+            V24_PADS[0].replace(b"complete=1", b"complete=0"),
+            V24_PADS[0].replace(b"match=1", b"match=0"),
+            V24_PADS[0].replace(b"observed=01B0", b"observed=UNAVAILABLE"),
+            V24_PADS[0].replace(b"expected=01B0 observed=01B0", b"expected=FFFF observed=FFFF"),
+            V24_PADS[0].replace(b"tx_us=18973724", b"tx_us=-1"),
+            V24_PADS[0].replace(b"tx_us=18973724", b"tx_us=4294967296"),
+            V24_PADS[0].replace(b"done_us=18975815", b"done_us=18973724"),
+            V24_PADS[0].replace(b"evidence=2", b"evidence=3"),
+            V24_PADS[0].replace(b"slot=0", b"slot=0.5"),
+        ]
+        for row in bad_rows:
+            with self.subTest(row=row), self.assertRaises(bridge.BridgeError):
+                self.witness([row, *V24_PADS[1:]])
+        with self.assertRaisesRegex(bridge.BridgeError, "duplicate"):
+            self.witness([V24_PADS[0], V24_PADS[0], *V24_PADS[1:]])
+
+    def test_hostile_end_and_missing_witness_cannot_fall_back_to_legacy(self):
+        for end in (
+            V24_END + b" epoch=2",
+            V24_END.replace(b" witness_verified=784", b""),
+            V24_END.replace(b"witness_verified=784", b"witness_verified=0"),
+            V24_END.replace(b"boot_id=473581354", b"boot_id=1"),
+            V24_END.replace(b"epoch=2", b"epoch=3"),
+            V24_END.replace(b"ro_bytes=34826", b"ro_bytes=34825"),
+            V24_END.replace(b"ro_lost=0", b"ro_lost=1"),
+            V24_END.replace(b"uart_errors=0", b"uart_errors=1"),
+            V24_END.replace(b"DE=LOW", b"DE=HIGH"),
+            V24_END.replace(b"witness_started=784", b"witness_started=4294967296"),
+            V24_END.replace(b"words_started=4", b"words_started=3"),
+            END_GOOD.strip().replace(b"ro_bytes=3", b"ro_bytes=34826"),
+        ):
+            with self.subTest(end=end), self.assertRaises(bridge.BridgeError):
+                self.witness().end(end, 34826)
+        for pads in ([], V24_PADS[:1], V24_PADS[:3]):
+            with self.subTest(pads=len(pads)), self.assertRaises(bridge.BridgeError):
+                self.witness(pads).end(V24_END, 34826)
+        with self.assertRaises(bridge.BridgeError):
+            bridge.SessionWitness("ALL", require_versioned=True).start(b"EVENT session=READ_CANDIDATE")
+
+    def test_uint32_wrap_and_original_reason19_are_retained_separately(self):
+        pads = (V24_PADS[0].replace(b"tx_us=18973724 done_us=18975815", b"tx_us=4294967200 done_us=1995"), *V24_PADS[1:])
+        w = self.witness(pads)
+        end = w.end(V24_END.replace(b"reason=15", b"reason=19"), 34826)
+        self.assertEqual(end[b"reason"], b"19")
+        self.assertEqual(w.witness_status, "SESSION_BOUND")  # Witness status is not ECU success.
+        with self.assertRaises(bridge.BridgeError):
+            w.end(V24_END, 34826)
+        with self.assertRaises(bridge.BridgeError):
+            w.pad(V24_PADS[0])
+
+    def test_legacy_is_explicitly_unverified_and_v24_passive_stays_distinct(self):
+        w = bridge.SessionWitness()
+        w.start(b"EVENT session=LISTEN_9600 origin=RO_ONLY no_tx=1")
+        w.end(END_GOOD.strip(), 3)
+        self.assertEqual(w.witness_status, "LEGACY_UNVERIFIED")
+        w = bridge.SessionWitness(require_versioned=True)
+        w.start(b"EVENT session=LISTEN_9600 origin=RO_ONLY no_tx=1 epoch=2 boot_id=473581354")
+        end = V24_END.replace(b"ro_bytes=34826", b"ro_bytes=3").replace(b"witness_started=784 witness_verified=784 pad_verified=4 words_started=4", b"witness_started=0 witness_verified=0 pad_verified=0 words_started=0")
+        w.end(end, 3)
+        self.assertEqual(w.witness_status, "LEGACY_UNVERIFIED")
+        with self.assertRaises(bridge.BridgeError):
+            self.witness(start=V24_START + b" epoch=2")
+        with self.assertRaises(bridge.BridgeError):
+            self.witness().start(V24_START)
+
+    def test_real_v24_rows_integrate_with_reader_without_a_second_arm(self):
+        class V24Port(FakePort):
+            def write(self, data):
+                if data == b"READ_A4\n":
+                    self.writes.append(data)
+                    rows = [r.replace(b"4196", b"26A4") for r in V24_PADS]
+                    self._emit(V24_START+b"\n"+RX_LINES+b"\n".join(rows)+b"\n"+V24_END.replace(b"ro_bytes=34826", b"ro_bytes=3")+b"\n")
+                    return len(data)
+                return super().write(data)
+        with tempfile.TemporaryDirectory() as folder:
+            port = V24Port(status=GOOD_STATUS.rstrip()+b" fw=24 pad_evidence=2\n")
+            evidence = bridge.EvidenceRecorder(Path(folder), "v24")
+            client = bridge.BridgeClient(port, evidence, lambda _: None)
+            try:
+                client.start(); client.verify_identity()
+                client.execute("REQUEST_A4", lambda _: True); client.wait_end(2)
+                self.assertIsNone(client.fault)
+                self.assertEqual(client.last_end[b"reason"], b"15")
+                self.assertEqual(client._session_witness.witness_status, "SESSION_BOUND")
+                self.assertEqual(port.writes.count(b"ARM_A4\n"), 1)
+                self.assertEqual(port.writes.count(b"READ_A4\n"), 1)
+            finally:
+                client.close()
+
+    @unittest.skipUnless(__import__('os').environ.get('SME105_EVIDENCE_DIR'), 'private archive not configured')
+    def test_archived_complete_raw_rx_batch_replay_unchanged(self):
+        import os
+        source = Path(os.environ['SME105_EVIDENCE_DIR'])/'phone-downloads/eec-iv-2026-11-06T05-21-36.txt'
+        raw = source.read_bytes()
+        before = hashlib.sha256(raw).hexdigest()
+        witness = bridge.SessionWitness('ALL', require_versioned=True)
+        with tempfile.TemporaryDirectory() as folder:
+            evidence = bridge.EvidenceRecorder(Path(folder), 'replay')
+            for offset in range(0, len(raw), 4096):
+                for line, count in evidence.feed(raw[offset:offset+4096]):
+                    line = line.strip()
+                    if line.startswith(b'EVENT session='): witness.start(line)
+                    elif line.startswith(b'TX_PAD '): witness.pad(line)
+                    elif line.startswith(b'END '): witness.end(line, count)
+            evidence.close()
+            self.assertIsNone(evidence.fault)
+            self.assertEqual(evidence.rx_bytes, 780080)
+            self.assertEqual(witness.last_end[b'reason'], b'19')
+            self.assertEqual(witness.witness_status, 'SESSION_BOUND')
+            self.assertEqual(hashlib.sha256(evidence.txt_path.read_bytes()).hexdigest(), before)
+        self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), before)
+
+
 if __name__ == "__main__":
     unittest.main()

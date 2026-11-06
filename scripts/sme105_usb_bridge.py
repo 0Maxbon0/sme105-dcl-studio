@@ -62,16 +62,6 @@ PINS_REPLY = (b"PINS ro16=GPIO16_UART1 de18=GPIO18_RMT2..5 "
 ARM_EVENT = re.compile(
     rb"^EVENT read_armed variant=(A4|0E|KOEO|KOER|LIVE3|LIVE2|LIVE|ALL|CLR|MEM|OFF) valid_ms=15000 no_tx_yet=1$"
 )
-END_RECORD = re.compile(
-    rb"^END reason=(\d{1,3}) ro_bytes=(\d{1,10}) ro_lost=(\d{1,10}) "
-    rb"uart_errors=(\d{1,10}) pad_verified=([0-4]) words_started=([0-4]) "
-    rb"ecu_verified=0 dtc_verified=0 DE=LOW$"
-)
-TX_PAD = re.compile(
-    rb"^TX_PAD slot=([0-3]) expected=([0-9A-F]{4}) "
-    rb"observed=([0-9A-F]{4}) tx_us=(\d{1,10}) "
-    rb"done_us=(\d{1,10}) match=([01])$"
-)
 TX2_BENCH_TIMEOUT = 15.0
 TX2_REF = re.compile(
     rb"^TX2_BENCH_REF frame=([01]) bytes=11 uart_baud=2400 de_low=1 external_bus_disabled=1$"
@@ -102,6 +92,140 @@ TX2_END = (
 
 class BridgeError(RuntimeError):
     """Untrusted bridge identity, truncated capture, or uncertain command."""
+
+
+def strict_fields(line: bytes, prefix: bytes) -> dict[bytes, bytes]:
+    """Parse a bounded, unique key/value record without order assumptions."""
+    if not line.startswith(prefix + b" ") or len(line) > MAX_LINE:
+        raise BridgeError("malformed evidence record")
+    fields: dict[bytes, bytes] = {}
+    for token in line[len(prefix) + 1:].split(b" "):
+        if not KEY_VALUE.fullmatch(token):
+            raise BridgeError("malformed evidence field")
+        key, value = token.split(b"=", 1)
+        if key in fields:
+            raise BridgeError("duplicate evidence field")
+        fields[key] = value
+    return fields
+
+
+def uint_field(fields: dict[bytes, bytes], key: bytes, maximum: int = 0xffffffff) -> int:
+    value = fields.get(key, b"")
+    if not re.fullmatch(rb"[0-9]{1,10}", value) or int(value) > maximum:
+        raise BridgeError("missing/invalid evidence integer: " + key.decode())
+    return int(value)
+
+
+class SessionWitness:
+    """Single session TX provenance, separate from its actual termination reason.
+
+    Legacy reads remain explicitly LEGACY_UNVERIFIED. A version marker in
+    STATUS, START, PAD or END permanently requires the full v24 contract.
+    No missing versioned witness can fall back to legacy acceptance.
+    """
+
+    PAD_BASE = {b"slot", b"expected", b"observed", b"tx_us", b"done_us", b"match"}
+    VERSION = {b"evidence", b"epoch", b"boot_id"}
+    PAD_VERSION = VERSION | {b"tx_seq", b"block", b"complete"}
+    END_BASE = {b"reason", b"ro_bytes", b"ro_lost", b"uart_errors", b"pad_verified",
+                b"words_started", b"ecu_verified", b"dtc_verified", b"DE"}
+    END_VERSION = VERSION | {b"witness_started", b"witness_verified"}
+
+    def __init__(self, variant: str | None = None, *, require_versioned: bool = False):
+        self.variant = variant
+        self.versioned = require_versioned
+        self.started = False
+        self.ended = False
+        self.kind: bytes | None = None
+        self.identity: tuple[int, int] | None = None
+        self.pads: dict[int, dict[bytes, bytes]] = {}
+        self.last_end: dict[bytes, bytes] | None = None
+        self.witness_status = "LEGACY_UNVERIFIED"
+
+    def start(self, line: bytes) -> None:
+        if self.started:
+            raise BridgeError("duplicate/stale session start")
+        fields = strict_fields(line, b"EVENT")
+        self.kind = fields.get(b"session")
+        if self.kind not in (b"READ_CANDIDATE", b"LISTEN_9600", b"OBSERVE", b"OFFLINE_JOIN"):
+            raise BridgeError("unknown session kind")
+        self.versioned |= bool(set(fields) & self.VERSION)
+        if self.versioned and self.kind in (b"READ_CANDIDATE", b"OFFLINE_JOIN"):
+            expected = {b"session", b"epoch", b"boot_id"}
+            if self.kind == b"OFFLINE_JOIN":
+                expected.add(b"no_handshake")
+            if (set(fields) != expected or
+                    (self.kind == b"OFFLINE_JOIN" and fields.get(b"no_handshake") != b"1")):
+                raise BridgeError("incomplete versioned session identity")
+            self.identity = (uint_field(fields, b"epoch"), uint_field(fields, b"boot_id"))
+        self.started = True
+
+    def pad(self, line: bytes) -> None:
+        if not self.started or self.ended or self.kind not in (b"READ_CANDIDATE", b"OFFLINE_JOIN"):
+            raise BridgeError("unsolicited/stale GPIO17 pad witness")
+        fields = strict_fields(line, b"TX_PAD")
+        self.versioned |= bool(set(fields) & self.PAD_VERSION)
+        expected_keys = self.PAD_BASE | (self.PAD_VERSION if self.versioned else set())
+        if set(fields) != expected_keys:
+            raise BridgeError("missing/unknown GPIO17 pad witness fields")
+        slot = uint_field(fields, b"slot", 3)
+        if slot in self.pads:
+            raise BridgeError("duplicate GPIO17 pad slot")
+        words = REQUEST_WORDS.get(self.variant or "")
+        # v24 reports the first map-loading block, not a later steady block.
+        expected = words[slot] if words else None
+        if slot == 2 and ((self.versioned and self.variant in ("LIVE", "LIVE2", "ALL")) or
+                          (self.variant == "ALL" and fields[b"expected"] == b"4196")):
+            expected = "4196"
+        if (not words or not re.fullmatch(rb"[0-9A-F]{4}", fields[b"expected"]) or
+                fields[b"expected"].decode() != expected or fields[b"observed"] != fields[b"expected"] or fields[b"match"] != b"1"):
+            raise BridgeError("GPIO17 pad TX mismatch")
+        elapsed = (uint_field(fields, b"done_us") - uint_field(fields, b"tx_us")) & 0xffffffff
+        if not 0 < elapsed < 1000000:
+            raise BridgeError("invalid GPIO17 pad completion timestamps")
+        if self.versioned:
+            identity = (uint_field(fields, b"epoch"), uint_field(fields, b"boot_id"))
+            if (fields[b"evidence"] != b"2" or not self.identity or identity != self.identity or
+                    uint_field(fields, b"tx_seq") != slot + 1 or uint_field(fields, b"block") != 0 or fields[b"complete"] != b"1"):
+                raise BridgeError("foreign/incomplete GPIO17 pad provenance")
+        self.pads[slot] = fields
+
+    def end(self, line: bytes, actual_rx: int) -> dict[bytes, bytes]:
+        if not self.started or self.ended:
+            raise BridgeError("missing session start or duplicate END")
+        fields = strict_fields(line, b"END")
+        self.versioned |= bool(set(fields) & self.END_VERSION)
+        if set(fields) != self.END_BASE | (self.END_VERSION if self.versioned else set()):
+            raise BridgeError("malformed/untrusted END fields")
+        self.last_end = fields  # Retain original reason/counters, even for a failed check.
+        uint_field(fields, b"reason", 19)
+        if uint_field(fields, b"ro_bytes") != actual_rx:
+            raise BridgeError(f"END RX count mismatch: firmware={uint_field(fields, b'ro_bytes')}, USB={actual_rx}")
+        if uint_field(fields, b"ro_lost") or uint_field(fields, b"uart_errors"):
+            raise BridgeError("firmware lost UART RX evidence")
+        if fields[b"DE"] != b"LOW" or any(fields[key] not in (b"0", b"1") for key in (b"ecu_verified", b"dtc_verified")):
+            raise BridgeError("invalid END safety/diagnostic flags")
+        pad_count, word_count = uint_field(fields, b"pad_verified", 4), uint_field(fields, b"words_started", 4)
+        if self.kind in (b"READ_CANDIDATE", b"OFFLINE_JOIN"):
+            if set(self.pads) != {0, 1, 2, 3} or pad_count != word_count:
+                raise BridgeError("one or more UART2 words lack GPIO17 pad confirmation")
+            if self.versioned:
+                started, verified = uint_field(fields, b"witness_started"), uint_field(fields, b"witness_verified")
+                if (fields[b"evidence"] != b"2" or not self.identity or
+                        (uint_field(fields, b"epoch"), uint_field(fields, b"boot_id")) != self.identity or
+                        started != verified or started < 4 or
+                        any(set(p) != self.PAD_BASE | self.PAD_VERSION for p in self.pads.values())):
+                    raise BridgeError("missing/inconsistent cumulative session witness")
+                self.witness_status = "SESSION_BOUND"
+        elif self.pads or pad_count or word_count:
+            raise BridgeError("passive session reports unexpected transmit evidence")
+        elif self.versioned:
+            # v24 passive sessions have no active-read witness to certify.
+            if fields[b"evidence"] != b"2" or uint_field(fields, b"witness_started") or uint_field(fields, b"witness_verified"):
+                raise BridgeError("unexpected passive cumulative witness")
+            uint_field(fields, b"epoch"); uint_field(fields, b"boot_id")
+        self.ended = True
+        return fields
 
 
 class Tx2BenchWitness:
@@ -476,7 +600,8 @@ class BridgeClient:
         self._session_name: str | None = None
         self._session_requested = False
         self._read_variant: str | None = None
-        self._all_load_witness = False
+        self._session_witness: SessionWitness | None = None
+        self.last_end: dict[bytes, bytes] | None = None
         self._reader_error: str | None = None
         self._integrity_error: str | None = None
         self._di_mismatch = False
@@ -533,6 +658,15 @@ class BridgeClient:
                         self._set_integrity_fault("wrong bridge GPIO pin topology")
                     if line.startswith(b"EVENT session="):
                         with self._condition:
+                            try:
+                                if self._session_name is not None:
+                                    raise BridgeError("duplicate active session header")
+                                modern = self._status is not None and (self._status.field("pad_evidence") == "2" or int(self._status.field("fw") or "0") >= 24)
+                                self._session_witness = SessionWitness(self._read_variant, require_versioned=modern)
+                                self._session_witness.start(line)
+                            except (BridgeError, ValueError) as exc:
+                                if self._integrity_error is None:
+                                    self._integrity_error = str(exc)
                             self._session_start_rx = rx_count_at_line
                             self._session_name = line.decode("ascii", "replace")
                             self._session_ended.clear()
@@ -557,21 +691,13 @@ class BridgeClient:
                                 self._arm_generation += 1
                                 self._condition.notify_all()
                     if line.startswith(b"TX_PAD "):
-                        witness = TX_PAD.fullmatch(line)
-                        expected_words = REQUEST_WORDS.get(self._read_variant or "", ())
-                        if (self._read_variant == "ALL" and witness is not None
-                                and witness[1] == b"2" and witness[2] == b"4196"
-                                and not self._all_load_witness):
-                            expected_words = ("01B0", "FF5F", "4196", "00A0")
-                            self._all_load_witness = True
-                        if (witness is None or not expected_words or
-                                witness[2].decode("ascii") !=
-                                expected_words[int(witness[1])] or
-                                witness[3] != witness[2] or witness[6] != b"1"):
+                        try:
+                            if self._session_witness is None:
+                                raise BridgeError("unsolicited GPIO17 pad witness")
+                            self._session_witness.pad(line)
+                        except BridgeError as exc:
                             self._di_mismatch = True
-                            self._set_integrity_fault(
-                                "GPIO17 pad TX mismatch; no further vehicle TX"
-                            )
+                            self._set_integrity_fault(str(exc) + "; no further vehicle TX")
                     if (b"DI_MISMATCH" in line or b"TX_MISMATCH" in line or
                             b"di_match=0" in line):
                         with self._condition:
@@ -587,23 +713,17 @@ class BridgeClient:
                             self._stop_generation += 1
                             self._condition.notify_all()
                     if line.startswith(b"END "):
-                        ended = END_RECORD.fullmatch(line)
-                        if ended is None:
-                            self._set_integrity_fault("malformed/untrusted END record")
-                        else:
-                            reported = int(ended[2])
-                            actual = rx_count_at_line - self._session_start_rx
-                            if reported != actual:
-                                self._set_integrity_fault(
-                                    f"END RX count mismatch: firmware={reported}, USB={actual}"
-                                )
-                            if int(ended[3]) or int(ended[4]):
-                                self._set_integrity_fault("firmware lost UART RX evidence")
-                            if self._read_variant is not None and (
-                                    int(ended[5]) != int(ended[6])):
-                                self._set_integrity_fault(
-                                    "one or more UART2 words lack GPIO17 pad confirmation"
-                                )
+                        try:
+                            if self._session_witness is None:
+                                raise BridgeError("END without session start")
+                            self.last_end = self._session_witness.end(line, rx_count_at_line - self._session_start_rx)
+                            if int(self.last_end[b"reason"]) not in (15, 16):
+                                self._set_integrity_fault("firmware END reason=" + self.last_end[b"reason"].decode() + "; not a completed read")
+                        except BridgeError as exc:
+                            if self._session_witness is not None:
+                                self.last_end = self._session_witness.last_end
+                            self._set_integrity_fault(str(exc))
+                        finally:
                             with self._condition:
                                 self._pending_transmit = False
                                 self._session_name = None
@@ -855,7 +975,8 @@ class BridgeClient:
                 raise BridgeError("ARM timed out or changed; READ denied")
             wire = "READ_" + variant
             self._read_variant = variant
-            self._all_load_witness = False
+            self._session_witness = None
+            self.last_end = None
         else:
             wire = "OBSERVE"
         # Mark the command spent BEFORE attempting a potentially partial write.

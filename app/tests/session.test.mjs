@@ -199,3 +199,32 @@ test("v24 witness requires four unique complete session-bound rows and cumulativ
   assert.equal(verdict(rows.map((row, i) => i ? row : `${row} epoch=5`)).valid, false);
   assert.equal(verdict(rows, `${end} epoch=5`).valid, false);
 });
+
+test("known v24 cannot lose all version markers and fall back to legacy acceptance", () => {
+  const legacy = feed([
+    'EVENT session=READ_CANDIDATE',
+    ...['01B0','FF5F','21F6','00A0'].map((word,slot) => `TX_PAD slot=${slot} expected=${word} observed=${word} match=1`),
+    'END reason=16 ro_bytes=0 ro_lost=0 uart_errors=0 pad_verified=4 words_started=4 DE=LOW',
+  ].join('\n'));
+  assert.equal(sessionVerdict(legacy).valid,true);
+  assert.equal(sessionVerdict(legacy,{requireVersioned:true}).valid,false);
+  legacy.end.fields.evidence='3';
+  assert.equal(sessionVerdict(legacy).valid,false);
+});
+
+test("duplicate headers cannot erase preceding faults or RX evidence", () => {
+  const s = feed('EVENT session=READ_CANDIDATE epoch=5 boot_id=77\nRX t_us=1 byte=00\nFAULT reason=11\nEVENT session=READ_CANDIDATE epoch=5 boot_id=77\nEND reason=16 ro_bytes=1 ro_lost=0 uart_errors=0 DE=LOW');
+  assert.equal(s.rx,1);
+  assert.ok(s.problems.includes('FAULT reason=11'));
+  assert.ok(s.problems.includes('duplicate session start'));
+  assert.equal(sessionVerdict(s).valid,false);
+});
+
+test("fractional numeric witness fields and a self-matching wrong word are rejected", () => {
+  const rows=['01B0','FF5F','4196','00A0'].map((word,slot)=>`TX_PAD slot=${slot} expected=${word} observed=${word} tx_us=${1000+slot*3000} done_us=${3000+slot*3000} match=1 evidence=2 epoch=5 boot_id=77 tx_seq=${slot+1} block=0 complete=1`);
+  const end='END reason=16 ro_bytes=0 ro_lost=0 uart_errors=0 evidence=2 epoch=5 boot_id=77 witness_started=20 witness_verified=20 pad_verified=4 words_started=4 DE=LOW';
+  const verdict=(pads,final=end)=>sessionVerdict(feed(['EVENT session=READ_CANDIDATE epoch=5 boot_id=77',...pads,final].join('\n')),{variant:'LIVE'});
+  assert.equal(verdict(rows).valid,true);
+  for(const [from,to] of [['tx_seq=1','tx_seq=1.0'],['slot=0','slot=0.0'],['block=0','block=0.0'],['complete=1','complete=1.0'],['evidence=2','evidence=2.0'],['expected=01B0 observed=01B0','expected=FFFF observed=FFFF']]) assert.equal(verdict(rows.map((r,i)=>i?r:r.replace(from,to))).valid,false);
+  assert.equal(verdict(rows,end.replace('ro_lost=0','ro_lost=0.0')).valid,false);
+});

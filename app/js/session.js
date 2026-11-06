@@ -21,6 +21,7 @@ export function createSession() {
 export function noteSessionLine(session, parsed) {
   if (!session || session.end) return session;
   if (parsed.type === "session_start") {
+    if (session.started) { session.problems.push("duplicate session start"); return session; }
     session.started = true;
     session.kind = parsed.kind || "";
     session.epoch = parsed.fields?.epoch ?? null;
@@ -110,17 +111,24 @@ export function sessionVerdict(session, flags = {}) {
     const keys = [...String(raw || "").matchAll(/(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)=/g)].map(match => match[1]);
     return new Set(keys).size === keys.length;
   };
-  const versioned = session?.kind === "READ_CANDIDATE" &&
-    (session.epoch !== null || session.bootId !== null || fields.evidence === "2" || session.pads.some(p => p.evidence === 2));
+  const activeRead = ["READ_CANDIDATE", "OFFLINE_JOIN"].includes(session?.kind);
+  const markers = ["evidence", "epoch", "boot_id", "witness_started", "witness_verified", "tx_seq", "block", "complete"];
+  const versioned = activeRead && (flags.requireVersioned || session.epoch !== null || session.bootId !== null ||
+    markers.some(key => key in fields || session.pads.some(p => key in p.fields)));
+  const mode = { "0E": "260E", A4: "26A4", KOEO: "253E", KOER: "253E", CLR: "0291", MEM: "26A4", OFF: "80CE", LIVE: "4196", LIVE2: "4196", LIVE3: "4196", ALL: "4196" }[flags.variant];
+  const expectedWords = mode ? ["01B0", "FF5F", mode, flags.variant === "OFF" ? "7F20" : "00A0"] : null;
   const counters = uint(fields.witness_started) && uint(fields.witness_verified) &&
     Number(fields.witness_started) >= 4 && fields.witness_started === fields.witness_verified;
   const provenance = versioned && uniqueFields(session.startRaw) && uniqueFields(session.end?.raw) && uint(session.epoch) && uint(session.bootId) &&
-    fields.evidence === "2" && fields.epoch === session.epoch && fields.boot_id === session.bootId && counters &&
+    fields.evidence === "2" && ["reason", "ro_bytes", "ro_lost", "uart_errors", "pad_verified", "words_started"].every(key => uint(fields[key])) &&
+    Number(fields.words_started) <= 4 && fields.pad_verified === fields.words_started && fields.epoch === session.epoch && fields.boot_id === session.bootId && counters &&
     session.pads.length === 4 && [0, 1, 2, 3].every(slot => {
       const matches = session.pads.filter(p => p.slot === slot);
       if (matches.length !== 1) return false;
       const p = matches[0];
-      return uniqueFields(p.raw) && p.evidence === 2 && p.fields.boot_id === session.bootId && p.fields.epoch === session.epoch &&
+      return uniqueFields(p.raw) && p.fields.evidence === "2" && p.fields.slot === String(slot) &&
+        p.fields.block === "0" && p.fields.tx_seq === String(slot + 1) && p.fields.complete === "1" && p.fields.match === "1" &&
+        (!expectedWords || p.fields.expected === expectedWords[slot]) && p.evidence === 2 && p.fields.boot_id === session.bootId && p.fields.epoch === session.epoch &&
         p.block === 0 && p.sequence === slot + 1 && p.completed === 1 && p.match === 1 &&
         /^[0-9A-F]{4}$/.test(p.fields.expected || "") && p.fields.expected === p.fields.observed &&
         uint(p.fields.tx_us) && uint(p.fields.done_us) &&

@@ -37,8 +37,8 @@ function samples(c) {
   return count;
 }
 function end(c, count, { reason = 19, boot = 77, lost = 0 } = {}) {
-  for (const [slot, word] of ['01B0', 'FF5F', '21F6', '00A0'].entries()) c.handleLine(`TX_PAD slot=${slot} expected=${word} observed=${word} tx_us=${1000 + slot * 3000} done_us=${3000 + slot * 3000} match=1 evidence=2 epoch=5 boot_id=77 tx_seq=${slot + 1} block=0 complete=1`);
-  c.handleLine(`END reason=${reason} ro_bytes=${count} ro_lost=${lost} uart_errors=0 evidence=2 epoch=5 boot_id=${boot} witness_started=20 witness_verified=20 DE=LOW`);
+  for (const [slot, word] of ['01B0', 'FF5F', '4196', '00A0'].entries()) c.handleLine(`TX_PAD slot=${slot} expected=${word} observed=${word} tx_us=${1000 + slot * 3000} done_us=${3000 + slot * 3000} match=1 evidence=2 epoch=5 boot_id=77 tx_seq=${slot + 1} block=0 complete=1`);
+  c.handleLine(`END reason=${reason} ro_bytes=${count} ro_lost=${lost} uart_errors=0 evidence=2 epoch=5 boot_id=${boot} witness_started=20 witness_verified=20 pad_verified=4 words_started=4 DE=LOW`);
 }
 function nodes() {
   const values = new Map();

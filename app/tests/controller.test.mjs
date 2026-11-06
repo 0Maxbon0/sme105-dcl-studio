@@ -217,3 +217,43 @@ test("busy or hardware-faulted bridges are not described as a clean read lock", 
     assert.equal(sent.some(x => x.startsWith("ARM_")), false);
   }
 });
+
+test("operator reboot requires a fresh safe STATUS and never clears a latch automatically", () => {
+  for (const condition of ['safe','busy','de','transport','missing']) {
+    const {controller,sent}=harness();identify(controller,{pass:'1'});
+    assert.equal(controller.requestReboot().ok,true);
+    assert.equal(sent.at(-1),'STATUS');
+    assert.equal(sent.includes('REBOOT'),false);
+    if(condition==='missing')continue;
+    let status='STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 read_used=1 fault=19 out_overflow=0 transport_lost=0 usb_skipped=0';
+    if(condition==='busy')status=status.replace('stage=0','stage=2');
+    if(condition==='de')status=status.replace('DE=LOW','DE=HIGH');
+    if(condition==='transport')status=status.replace('transport_lost=0','transport_lost=1');
+    controller.handleLine(status);controller.handleLine(status);
+    assert.equal(sent.filter(c=>c==='REBOOT').length,condition==='safe'?1:0);
+    assert.equal(sent.some(c=>/^(ARM_|READ_|RESET)/.test(c)),false);
+  }
+});
+
+test("restart precheck cancellation and link loss cannot dispatch a late reboot", () => {
+  for (const cancel of ['stop','disconnect']) {
+    const {controller,sent}=harness();identify(controller,{pass:'1'});
+    controller.requestReboot();
+    if(cancel==='stop')controller.requestStop();else controller.onDisconnected();
+    controller.handleLine('STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 read_used=1 fault=19 out_overflow=0 transport_lost=0 usb_skipped=0');
+    assert.equal(controller.state.phase,'idle');
+    assert.equal(sent.includes('REBOOT'),false);
+    assert.equal(sent.includes('STOP'),false);
+  }
+});
+
+test("controller carries current v24 evidence requirement into the final verdict", () => {
+  const {controller}=harness();identify(controller,{pass:'1'});controller.requestVehicle('LIVE');
+  controller.handleLine('STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 read_used=0 fault=0 out_overflow=0 transport_lost=0 usb_skipped=0 fw=24 pad_evidence=2');
+  controller.handleLine('EVENT read_armed variant=LIVE valid_ms=15000 no_tx_yet=1');
+  controller.handleLine('EVENT session=READ_CANDIDATE');
+  for(const [slot,word] of ['01B0','FF5F','21F6','00A0'].entries())controller.handleLine(`TX_PAD slot=${slot} expected=${word} observed=${word} match=1`);
+  controller.handleLine('END reason=16 ro_bytes=0 ro_lost=0 uart_errors=0 pad_verified=4 words_started=4 DE=LOW');
+  assert.equal(controller.state.lastSession.verdict.valid,false);
+  assert.match(controller.state.lastSession.verdict.reasons.join(' '),/provenance/);
+});

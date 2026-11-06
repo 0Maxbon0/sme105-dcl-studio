@@ -124,6 +124,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     const session = state.op?.session || null;
     let verdict = session ? sessionVerdict(session, {
       variant: state.op?.variant,
+      requireVersioned: Number(state.status?.fields?.fw) >= 24 || state.status?.fields?.pad_evidence === "2",
       cart: state.cart?.snapshot() || null,
     }) : null;
     if (override) {
@@ -247,6 +248,21 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       ["out_overflow", "transport_lost", "usb_skipped"].every(key => parsed.fields[key] === "0" ||
         (parsed.fields[key] == null && !(Number(parsed.fields.fw) >= 24 || parsed.fields.pad_evidence === "2"))) &&
       ["0", "3", "4", "15", "16", "19"].includes(parsed.fields.fault);
+    if (state.phase === "reboot_status") {
+      if (!parsed.safe || !verifiedStatus || state.link !== "ready" ||
+          (state.transport === "ble" && state.identity.auth !== "OK") ||
+          !["out_overflow", "transport_lost", "usb_skipped"].every(key => parsed.fields[key] === "0")) {
+        state.phase = "idle";
+        state.deadline = null;
+        state.message = "Bridge restart blocked: safe idle and healthy transport could not be verified.";
+        return;
+      }
+      state.phase = "reboot";
+      state.message = "Rebooting bridge";
+      arm(TIMEOUTS.identify);
+      send("REBOOT");
+      return;
+    }
     if (state.phase === "pre_status") {
       if (!parsed.safe || !verifiedStatus) {
         finalize({ status: "INCOMPLETE", reason: "bridge not idle/safe" });
@@ -284,7 +300,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
   function ingestRead(parsed) {
     if (!state.op) return;
     if (!state.op.session) state.op.session = createSession();
-    if (parsed.type === "session_start") {
+    if (parsed.type === "session_start" && !state.op.session.started) {
       state.cart = createCartDecoder(pidSetForVariant(state.op.variant), state.archive ? {
         historyLimit: 512,
         onSample(sample) {
@@ -534,11 +550,11 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
         touch();
         return;
       }
-      if (phase === "reboot") {
+      if (phase === "reboot" || phase === "reboot_status") {
         state.phase = "idle";
         state.deadline = null;
         state.op = null;
-        state.message = "Bridge rebooted and the link dropped";
+        state.message = phase === "reboot" ? "Bridge rebooted and the link dropped" : "Bridge restart cancelled: link lost";
         touch();
         return;
       }
@@ -588,14 +604,19 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       if (state.link !== "ready") return { ok: false, error: "not connected" };
       if (state.transport === "ble" && state.identity.auth !== "OK") return { ok: false, error: "bridge authentication pending" };
       if (state.phase !== "idle") return { ok: false, error: "busy" };
-      state.phase = "reboot";
-      state.message = "Rebooting bridge";
-      arm(TIMEOUTS.identify);
-      send("REBOOT");
+      if (state.identity.helloOk !== true || state.identity.pinsOk !== true) return { ok: false, error: "bridge identity not verified" };
+      state.phase = "reboot_status";
+      state.message = "Checking bridge before restart";
+      arm(TIMEOUTS.status);
+      send("STATUS");
       touch();
       return { ok: true };
     },
     requestStop() {
+      if (state.phase === "reboot_status") {
+        state.phase = "idle"; state.deadline = null;
+        state.message = "Bridge restart cancelled"; touch(); return;
+      }
       if (state.op && state.phase !== "stopping") state.op.operatorStop = true;
       stop();
     },
