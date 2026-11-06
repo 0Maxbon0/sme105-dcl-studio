@@ -74,3 +74,18 @@ test('derived throttle migrates once and remains selectable only in modes reques
   }
   assert.ok(!dashboardChannels('LIVE3').includes('THROTTLE_PERCENT'));
 });
+
+
+test('dashboard size and columns are reversible persistent preferences, independent of card order', () => {
+  const base = {version:2, layouts:{ALL:['ITP','THROTTLE_PERCENT','N']}, density:'compact'};
+  for(const density of ['comfortable','small','dense','compact']) for(const columns of ['auto','1','2','3','4']) {
+    const prefs=normalizeDashboardPrefs({...base,density,columns});
+    assert.equal(prefs.density,density);assert.equal(prefs.columns,columns);
+    assert.deepEqual(prefs.layouts.ALL,base.layouts.ALL);
+    assert.deepEqual(normalizeDashboardPrefs(JSON.parse(JSON.stringify(prefs))),prefs);
+  }
+  assert.equal(normalizeDashboardPrefs(base).density,'compact');
+  assert.equal(normalizeDashboardPrefs(base).columns,'auto');
+  assert.equal(normalizeDashboardPrefs({density:'invalid',columns:20}).density,'comfortable');
+  assert.equal(normalizeDashboardPrefs({columns:'invalid'}).columns,'auto');
+});

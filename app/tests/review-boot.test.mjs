@@ -37,6 +37,37 @@ test('actual app entry boots existing recording into offline dashboard and wires
     assert.ok(order().length > 8);
     assert.equal(order()[0],'THROTTLE_PERCENT');
     const style=document.createElement('style');style.textContent=readFileSync(new URL('../styles.css',import.meta.url),'utf8');document.head.append(style);
+    for(const name of ['VS','DSDRPM','BITMAP_1']) document.querySelector(`#live-cards [data-pid="${name}"] [data-pin-pid]`).click();
+    assert.equal(order().length,12);
+    const initialOrder=order();
+    for(const density of ['small','dense','comfortable','compact']) {
+      $('dashboard-density').value=density;$('dashboard-density').dispatchEvent(new window.Event('change'));
+      assert.equal(grid.dataset.density,density);assert.equal(saved().density,density);
+      assert.equal($('dashboard-columns').disabled,density==='compact');
+      assert.deepEqual(order(),initialOrder);
+      assert.equal(percent(),'100');
+    }
+    $('dashboard-density').value='dense';$('dashboard-density').dispatchEvent(new window.Event('change'));
+    $('dashboard-columns').value='3';$('dashboard-columns').dispatchEvent(new window.Event('change'));
+    assert.equal(grid.dataset.columns,'3');assert.equal(saved().columns,'3');
+    $('dashboard-expand').click();
+    assert.equal(document.body.classList.contains('dashboard-focus'),true);
+    assert.equal($('dashboard-expand').getAttribute('aria-pressed'),'true');
+    assert.equal(getComputedStyle(document.querySelector('.recording-panel')).display,'none');
+    assert.notEqual(getComputedStyle($('dashboard-overview')).display,'none');
+    assert.notEqual(getComputedStyle(document.querySelector('header.top')).display,'none');
+    assert.equal(order().length,12);
+    assert.match($('dashboard-context').textContent,/Recorded Data — Offline Review/);
+    assert.equal($('stop-btn').closest('#view-live'),null); // Stop remains in the global header.
+    assert.equal($('ignition-notice').closest('#view-live'),null);
+    $('dashboard-expand').click();assert.equal(document.body.classList.contains('dashboard-focus'),false);
+    assert.notEqual(getComputedStyle(document.querySelector('.recording-panel')).display,'none');
+    $('dashboard-expand').click();
+    document.querySelector('nav [data-view="codes"]').click();
+    assert.equal(document.body.classList.contains('dashboard-focus'),false);
+    document.querySelector('nav [data-view="live"]').click();
+    $('dashboard-density').value='comfortable';$('dashboard-density').dispatchEvent(new window.Event('change'));
+    $('dashboard-columns').value='auto';$('dashboard-columns').dispatchEvent(new window.Event('change'));
     $('arrange-dashboard').click();
     // JSDOM does not compute touch-action; inspect the actual parsed CSS declarations.
     const touch=selector=>[...style.sheet.cssRules].find(rule=>rule.selectorText===selector).style.getPropertyValue('touch-action');

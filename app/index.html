@@ -62,7 +62,14 @@
       <section id="dashboard-overview" class="dashboard-overview" aria-label="Selected dashboard">
         <section id="pinned-section" class="pinned-section">
           <div class="section-heading"><h2 id="dashboard-title">My diagnostics</h2><button id="arrange-dashboard" type="button" aria-pressed="false">Arrange</button></div>
-          <div class="dashboard-tools"><p id="dashboard-hint" class="help">Tap a reading for its chart. Star other readings below to add them.</p><label>View<select id="dashboard-density"><option value="comfortable">Cards</option><option value="compact">List</option></select></label></div>
+          <div class="dashboard-tools dashboard-layout-tools">
+            <label>Card size<select id="dashboard-density"><option value="comfortable">Large cards</option><option value="small">Small cards</option><option value="dense">Dense cards</option><option value="compact">List</option></select></label>
+            <label>Columns<select id="dashboard-columns"><option value="auto">Auto</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
+            <button id="dashboard-expand" type="button" aria-pressed="false">Expand dashboard</button>
+          </div>
+          <p id="dashboard-context" class="help"></p>
+          <p id="dashboard-hint" class="help">Tap a reading for its chart. Star other readings below to add them.</p>
+          <p class="help dashboard-rotation-help">Rotate your phone for a wider dashboard. Card size and columns are saved on this device.</p>
           <div id="pinned-readings" class="pinned-grid">
             <div id="throttle-percent-card" class="pinned-card">
               <button type="button" class="pinned-open" data-open-pid="THROTTLE_PERCENT" aria-label="Throttle percentage. Open details.">

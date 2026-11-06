@@ -12,7 +12,7 @@ test('fresh app boot restores saved derived-card order and mode-specific visibil
   globalThis.requestAnimationFrame=fn=>{queueMicrotask(fn);return 1;};
   globalThis.getComputedStyle=window.getComputedStyle.bind(window);
   Object.defineProperty(globalThis,'navigator',{configurable:true,value:{storage:{estimate:async()=>({quota:10*1024**3,usage:0})}}});
-  const prefs={version:2,layouts:{ALL:['VS','THROTTLE_PERCENT','ITP'],LIVE:[],LIVE2:['ITP'],LIVE3:['VSBAR']},density:'compact'};
+  const prefs={version:2,layouts:{ALL:['VS','THROTTLE_PERCENT','ITP'],LIVE:[],LIVE2:['ITP'],LIVE3:['VSBAR']},density:'dense',columns:'3'};
   localStorage.setItem('sme105-dashboard-prefs-v1',JSON.stringify(prefs));
   const rec=await createRecording('ALL');rec.sample({t:0,name:'VS',raw:0,value:0});rec.sample({t:0,name:'ITP',raw:871,value:871});await rec.finish({status:'INCOMPLETE',valid:false});
   const prior=setInterval,clear=clearInterval;globalThis.setInterval=()=>1;globalThis.clearInterval=()=>{};
@@ -20,7 +20,10 @@ test('fresh app boot restores saved derived-card order and mode-specific visibil
     await import('../js/app.js');const $=id=>document.getElementById(id);
     const order=()=>[...$('pinned-readings').children].map(n=>n.dataset.pid);
     await until(()=>$('review-selected').textContent.includes('2 samples'));
-    assert.deepEqual(order(),prefs.layouts.ALL);assert.equal($('pinned-readings').dataset.density,'compact');
+    assert.deepEqual(order(),prefs.layouts.ALL);assert.equal($('pinned-readings').dataset.density,'dense');
+    assert.equal($('pinned-readings').dataset.columns,'3');
+    assert.equal($('dashboard-columns').value,'3');
+    assert.equal($('dashboard-density').value,'dense');
     assert.equal($('throttle-percent-value').textContent,'87');
     assert.equal(document.querySelector('#pinned-readings [data-pid=VS] .reading-number').textContent,'0.0');
     $('live-set').value='LIVE';$('live-set').dispatchEvent(new window.Event('change'));

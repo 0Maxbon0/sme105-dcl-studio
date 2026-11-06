@@ -18,6 +18,12 @@ export function cleanLayout(names, variant) {
   const allowed = new Set(dashboardChannels(variant));
   return [...new Set(names)].filter(name => allowed.has(name));
 }
+export function normalizeDashboardDensity(value) {
+  return ['comfortable', 'small', 'dense', 'compact'].includes(value) ? value : 'comfortable';
+}
+export function normalizeDashboardColumns(value) {
+  return ['1', '2', '3', '4'].includes(String(value)) ? String(value) : 'auto';
+}
 export function normalizeDashboardPrefs(value = {}) {
   value = value && typeof value === 'object' ? value : {};
   const layouts = {};
@@ -28,7 +34,7 @@ export function normalizeDashboardPrefs(value = {}) {
     // The formerly fixed card was always present. Migrate once; v2 removals stay removed.
     layouts[variant] = cleanLayout(value.version === 2 ? names : ['THROTTLE_PERCENT', ...names], variant);
   }
-  return { version: 2, layouts, density: value.density === 'compact' ? 'compact' : 'comfortable' };
+  return { version: 2, layouts, density: normalizeDashboardDensity(value.density), columns: normalizeDashboardColumns(value.columns) };
 }
 export function dashboardSensors(group, variant) {
   const allowed = new Set(dashboardChannels(variant));

@@ -11,7 +11,7 @@ import { APP_VERSION, createLineBuffer } from "./protocol.js";
 import { createMockTransport, createReplay } from "./mock-transport.js";
 import { STR } from "./strings.js";
 import { createRecording, listRecordings, recordingBlob } from "./recording.js";
-import { applyStaticStrings, confirmDialog, exportCsv, exportLog, reorderPinnedSensor, pinnedSensors, isDashboardArranging, toggleDashboardArrangement, setDashboardDensity, inspectSensorChart, closeSensorDetails, openSensorDetails, refreshDashboardCharts, render, renderEventHistory, renderWarningHistory, setSensorChartRange, showView, toggleSensorPin } from "./ui.js";
+import { applyStaticStrings, confirmDialog, exportCsv, exportLog, reorderPinnedSensor, pinnedSensors, isDashboardArranging, toggleDashboardArrangement, setDashboardDensity, setDashboardColumns, toggleDashboardFocus, inspectSensorChart, closeSensorDetails, openSensorDetails, refreshDashboardCharts, render, renderEventHistory, renderWarningHistory, setSensorChartRange, showView, toggleSensorPin } from "./ui.js";
 import { closeDiagnosticRun, flushDiagnosticQueue, diagnosticHistory, recentDiagnosticEvents, recordDiagnosticEvent, recordDiagnosticWarning, setDiagnosticStorageErrorHandler, startDiagnosticRun } from "./diagnostics.js";
 import { exportDiagnosticZip, exportGroupCsv, exportSensorCsv, saveOrShare } from "./exports.js";
 import { lookupCode } from "./codes-db.js";
@@ -430,6 +430,13 @@ function wire() {
   });
   document.getElementById("dashboard-density").addEventListener("change", event => {
     setDashboardDensity(event.target.value); renderApp(controller.state);
+  });
+  document.getElementById('dashboard-columns').addEventListener('change', event => {
+    setDashboardColumns(event.target.value); renderApp(controller.state);
+  });
+  document.getElementById('dashboard-expand').addEventListener('click', () => {
+    toggleDashboardFocus(); renderApp(controller.state);
+    document.getElementById('dashboard-overview').scrollIntoView?.({ block: 'start' });
   });
   document.getElementById("arrange-dashboard").addEventListener("click", () => {
     if (isDashboardArranging()) endDrag();

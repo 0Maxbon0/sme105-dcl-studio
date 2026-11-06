@@ -74,7 +74,7 @@ main { display: grid; gap: 16px; max-width: 1024px; margin: 0 auto; padding-top:
 .choices input { width: 17px; height: 17px; margin: 0; accent-color: var(--cyan); }
 .live-controls > .primary { min-height: 54px; text-align: center; }
 .meta, .help { margin: 0; color: var(--muted); font-size: .78rem; line-height: 1.4; }
-.dashboard-overview { display: grid; gap: 9px; }
+.dashboard-overview { scroll-margin-top:90px; display: grid; gap: 9px; }
 .pinned-section { display: grid; gap: 8px; padding-top: 5px; }
 .pinned-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
 .pinned-card { position:relative; min-width:0; border:1px solid var(--line); border-radius:17px; background:var(--surface); }
@@ -289,3 +289,37 @@ body.reduce-motion *, body.reduce-motion *::before, body.reduce-motion *::after 
 .bits li { padding: 5px 0; color: var(--muted); }
 .bits li.on { color: var(--cyan); }
 .bit-raw { font-variant-numeric: tabular-nums; }
+
+/* User-selected density and columns; ordinary cards retain their existing appearance. */
+.dashboard-layout-tools { flex-wrap:wrap; justify-content:flex-start; gap:8px 12px; }
+.dashboard-layout-tools select { max-width:none; }
+.dashboard-layout-tools button { min-height:44px; padding:7px 10px; font-size:.75rem; margin-left:auto; }
+#dashboard-context { overflow-wrap:anywhere; }
+.pinned-grid[data-density="small"], .pinned-grid[data-density="dense"] { gap:6px; }
+.pinned-grid[data-density="small"] .pinned-open { min-height:106px; padding:10px 9px; gap:5px; }
+.pinned-grid[data-density="small"] .pinned-value { font-size:1.65rem; }
+.pinned-grid[data-density="dense"] { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.pinned-grid[data-density="dense"] .pinned-open { min-height:92px; padding:8px 7px; gap:4px; }
+.pinned-grid[data-density="dense"] .pinned-title { font-size:.70rem; min-height:2.6em; padding-right:36px; }
+.pinned-grid[data-density="dense"] .pinned-value { font-size:1.35rem; }
+.pinned-grid:is([data-density="small"],[data-density="dense"]) .state-label { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; font-size:.64rem; }
+.pinned-grid[data-density="dense"] .reading-unit { font-size:.62rem; }
+.pinned-grid:is([data-density="small"],[data-density="dense"]).arranging .pinned-open { padding-bottom:48px; }
+@media(min-width:720px) {
+  .pinned-grid[data-density="small"] { grid-template-columns:repeat(4,minmax(0,1fr)); }
+  .pinned-grid[data-density="dense"] { grid-template-columns:repeat(6,minmax(0,1fr)); }
+}
+/* Explicit choices override responsive Auto; List always remains one column. */
+.pinned-grid:not([data-density="compact"])[data-columns="1"] { grid-template-columns:minmax(0,1fr); }
+.pinned-grid:not([data-density="compact"])[data-columns="2"] { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.pinned-grid:not([data-density="compact"])[data-columns="3"] { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.pinned-grid:not([data-density="compact"])[data-columns="4"] { grid-template-columns:repeat(4,minmax(0,1fr)); }
+.pinned-grid:not([data-density="compact"]):is([data-columns="3"],[data-columns="4"]) .pinned-title { font-size:.70rem; }
+.pinned-grid:not([data-density="compact"]):is([data-columns="3"],[data-columns="4"]) .pinned-value { font-size:clamp(.95rem,4.5vw,1.35rem); }
+/* Expanded view keeps the existing Stop, connection status and navigation available. */
+body.dashboard-focus #view-live > :not(#dashboard-overview) { display:none !important; }
+body.dashboard-focus .top > div:first-child { display:none; }
+body.dashboard-focus .top { min-height:48px; justify-content:flex-end; }
+body.dashboard-focus main { padding-top:4px; }
+body.dashboard-focus #message:empty { display:none; }
+body.dashboard-focus .dashboard-rotation-help { display:none; }

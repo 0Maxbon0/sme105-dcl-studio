@@ -1,0 +1,44 @@
+{
+  "versionName": "1.8.9",
+  "versionCode": 11,
+  "package": "com.maximizotech.sme105dclstudio",
+  "apkSha256": "49d1d5c25655fb2045c961ee15eac7c555d4513381cb8ff5b60fd562b1d5c30b",
+  "installed": false,
+  "signingCertificateSha256": "bf29b03fa7c5e7b4003a4df0fce71e4e1b6fe1ea81657542450a955722194505",
+  "signingContinuity": "Matches 1.8.8 artifact",
+  "features": [
+    "User-selectable Large, Small, Dense and List views",
+    "Persisted Auto or 1\u20134 column preference",
+    "Responsive Auto layout uses additional landscape width",
+    "Reversible expanded dashboard; global Stop, navigation and ignition confirmation retained",
+    "Same dashboard data, card order, pinning, chart details and Arrange scrolling"
+  ],
+  "node": {
+    "passed": 129,
+    "failed": 0,
+    "skipped": 0
+  },
+  "python": {
+    "run": 273,
+    "passed": 264,
+    "skipped": 9,
+    "failed": 0
+  },
+  "androidBuild": "testDebugUnitTest lintDebug assembleDebug: BUILD SUCCESSFUL",
+  "androidLint": {
+    "errors": 0,
+    "warnings": 19
+  },
+  "nativeUnitTests": "NO-SOURCE",
+  "runtimeAssetsByteMatched": 37,
+  "evidenceFilesUnchanged": 156,
+  "reference": "https://www.home-assistant.io/dashboards/cards/",
+  "limitations": [
+    "Actual visible card count depends on viewport, text size and selected layout",
+    "Native Samsung visual/rotation verification requires installing this update; no installation or phone access performed",
+    "Existing system Auto-rotate setting is respected and remains unchanged"
+  ],
+  "firmwareChanged": false,
+  "flashed": false,
+  "realEcuCommandsSent": false
+}

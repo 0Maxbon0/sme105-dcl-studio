@@ -13,7 +13,7 @@ import { LIVE_GROUP_HELP, LIVE_GROUP_TITLES, sensorsForGroup, sensorFreshness } 
 import { redactDiagnostic } from "./diagnostics.js";
 import { saveOrShare } from "./exports.js";
 import { listRecordings, recordingBlob } from "./recording.js";
-import { normalizeDashboardPrefs, dashboardSensors, dashboardChannels, dashboardSensor, reorderedPins } from "./dashboard-layout.js";
+import { normalizeDashboardPrefs, normalizeDashboardDensity, normalizeDashboardColumns, dashboardSensors, dashboardChannels, dashboardSensor, reorderedPins } from "./dashboard-layout.js";
 import { chartPoints, chartEnvelope, chartBounds, sensorSamplesFromCsv } from "./chart-series.js";
 
 const $ = (id) => document.getElementById(id);
@@ -25,6 +25,7 @@ let detailPercent = false;
 let detailRange = "30";
 let latestState = null;
 let arranging = false;
+let dashboardFocused = false;
 let detailHistory = null;
 let detailLoad = 0;
 let chartProbe = null;
@@ -62,8 +63,16 @@ export function reorderPinnedSensor(name, target) {
   writePrefs(prefs);
 }
 export function setDashboardDensity(value) {
-  const prefs = readPrefs(); prefs.density = value === "compact" ? "compact" : "comfortable"; writePrefs(prefs);
+  const prefs = readPrefs(); prefs.density = normalizeDashboardDensity(value); writePrefs(prefs);
 }
+export function setDashboardColumns(value) {
+  const prefs = readPrefs(); prefs.columns = normalizeDashboardColumns(value); writePrefs(prefs);
+}
+export function setDashboardFocus(value) {
+  dashboardFocused = !!value;
+  document.body.classList.toggle('dashboard-focus', dashboardFocused && activeView === 'live');
+}
+export function toggleDashboardFocus() { setDashboardFocus(!dashboardFocused); }
 export function toggleDashboardArrangement() { arranging = !arranging; }
 export function isDashboardArranging() { return arranging; }
 
@@ -100,6 +109,7 @@ export function applyStaticStrings() {
 export function showView(name) {
   const view = name === "history" ? "log" : name === "faults" ? "codes" : name;
   activeView = view;
+  if (view !== "live") setDashboardFocus(false);
   document.querySelectorAll(".view").forEach((item) => {
     item.hidden = item.id !== `view-${view}`;
   });
@@ -389,12 +399,21 @@ function renderPinned(state, manual, idleCheck, pins) {
   const section = $("pinned-section");
   section.hidden = false;
   $("dashboard-title").textContent = ({LIVE:'Engine', LIVE2:'Idle & switches', LIVE3:'Air sensor & spark', ALL:'My diagnostics'})[dashboardSet()];
-  $("dashboard-density").value = readPrefs().density;
+  const prefs = readPrefs();
+  $("dashboard-density").value = prefs.density;
+  $("dashboard-columns").value = prefs.columns;
+  $("dashboard-columns").disabled = prefs.density === 'compact';
+  setText($("dashboard-expand"), dashboardFocused ? 'Exit expanded view' : 'Expand dashboard');
+  $("dashboard-expand").setAttribute('aria-pressed', String(dashboardFocused));
+  setText($("dashboard-context"), state.review?.active
+    ? `Recorded Data — Offline Review · ${state.review.metadata?.id || 'Loading'} · ${formatReplayTime(state.review.position)}`
+    : activeStream(state) ? 'LIVE · recording on this device' : 'Saved readings · no live stream');
   $("arrange-dashboard").textContent = arranging ? 'Done' : 'Arrange';
   $("arrange-dashboard").setAttribute('aria-pressed', String(arranging));
   $("dashboard-hint").textContent = arranging ? 'Swipe cards to scroll. Drag the ↕ handle to reorder. Keyboard: focus a card and use the arrow keys. Tap Done when finished.' : pins.length ? 'Tap a reading for its chart. Star other readings below to add them.' : 'Star a reading below to build this dashboard.';
   const container = $("pinned-readings");
-  container.dataset.density = readPrefs().density;
+  container.dataset.density = prefs.density;
+  container.dataset.columns = prefs.columns;
   container.classList.toggle("arranging", arranging);
   // Reuse the approved card markup, but let the normal layout own its placement.
   const approved = $("throttle-percent-card");
