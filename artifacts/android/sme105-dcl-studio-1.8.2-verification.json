@@ -55,16 +55,47 @@
     "idle": true,
     "availableDataStorage": "11 GB",
     "signerMatchesInstalledApk": true,
-    "recordings": 20,
-    "recordingChunks": 5026,
-    "recordingChunkDigestsCapturedPrivately": true
+    "recordings": 24,
+    "recordingChunks": 5163,
+    "recordingChunkDigestsCapturedPrivately": true,
+    "existingPreferences": 8
   },
   "installation": {
-    "attempted": false,
-    "status": "PENDING_DEVICE_RECONNECTION",
-    "reason": "User disconnected the phone and ESP32 and requested completion up to installation",
-    "postInstallDataPreservation": "Not yet verified: APK not installed",
-    "postInstallWebViewUi": "Pending"
+    "attempted": true,
+    "status": "INSTALLED_AND_VERIFIED",
+    "command": "adb -s <verified Samsung serial> install -r <verified APK>",
+    "result": "Success",
+    "verifiedUtc": "2026-11-06T11:42:55.329169+00:00",
+    "installedVersionName": "1.8.2",
+    "installedVersionCode": 4,
+    "installedApkSha256Matches": true,
+    "postInstallDataPreservation": "Verified unchanged capture metadata and SHA256 of every raw/CSV recording chunk; original journal events, warnings, settings and samples retained",
+    "recordingsPreserved": 24,
+    "recordingChunksPreserved": 5163,
+    "historicalJournalEventsPreserved": 3066,
+    "warningsPreserved": 34,
+    "existingPreferencesPreserved": 8,
+    "samplesPreserved": 639509,
+    "newScriptErrors": 0,
+    "postInstallWebViewUi": "Verified on Samsung: selection, seek, play/pause, restart, raw ITP=179, unconfirmed travel suppressed, live Start disabled in offline mode",
+    "uiSmoke": {
+      "offlineSelection": true,
+      "seek": true,
+      "playPause": true,
+      "restart": true,
+      "recordedTpsRaw179": true,
+      "unconfirmedTravelSuppressed": true,
+      "liveStartDisabled": true,
+      "noLiveStopVisible": true
+    },
+    "activeEcuOperationsStarted": false,
+    "newBridgeLineTypes": [
+      "AUTH",
+      "HELLO",
+      "PINS",
+      "STATUS"
+    ],
+    "temporaryKeepAwakeRestored": true
   },
   "firmware": {
     "modified": false,
