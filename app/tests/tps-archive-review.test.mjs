@@ -7,7 +7,7 @@ import * as fake from 'fake-indexeddb';
 import { createRecording, listRecordings, recordingBlob } from '../js/recording.js';
 import { createRecordingPlayer } from '../js/recording-review.js';
 import { sensorSamplesFromCsv } from '../js/chart-series.js';
-import { tpsPercent, stableTpsReference } from '../js/tps-calibration.js';
+import { throttlePercent } from '../js/throttle-display.js';
 const root = process.env.SME105_EVIDENCE_DIR;
 const hash = data => createHash('sha256').update(data).digest('hex');
 test('November 6 recordings load from original IndexedDB schema and expose real TPS plateaus without changing evidence', { skip: !root }, async () => {
@@ -39,15 +39,16 @@ test('November 6 recordings load from original IndexedDB schema and expose real 
       await player.seek(point.t);
       assert.equal(player.state.pids.ITP.summary.rawLast,target);
       assert.equal(player.state.pids.ITP.sampleTime,point.t);
-      const travel=tpsPercent(target,refs).throttle;
+      const travel=throttlePercent(target);
       if(target===179||target===103) assert.equal(travel,0);
       if(target===970) assert.equal(travel,100);
-      if(target===0||target===1013) assert.equal(travel,null);
+      if(target===0) assert.equal(travel,0);
+      if(target===1013) assert.equal(travel,100);
     }
     if(capture.id.includes('T09:06:52')) {
       assert.ok(samples.every(s=>s.raw===179));
       await player.seek(samples.at(-1).t);
-      assert.equal(stableTpsReference(player.state.pids.ITP.samples,player.state.position),179);
+      assert.equal(throttlePercent(player.state.pids.ITP.summary.rawLast),0);
     }
     assert.deepEqual(await listRecordings(),before);
     assert.equal(hash(Buffer.from(await (await recordingBlob(capture.id,'raw')).arrayBuffer())),capture.raw.sha256);

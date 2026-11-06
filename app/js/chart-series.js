@@ -1,10 +1,10 @@
-import { displayReading } from './pids.js';
+import { dashboardReading } from './throttle-display.js';
 
 export function chartTime(sample) {
   return Number.isFinite(sample?.t) ? sample.t * 1000 : Number.isFinite(sample?.receivedAt) ? sample.receivedAt : null;
 }
 export function chartPoints(samples, name, range = '30', unitSystem = 'metric') {
-  const points = samples.map(sample => ({ time: chartTime(sample), value: displayReading(name, sample.value, { unitSystem }).value }))
+  const points = samples.map(sample => ({ time: chartTime(sample), value: dashboardReading(name, sample.value, { unitSystem }).value }))
     .filter(point => Number.isFinite(point.time) && Number.isFinite(point.value));
   if (!points.length) return [];
   const end = points.at(-1).time;

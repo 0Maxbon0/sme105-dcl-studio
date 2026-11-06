@@ -1,4 +1,3 @@
-import { createTpsControls } from "./tps-controls.js";
 import { createReviewControls } from "./review-controls.js";
 import { createIgnitionReview } from "./ignition-review.js";
 import { reconcileOutcome } from "./session-history.js";
@@ -51,10 +50,8 @@ const controller = createController({
 });
 
 const reviewControls = createReviewControls({ state: controller.state, render: renderApp, closeDetails: closeSensorDetails });
-const tpsControls = createTpsControls({ state: controller.state, changed: () => renderApp(controller.state) });
 function renderApp(state) {
   reviewControls.update();
-  tpsControls.update();
   render(state);
 }
 
@@ -588,7 +585,6 @@ function wire() {
   document.getElementById("saved-csv").addEventListener("click", () => downloadSaved("csv"));
   document.getElementById("saved-log").addEventListener("click", () => downloadSaved("raw"));
   reviewControls.wire();
-  tpsControls.wire();
   void reviewControls.refresh({ restore: true });
   void refreshPendingIgnition(true).catch(error => { controller.state.message = `Recording storage unavailable: ${error.message}`; renderApp(controller.state); });
   ignitionReview.wire();

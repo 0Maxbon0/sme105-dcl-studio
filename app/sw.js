@@ -1,4 +1,4 @@
-const CACHE = "eeciv-v1.8.4-calibrated-card-rpm-1";
+const CACHE = "eeciv-v1.8.6-throttle-1";
 const FILES = [
   "./",
   "./index.html",
@@ -29,8 +29,7 @@ const FILES = [
   "./js/recording.js",
   "./js/recording-review.js",
   "./js/review-controls.js",
-  "./js/tps-calibration.js",
-  "./js/tps-controls.js",
+  "./js/throttle-display.js",
   "./js/diagnostics.js",
   "./js/exports.js",
   "./js/codes-db.js",

@@ -37,7 +37,7 @@ export function sensorsForGroup(group, { manual = true } = {}) {
       const pid = PID_BY_NAME.get(name);
       const [, unit] = PIDS[pid];
       const [title] = PID_TEXT[name] || [name];
-      return { pid, name, unit, title, notApplicable: manual && AUTOMATIC_PIDS.has(name) };
+      return { pid, name, unit, title: name === "ITP" ? "Throttle raw" : title, notApplicable: manual && AUTOMATIC_PIDS.has(name) };
     });
 }
 

@@ -1,8 +1,8 @@
-import { calibratedTpsReading } from "./tps-calibration.js";
+import { dashboardReading, throttlePercent } from "./throttle-display.js";
 /** Stable, keyed dashboard rendering for browser and native WebView. */
 
 import { lookupCode } from "./codes-db.js";
-import { AUTOMATIC_PIDS, bitRows, displayReading, formatValue, judgeReading, PID_TEXT, PIDS, rowsToCsv, summarizeSeries } from "./pids.js";
+import { AUTOMATIC_PIDS, bitRows, formatValue, judgeReading, PID_TEXT, PIDS, rowsToCsv, summarizeSeries } from "./pids.js";
 import { combinedSnapshot } from "./combined.js";
 import { reasonText, stageText, VARIANTS } from "./protocol.js";
 import { STR } from "./strings.js";
@@ -20,6 +20,7 @@ const pinnedNodes = new Map();
 const fmemNodes = new Map();
 const fmemBitNodes = new Map();
 let detailPid = null;
+let detailPercent = false;
 let detailRange = "30";
 let latestState = null;
 let arranging = false;
@@ -71,7 +72,7 @@ function setReadingValue(node, name, summary, manual) {
     number = document.createElement('span'); number.className = 'reading-number';
     const unit = document.createElement('small'); unit.className = 'reading-unit'; node.append(number, unit);
   }
-  const reading = summary ? displayReading(name, summary.last, { unitSystem: unitSystem() }) : null;
+  const reading = summary ? dashboardReading(name, summary.last, { unitSystem: unitSystem() }) : null;
   setText(number, reading ? formatValue(reading.value) : '—');
   node.classList.toggle('long-number', number.textContent.length > 6);
   setText(node.querySelector('.reading-unit'), reading ? reading.unit : '');
@@ -218,7 +219,7 @@ function sensorValue(name, summary, { manual = true } = {}) {
   if (!summary) return "—";
   if (manual && AUTOMATIC_PIDS.has(name)) return "N/A · manual";
   if (RAW_SIGNALS.has(name)) return `${formatValue(summary.last)} counts`;
-  const view = displayReading(name, summary.last, { unitSystem: unitSystem() });
+  const view = dashboardReading(name, summary.last, { unitSystem: unitSystem() });
   return `${formatValue(view.value)} ${view.unit}`.trim();
 }
 
@@ -255,7 +256,7 @@ function drawTimeChart(canvas, samples, range = "30", color = "#42d9e8") {
   const rect = canvas.getBoundingClientRect();
   if (!rect.width) return;
   const ratio = Math.max(1, window.devicePixelRatio || 1);
-  const key = `${detailPid}:${samples.length}:${samples.at(-1)?.t}:${samples.at(-1)?.value}:${range}:${unitSystem()}:${rect.width}:${rect.height}:${chartProbe}:${color}`;
+  const key = `${detailPid}:${detailPercent}:${samples.length}:${samples.at(-1)?.t}:${samples.at(-1)?.value}:${range}:${unitSystem()}:${rect.width}:${rect.height}:${chartProbe}:${color}`;
   if (canvas.dataset.chartKey === key) return;
   canvas.dataset.chartKey = key;
   canvas.width = Math.round(rect.width * ratio); canvas.height = Math.round(rect.height * ratio);
@@ -264,7 +265,7 @@ function drawTimeChart(canvas, samples, range = "30", color = "#42d9e8") {
   const width = rect.width, height = rect.height;
   const left = 52, right = width-14, top = 18, bottom = height-30;
   ctx.clearRect(0,0,width,height);
-  const points = chartPoints(samples, detailPid, range, unitSystem());
+  const points = chartPoints(samples, detailPercent ? "THROTTLE_PERCENT" : detailPid, range, unitSystem());
   const textColor = getComputedStyle(document.body).getPropertyValue('--muted').trim();
   ctx.font = '11px sans-serif'; ctx.fillStyle = textColor;
   if (!points.length) { ctx.fillText('No recorded samples for this reading', 16, height/2); return; }
@@ -304,7 +305,7 @@ function drawTimeChart(canvas, samples, range = "30", color = "#42d9e8") {
     const point=low>0&&Math.abs(points[low-1].time-time)<Math.abs(points[low].time-time)?points[low-1]:points[low];
     ctx.strokeStyle=textColor;ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(x(point.time),top);ctx.lineTo(x(point.time),bottom);ctx.stroke();ctx.setLineDash([]);
     ctx.fillStyle=color;ctx.beginPath();ctx.arc(x(point.time),y(point.value),4,0,Math.PI*2);ctx.fill();
-    setText($("chart-reading"),`${chartClock(point.time)} · ${formatValue(point.value)} ${displayReading(detailPid,0,{unitSystem:unitSystem()}).unit}`);
+    setText($("chart-reading"),`${chartClock(point.time)} · ${formatValue(point.value)} ${dashboardReading(detailPercent ? "THROTTLE_PERCENT" : detailPid,0,{unitSystem:unitSystem()}).unit}`);
   } else setText($("chart-reading"),'Drag across the chart to inspect a recorded sample.');
 }
 
@@ -363,10 +364,6 @@ function sensorHealth(name, series, state, manual, idleCheck) {
   return { samples, summary, freshness, verdict, dtc, colorState, explanation: sensorExplanation(name, summary, freshness, { manual, idleCheck, verdict, dtc }) };
 }
 
-function tpsDetail(state, raw) {
-  const r = calibratedTpsReading(raw, state.tpsProfiles, state.review);
-  return `Calibrated throttle travel (%): ${r.throttle == null ? '—' : r.throttle.toFixed(1)} · ${r.message}`;
-}
 function updateCard(card, sensor, state, manual, idleCheck, pins) {
   const { name, title, unit, notApplicable } = sensor;
   const series = sensorSeries(state, name);
@@ -404,11 +401,15 @@ function renderPinned(state, manual, idleCheck, pins) {
   const container = $("pinned-readings");
   container.dataset.density = readPrefs().density;
   container.classList.toggle("arranging", arranging);
-  // This is a derived display card, not an ECU PID. Keep it next to the normal
-  // dashboard cards without adding a synthetic channel to capture/export maps.
-  const calibrationCard = $("tps-calibration-card");
-  calibrationCard.hidden = !dashboardChannels(dashboardSet()).includes("ITP");
-  const desired = [calibrationCard];
+  const percentCard = $("throttle-percent-card");
+  percentCard.hidden = !dashboardChannels(dashboardSet()).includes("ITP");
+  const itp = sensorHealth("ITP", sensorSeries(state, "ITP"), state, manual, idleCheck);
+  const percent = throttlePercent(itp.summary?.rawLast);
+  setText($("throttle-percent-value"), percent == null ? "—" : String(percent));
+  percentCard.querySelector(".pinned-value").dataset.state = itp.colorState;
+  setState(percentCard.querySelector(".state-label"), itp.colorState);
+  setText(percentCard.querySelector(".state-label"), itp.freshness.label);
+  const desired = [percentCard];
   for (const name of pins) {
     let item = pinnedNodes.get(name);
     if (!item) {
@@ -488,24 +489,26 @@ function renderSensorDrawer(state) {
   setText($("drawer-group"), [...Object.keys(LIVE_GROUP_TITLES)].find((group) => LIVE_GROUPSForUi(group).includes(name))
     ? LIVE_GROUP_TITLES[Object.keys(LIVE_GROUP_TITLES).find((group) => LIVE_GROUPSForUi(group).includes(name))]
     : "Advanced");
-  setText($("drawer-title"), title);
+  const displayName = detailPercent ? "THROTTLE_PERCENT" : name;
+  setText($("drawer-title"), detailPercent ? "Throttle" : title);
   setText($("drawer-state"), `${health.freshness.label} · ${health.explanation}`);
   $("drawer-state").dataset.state = health.colorState;
-  setText($("drawer-value"), summary ? formatValue(displayReading(name,summary.last,{unitSystem:unitSystem()}).value) : "—");
+  setText($("drawer-value"), summary ? formatValue(dashboardReading(displayName,summary.last,{unitSystem:unitSystem()}).value) : "—");
   $("drawer-value").dataset.state = health.colorState;
-  setText($("drawer-unit"), RAW_SIGNALS.has(name) ? "raw ECU counts" : displayReading(name, summary?.last ?? 0, { unitSystem: unitSystem() }).unit);
+  setText($("drawer-unit"), detailPercent ? "%" : RAW_SIGNALS.has(name) ? "raw ECU counts" : dashboardReading(name, summary?.last ?? 0, { unitSystem: unitSystem() }).unit);
   setText($("drawer-raw"), summary ? `${summary.rawLast} (0x${Math.trunc(summary.rawLast).toString(16).toUpperCase().padStart(3,"0")})` : "No sample");
-  setText($("drawer-min"), summary ? formatValue(displayReading(name, summary.min, { unitSystem: unitSystem() }).value) : "—");
-  setText($("drawer-max"), summary ? formatValue(displayReading(name, summary.max, { unitSystem: unitSystem() }).value) : "—");
+  setText($("drawer-min"), summary ? formatValue(dashboardReading(displayName, summary.min, { unitSystem: unitSystem() }).value) : "—");
+  setText($("drawer-max"), summary ? formatValue(dashboardReading(displayName, summary.max, { unitSystem: unitSystem() }).value) : "—");
   setText($("drawer-count"), summary?.n ?? 0);
   const latest = health.samples.at(-1);
   setText($("drawer-time"), `PID 0x${pid.toString(16).toUpperCase().padStart(2, "0")}`);
-  setText($("drawer-meaning"), name === "ITP" && state.tpsProfiles ? `${health.explanation} ${tpsDetail(state, latest?.raw)}` : health.explanation);
-  setText($("drawer-reference"), reference.normal);
-  setText($("drawer-source"), `${reference.meaning} ${reference.source ? `Source: ${reference.source}` : "No vehicle-specific limit source verified."}`);
+  setText($("drawer-meaning"), health.explanation);
+  setText($("drawer-reference"), detailPercent ? "179 counts = 0%; 970 counts = 100%." : reference.normal);
+  setText($("drawer-source"), detailPercent ? "Owner-defined display range. Original raw counts are retained." : `${reference.meaning} ${reference.source ? `Source: ${reference.source}` : "No vehicle-specific limit source verified."}`);
   const pins = pinnedSensors();
   setText($("drawer-pin"), pins.includes(name) ? "Unpin reading" : "Pin reading");
   $("drawer-pin").dataset.pinPid = name;
+  $("drawer-pin").hidden = detailPercent;
   drawTimeChart($("sensor-chart"), chartSamples, detailRange, chartColor(health.freshness.state));
 }
 
@@ -514,7 +517,8 @@ function LIVE_GROUPSForUi(group) {
 }
 
 export function openSensorDetails(state, name) {
-  detailPid = name;
+  detailPercent = name === "THROTTLE_PERCENT";
+  detailPid = detailPercent ? "ITP" : name;
   detailRange = "30";
   chartProbe = null;
   detailHistory = null;
@@ -522,7 +526,7 @@ export function openSensorDetails(state, name) {
   $("sensor-drawer").hidden = false;
   renderSensorDrawer(state);
   $("drawer-close").focus();
-  void loadChartHistory(state, name);
+  void loadChartHistory(state, detailPid);
 }
 
 export function closeSensorDetails() {

@@ -6,13 +6,12 @@ import * as fake from 'fake-indexeddb';
 import { createController } from '../js/controller.js';
 import { createRecording } from '../js/recording.js';
 import { createReviewControls } from '../js/review-controls.js';
-import { createTpsControls } from '../js/tps-controls.js';
 import { render, applyStaticStrings, openSensorDetails, closeSensorDetails } from '../js/ui.js';
 import { EXPECTED_HELLO, EXPECTED_PINS } from '../js/protocol.js';
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const until = async fn => { for (let i=0; i<200; i++) { if (fn()) return; await new Promise(r => setTimeout(r, 5)); } throw new Error('UI did not settle'); };
 
-test('real dashboard DOM selects older/newer recordings, plays/seeks, confirms profiles and restores offline without transport commands', async () => {
+test('real dashboard DOM selects older/newer recordings, plays/seeks, shows normal throttle percentage and restores offline without transport commands', async () => {
   const dom = new JSDOM(html, { url: 'https://offline.test/' });
   globalThis.window = dom.window; globalThis.document = dom.window.document; globalThis.localStorage = dom.window.localStorage;
   globalThis.indexedDB = new fake.IDBFactory(); globalThis.IDBKeyRange = fake.IDBKeyRange;
@@ -29,61 +28,51 @@ test('real dashboard DOM selects older/newer recordings, plays/seeks, confirms p
   controller.onConnected('offline harness'); controller.handleLine('AUTH OK transport=BLE'); controller.handleLine(EXPECTED_HELLO); controller.handleLine(EXPECTED_PINS); controller.handleLine('STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 read_used=0 fault=0 live_all=1');
   commands.length=0;
   const state=controller.state;
-  let tps, review;
-  const paint = () => { tps?.update(); review?.update(); render(state); };
+  let review;
+  const paint = () => { review?.update(); render(state); };
   review=createReviewControls({state, render:paint, closeDetails:closeSensorDetails, now:()=>now});
-  tps=createTpsControls({state, changed:paint});
-  applyStaticStrings(); review.wire(); tps.wire(); await review.refresh({restore:true}); paint();
-  assert.equal($('tps-calibration-card').parentElement.id,'pinned-readings');
-  assert.equal($('tps-calibration-card').hidden,false);
-  assert.match($('tps-calibration-card').textContent,/Throttle calibrated/);
-  assert.equal($('tps-profile-details').open,false);
-  click('tps-card-open');
-  assert.equal($('tps-profile-details').open,true);
-  assert.equal($('tps-profile-details').parentElement.previousElementSibling.id,'live-cards');
+  applyStaticStrings(); review.wire(); await review.refresh({restore:true}); paint();
+  const card = () => document.querySelector('#pinned-readings [data-pid="ITP"]');
+  const percent = () => $('throttle-percent-value').textContent;
+  assert.equal($('tps-profile-details'),null);
+  assert.equal($('tps-calibration-card'),null);
+  assert.equal(card().querySelector('.pinned-title').textContent,'Throttle raw');
+  assert.equal(card().querySelector('.reading-unit').textContent,'');
   assert.equal($('saved-recordings').options.length,2);
   assert.equal($('saved-recordings').value,newer.id);
   assert.equal($('review-mode').textContent,'Recorded Data — Offline Review');
   assert.equal($('live-start').disabled,true);
   assert.match($('review-selected').textContent,/INCOMPLETE/);
-  assert.match($('tps-raw').textContent,/no sample/);
+  assert.equal(percent(),'—');
   $('saved-recordings').value=older.id; $('saved-recordings').dispatchEvent(new window.Event('change'));
   await until(()=>state.review.metadata.id===older.id && !state.review.loading);
   $('review-position').value=2; $('review-position').dispatchEvent(new window.Event('input'));
   await until(()=>state.review.position===2);
-  assert.match($('tps-raw').textContent,/103 counts/);
-  assert.match($('tps-context').textContent,/suggested/);
-  click('tps-capture-freeRest');
-  assert.match($('tps-message').textContent,/Stable sample copied/);
-  $('tps-confirm').checked=true; click('tps-save');
-  assert.equal(tps.profiles.state.profiles.spare.referenceEvidence.freeRest.recordingId,older.id);
-  assert.match($('tps-context').textContent,/identity unrecorded/);
-  $('tps-history-profile').checked=true; $('tps-history-profile').dispatchEvent(new window.Event('change'));
-  assert.match($('tps-travel').textContent,/0.0$/);
-  assert.match($('tps-calibration-card').textContent,/103 counts/);
+  assert.equal(percent(),'0');
+  assert.equal(card().querySelector('.reading-unit').textContent,'counts');
+  assert.equal(card().querySelector('.reading-number').textContent,'103');
   $('review-position').value=4; $('review-position').dispatchEvent(new window.Event('input')); await until(()=>state.review.position===4);
-  assert.match($('tps-raw').textContent,/179 counts/);
-  assert.match($('tps-calibration-card').textContent,/179 counts/);
-  assert.match($('tps-travel').textContent,/0.0$/);
-  assert.equal(document.querySelector('[data-pid="ITP"] .tps-derived'),null); // Raw ITP stays separate from the calibrated card.
-  openSensorDetails(state,'ITP'); assert.match($('drawer-raw').textContent,/179/); assert.match($('drawer-meaning').textContent,/Calibrated throttle travel/);
+  assert.equal(percent(),'0');
+  openSensorDetails(state,'ITP'); assert.match($('drawer-raw').textContent,/179/);
+  assert.equal($('drawer-value').textContent,'179'); assert.equal($('drawer-unit').textContent,'raw ECU counts');
+  openSensorDetails(state,'THROTTLE_PERCENT');
+  assert.equal($('drawer-value').textContent,'0'); assert.equal($('drawer-unit').textContent,'%');
   click('drawer-close'); closeSensorDetails();
   click('review-play'); now=1000; await review.player.tick();
-  assert.equal(state.review.position,5); assert.match($('tps-travel').textContent,/100.0$/);
-  assert.equal($('tps-calibration-card').parentElement.id,'pinned-readings');
+  assert.equal(state.review.position,5); assert.equal(percent(),'100');
   click('review-restart'); await until(()=>state.review.position===0); assert.equal(state.review.playing,false);
   click('review-play'); now=2000; await review.player.tick(); click('review-pause'); now=4000; await review.player.tick(); assert.equal(state.review.position,1);
   assert.deepEqual(commands,[]);
   assert.equal(controller.requestVehicle('LIVE').ok,false); assert.deepEqual(commands,[]);
   $('live-set').value='LIVE3'; paint();
-  assert.equal($('tps-calibration-card').hidden,true); // LIVE3 does not request ITP.
+  assert.equal(card(),null); assert.equal($('throttle-percent-card').hidden,true); // LIVE3 does not request ITP.
   $('live-set').value='ALL'; paint();
-  assert.equal($('tps-calibration-card').hidden,false);
-  // A new controller and UI instance restore the persisted explicit selection and profiles.
+  assert.ok(card());
+  // The same selection restores without a calibration profile or a vehicle operation.
   const next=createController({send:c=>commands.push(c)}).state;
-  let restoredTps; const restored=createReviewControls({state:next, render:()=>restoredTps?.update()});
-  restoredTps=createTpsControls({state:next, changed:()=>{}}); restored.wire(); restoredTps.wire(); await restored.refresh({restore:true});
-  assert.equal(next.review.metadata.id,older.id); assert.equal(restoredTps.profiles.state.profiles.spare.status,'confirmed');
+  const restored=createReviewControls({state:next, render:()=>{}});
+  restored.wire(); await restored.refresh({restore:true});
+  assert.equal(next.review.metadata.id,older.id);
   assert.equal(next.review.sensorProfile,null); // Historical identity is never silently remembered as fact.
   assert.deepEqual(commands,[]);
   const missingState=createController().state;

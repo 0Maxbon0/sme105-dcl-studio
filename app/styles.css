@@ -272,14 +272,3 @@ body.reduce-motion *, body.reduce-motion *::before, body.reduce-motion *::after 
 #review-selected { overflow-wrap: anywhere; }
 #review-position { width: 100%; min-height: 44px; accent-color: var(--cyan); }
 #review-clock { display: block; font-variant-numeric: tabular-nums; margin-top: 6px; }
-.tps-calibration-card .pinned-open { gap: 9px; }
-.tps-calibration-card .pinned-title { min-height: 0; }
-.tps-calibration-card .pinned-value strong { font-size: inherit; line-height: inherit; }
-.tps-card-raw, .tps-card-context { display: block; color: var(--muted); font-size: .72rem; line-height: 1.35; text-align: left; overflow-wrap: anywhere; }
-.tps-card-context { color: var(--cyan); }
-.tps-calibration-card .pinned-open:focus-visible { outline-offset: -3px; }
-.pinned-grid[data-density="compact"] .tps-card-raw,
-.pinned-grid[data-density="compact"] .tps-card-context { grid-column: 1 / -1; }
-[aria-label="TPS display calibration"] input[type="number"] { width: 100%; min-height: 44px; padding: 8px; background: var(--surface-raised); border: 1px solid var(--line); border-radius: 8px; }
-[aria-label="TPS display calibration"] details > button { width: 100%; margin: 6px 0 12px; }
-[aria-label="TPS display calibration"] input[type="checkbox"] { min-width: 20px; min-height: 20px; vertical-align: middle; }

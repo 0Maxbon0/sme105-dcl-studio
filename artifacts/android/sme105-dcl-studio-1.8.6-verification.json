@@ -1,0 +1,36 @@
+{
+  "versionName": "1.8.6",
+  "versionCode": 8,
+  "installed": true,
+  "apkSha256": "67c9cd52571dc14ea22060ac420f9dea4d152159ad7c9931c19bfaf86143f902",
+  "nodeTestsPassed": 120,
+  "androidBuild": "testDebugUnitTest lintDebug assembleDebug: BUILD SUCCESSFUL",
+  "signing": "Matches existing Android debug certificate",
+  "display": {
+    "separateCards": [
+      "Throttle (%)",
+      "Throttle raw (counts)"
+    ],
+    "minimumRaw": 179,
+    "maximumRaw": 970,
+    "rounding": "nearest whole percentage",
+    "example": {
+      "raw": 871,
+      "percent": 87
+    },
+    "profilesUiRemoved": true,
+    "originalRawValuesAndExportsPreserved": true
+  },
+  "deviceChecks": {
+    "version": "1.8.6",
+    "bothCardsPresent": true,
+    "profilesAbsent": true,
+    "nativePercentFunction871": 87,
+    "nativeRawReading871": 871,
+    "originalCaptureMetadataPreserved": true,
+    "originalCaptureRecordsChecked": 24,
+    "additionalOperatorRecordingsRetained": 5
+  },
+  "firmwareChanged": false,
+  "flashed": false
+}
