@@ -1,0 +1,105 @@
+{
+  "path": "artifacts/android/sme105-dcl-studio-1.8.2-debug.apk",
+  "versionName": "1.8.2",
+  "versionCode": 4,
+  "package": "com.maximizotech.sme105dclstudio",
+  "sha256": "4e373d549d4e454344442bf91bd24f8af98a28a38b517a76f73f961cc7e99626",
+  "signerSha256": "bf29b03fa7c5e7b4003a4df0fce71e4e1b6fe1ea81657542450a955722194505",
+  "matchesInstalledCertificate": true,
+  "embeddedRuntimeAssetsVerified": 37,
+  "size": 4780269,
+  "branch": "fix/live-rx-silence-evidence-20261105",
+  "nodeTests": {
+    "passed": 121,
+    "failed": 0,
+    "skipped": 0,
+    "privateArchiveReplayEnabled": true
+  },
+  "pythonTests": {
+    "run": 273,
+    "passed": 264,
+    "skipped": 9,
+    "failed": 0,
+    "skipReason": "Nine legacy private-capture tests have no source fixture in checkout",
+    "parserTestsPassed": 26,
+    "privateV24ReplayEnabled": true
+  },
+  "android": {
+    "tasks": [
+      "testDebugUnitTest",
+      "lintDebug",
+      "assembleDebug"
+    ],
+    "result": "BUILD SUCCESSFUL",
+    "lintErrors": 0,
+    "lintWarnings": 19,
+    "nativeAppUnitTests": "NO-SOURCE; UI/app-entry integration covered by Node/jsdom"
+  },
+  "warnings": [
+    "Existing Android lint warnings: manifest order, dependency updates, backup configuration, obsolete SDK checks, icon/resources",
+    "Gradle flatDir repository metadata warnings",
+    "Starlette/httpx deprecation warning in Python suite"
+  ],
+  "evidenceArchive": {
+    "filesBefore": 55,
+    "filesAfter": 55,
+    "allSha256Unchanged": true,
+    "originalExports": 13,
+    "recoveredRawCsvFiles": 24,
+    "bothIndexedDbTarHashesVerified": true
+  },
+  "preinstallChecks": {
+    "model": "Samsung SM-A528B",
+    "installedVersionName": "1.8.1",
+    "installedVersionCode": 3,
+    "idle": true,
+    "availableDataStorage": "11 GB",
+    "signerMatchesInstalledApk": true,
+    "recordings": 20,
+    "recordingChunks": 5026,
+    "recordingChunkDigestsCapturedPrivately": true
+  },
+  "installation": {
+    "attempted": false,
+    "status": "PENDING_DEVICE_RECONNECTION",
+    "reason": "User disconnected the phone and ESP32 and requested completion up to installation",
+    "postInstallDataPreservation": "Not yet verified: APK not installed",
+    "postInstallWebViewUi": "Pending"
+  },
+  "firmware": {
+    "modified": false,
+    "flashed": false,
+    "flashRequired": false,
+    "klinePin7Changed": false
+  },
+  "safety": {
+    "physicalEcuOperationsSent": false,
+    "androidStorageCleared": false,
+    "appUninstalled": false,
+    "nvsModified": false
+  },
+  "limitations": [
+    "Debug-signed upgrade APK, matching installed certificate; not a production signing claim",
+    "Ignition-off resolution is an operator report; original reason19 and integrity remain unchanged",
+    "No-response outcome does not measure ignition state; read-used lock is not electrical line saturation",
+    "TPS upper endpoint remains a suggested/accepted reference until mechanically confirmed for the selected sensor; historical sensor identity is unrecorded",
+    "No verified exact-ECU MAF airflow, IEGO1 voltage/polarity, FUELPW1 milliseconds, raw IACT/IECT thermistor transfer, true throttle angle or confirmed undocumented fault-bit meanings"
+  ],
+  "integrationFixCommit": "91a52fa6ec395224918cfc6241e8ac7ddf998c55",
+  "changedFiles": [
+    "scripts/sme105_usb_bridge.py",
+    "tests/test_sme105_usb_bridge.py",
+    "app/js/controller.js",
+    "app/js/session.js",
+    "app/js/protocol.js",
+    "app/sw.js",
+    "app/tests/controller.test.mjs",
+    "app/tests/lifecycle.test.mjs",
+    "app/tests/session.test.mjs",
+    "app/tests/offline-package.test.mjs",
+    "android/app/build.gradle",
+    "android/app/src/main/java/com/maximizotech/sme105dclstudio/BridgeConnectionService.java",
+    "artifacts/android/sme105-dcl-studio-1.8.2-debug.apk",
+    "artifacts/android/sme105-dcl-studio-1.8.2-verification.json"
+  ]
+}

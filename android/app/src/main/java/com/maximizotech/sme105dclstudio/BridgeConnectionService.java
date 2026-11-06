@@ -40,7 +40,10 @@ public class BridgeConnectionService extends Service {
         service.recording = active;
         if (active && !service.wakeLock.isHeld()) service.wakeLock.acquire(4 * 60 * 60 * 1000L);
         if (!active && service.wakeLock.isHeld()) service.wakeLock.release();
-        service.getSystemService(NotificationManager.class).notify(NOTICE, service.notification());
+        // Update the existing foreground-service notification through the same
+        // API used at startup; no extra POST_NOTIFICATIONS permission is needed.
+        if (Build.VERSION.SDK_INT >= 29) service.startForeground(NOTICE, service.notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
+        else service.startForeground(NOTICE, service.notification());
         return true;
     }
     @Override public void onTaskRemoved(Intent rootIntent) { stopSelf(); }
