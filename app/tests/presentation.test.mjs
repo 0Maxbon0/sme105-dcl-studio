@@ -2,6 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { PID_TEXT, displayReading, judgeReading, readingLabel, rowsToCsv, scaleWord } from "../js/pids.js";
 
+test("engine RPM dashboard label uses RPM without changing the underlying PID or its units", () => {
+  assert.equal(PID_TEXT.N[0], "Engine RPM");
+  assert.equal(PID_TEXT.N[1], "rpm");
+  assert.equal(scaleWord(0x01, 200).value, 800);
+  assert.deepEqual(displayReading("N", 800), { value: 800, unit: "rpm" });
+});
+
 test("both Ford speed encodings display kilometres per hour", () => {
   // Independent anchors: 100 mph = 160.9344 km/h; VS resolution 1/32 mph,
   // VSBAR resolution 1/2 mph (LHBH1 13-30).

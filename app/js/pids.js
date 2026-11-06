@@ -123,7 +123,7 @@ export const PIDS = {
 
 /** Plain names. The short key stays the ECU identifier used in captures. */
 export const PID_TEXT = {
-  N: ["Engine speed", "rpm", "How fast the crankshaft is turning. This stays at zero with the engine off."],
+  N: ["Engine RPM", "rpm", "Crankshaft revolutions per minute. This stays at zero with the engine off."],
   ACT: ["Intake air temp", "°C", "ECU-reported intake-air temperature, related to the separate two-wire IAT in the intake plenum. The observed ACT/IACT delay is unexplained; ECU-specific fallback behavior is unverified."],
   ECT: ["Coolant temp", "°C", "Engine coolant temperature reported by the ECU. Warm-up, thermostat and fan operation determine expected temperature; a factory pass/fail band is not verified."],
   IACT: ["Air temperature input", "counts", "Raw intake-temperature-related channel, associated with the separate IAT, not a third physical sensor. A preserved capture shows ACT changing to 37.8°C 26.324 seconds before IACT changes; synchronization and fallback remain unverified. No temperature calibration is applied."],

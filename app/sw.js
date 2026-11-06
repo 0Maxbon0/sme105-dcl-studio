@@ -1,4 +1,4 @@
-const CACHE = "eeciv-v1.8.3-calibrated-card-1";
+const CACHE = "eeciv-v1.8.4-calibrated-card-rpm-1";
 const FILES = [
   "./",
   "./index.html",

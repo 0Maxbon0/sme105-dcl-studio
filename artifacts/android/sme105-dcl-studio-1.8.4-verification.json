@@ -1,0 +1,60 @@
+{
+  "app": "SME105 DCL Studio",
+  "package": "com.maximizotech.sme105dclstudio",
+  "versionName": "1.8.4",
+  "versionCode": 6,
+  "apkPath": "artifacts/android/sme105-dcl-studio-1.8.4-debug.apk",
+  "apkBytes": 4773342,
+  "apkSha256": "9988253faee8e8bf43294fe74f88c1a2fc7baf78d62b57660a6fa6808aa571fa",
+  "certificateSha256": "bf29b03fa7c5e7b4003a4df0fce71e4e1b6fe1ea81657542450a955722194505",
+  "tests": {
+    "node": {
+      "total": 122,
+      "passed": 120,
+      "skipped": 2,
+      "failed": 0
+    },
+    "python": {
+      "total": 273,
+      "passed": 263,
+      "skipped": 10,
+      "failed": 0
+    },
+    "android": "testDebugUnitTest lintDebug assembleDebug BUILD SUCCESSFUL"
+  },
+  "installation": {
+    "method": "adb install -r",
+    "result": "Success",
+    "installedVersionName": "1.8.4",
+    "installedVersionCode": 6,
+    "signerCompatible": true
+  },
+  "phoneDataAudit": {
+    "captureCount": 24,
+    "rawCsvChunkCount": 5163,
+    "chunkDigest": "cc2fb8fe541f81532124c307a5ffdf735f1437f1f3955cb6a48eb56cbc972c46",
+    "sampleCount": 639509,
+    "priorJournalEvents": 3095,
+    "newJournalEvents": 6,
+    "checks": {
+      "captures": true,
+      "chunkCount": true,
+      "chunkDigest": true,
+      "rawCount": true,
+      "sampleCount": true,
+      "warnings": true,
+      "existingJournalEvents": true,
+      "settings": true,
+      "noNewErrors": true,
+      "idle": true
+    }
+  },
+  "uiChecks": {
+    "labelEngineRpm": true,
+    "throttleCardOnDashboard": true,
+    "throttleCardOpensSettings": true,
+    "noActiveEcuSession": true
+  },
+  "esp32Firmware": "v24 unchanged, no flash",
+  "noNewVehicleCommands": true
+}

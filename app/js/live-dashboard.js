@@ -20,7 +20,7 @@ export const LIVE_GROUP_TITLES = Object.freeze({
 
 export const LIVE_GROUP_HELP = Object.freeze({
   overview: "Current readings and your pinned sensors.",
-  engine: "Engine speed, idle command, throttle movement and driving speed.",
+  engine: "Engine RPM, idle command, throttle movement and driving speed.",
   fuel: "Fuel command and feedback. Requests and raw counts are not measured exhaust results.",
   temp: "ECU temperature readings and raw sensor inputs. Raw counts are not degrees.",
   switches: "Power, switch inputs and failure-memory bytes. Undocumented bits remain unverified.",
