@@ -56,6 +56,24 @@ test("an idle bridge with its read latch set is not rearmed", () => {
   assert.equal(sent.some(command => command.startsWith("ARM_") || command.startsWith("READ_")), false);
 });
 
+test("completed requests can arm sequentially while the bridge reports read_used=0", () => {
+  const { controller, sent } = harness();
+  identify(controller, { pass: "1" });
+
+  for (const variant of ["LIVE", "0E"]) {
+    assert.equal(controller.requestVehicle(variant).ok, true, variant);
+    controller.handleLine("STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0 out_overflow=0 transport_lost=0 usb_skipped=0");
+    controller.handleLine(`EVENT read_armed variant=${variant} valid_ms=15000 no_tx_yet=1`);
+    controller.handleLine("EVENT session=READ_CANDIDATE");
+    controller.handleLine("END reason=16 ro_bytes=0 ro_lost=0 uart_errors=0 pad_verified=4 words_started=4 DE=LOW");
+    assert.equal(controller.state.phase, "idle", variant);
+  }
+
+  assert.deepEqual(sent.filter(command => command.startsWith("ARM_") || command.startsWith("READ_")), [
+    "ARM_LIVE", "READ_LIVE", "ARM_0E", "READ_0E",
+  ]);
+});
+
 test("used latch with transport loss is not called a clean read lock or armed", () => {
   const { controller, sent } = harness();
   identify(controller, { pass: "1" });
@@ -266,6 +284,11 @@ test("DCL discovery variants arm and transmit only their named fixed probe", () 
   for (const [variant, word] of Object.entries(commands)) {
     const { controller, sent } = harness();
     identify(controller, { pass: "1" });
+    const archive = {
+      id: `capture-${variant}`, variant, closed: false,
+      line() {}, snapshot() { return { closed: this.closed }; }, finish() { this.closed = true; return Promise.resolve(); },
+    };
+    controller.setArchive(archive);
     assert.equal(controller.requestVehicle(variant).ok, true, variant);
     controller.handleLine("STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fw=24 pad_evidence=2 out_overflow=0 transport_lost=0 usb_skipped=0 fault=0");
     assert.equal(sent.at(-1), `ARM_${variant}`, variant);
@@ -282,6 +305,7 @@ test("DCL discovery variants arm and transmit only their named fixed probe", () 
     assert.equal(controller.state.lastSession.dclProbe.word, word, variant);
     assert.equal(controller.state.lastSession.dclProbe.responseBytes, 1, variant);
     assert.equal(controller.state.lastSession.dclProbe.ecuOriginVerified, false, variant);
+    assert.equal(controller.state.lastDclProbe.recordingId, archive.id, variant);
     assert.equal(controller.state.lastDclProbe.rawLines.some(line => line.startsWith("RX ")), true, variant);
     assert.deepEqual(sent.filter(command => command.startsWith("ARM_") || command.startsWith("READ_")), [`ARM_${variant}`, `READ_${variant}`]);
   }

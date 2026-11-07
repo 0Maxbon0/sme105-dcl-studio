@@ -10,7 +10,7 @@ import { createController } from "./controller.js";
 import { APP_VERSION, createLineBuffer, DCL_PROBE_VARIANTS, DCL_BLOCKED_CANDIDATES } from "./protocol.js";
 import { createMockTransport, createReplay } from "./mock-transport.js";
 import { STR } from "./strings.js";
-import { createRecording, listRecordings, recordingBlob, recoverInterruptedRecordings } from "./recording.js";
+import { createRecording, exportExperimentArchive, listRecordings, recordingBlob, recoverInterruptedRecordings } from "./recording.js";
 import { applyStaticStrings, confirmDialog, exportCsv, exportLog, reorderPinnedSensor, pinnedSensors, isDashboardArranging, toggleDashboardArrangement, setDashboardDensity, setDashboardColumns, toggleDashboardFocus, inspectSensorChart, closeSensorDetails, openSensorDetails, refreshDashboardCharts, render, renderEventHistory, renderWarningHistory, setSensorChartRange, showView, toggleSensorPin } from "./ui.js";
 import { closeDiagnosticRun, flushDiagnosticQueue, diagnosticHistory, recentDiagnosticEvents, recordDiagnosticEvent, recordDiagnosticWarning, setDiagnosticStorageErrorHandler, startDiagnosticRun } from "./diagnostics.js";
 import { exportDiagnosticZip, exportGroupCsv, exportSensorCsv, saveOrShare } from "./exports.js";
@@ -125,7 +125,7 @@ function acceptText(chunk) {
 
 const ble = new BleTransport({
   onLine(line) { controller.handleLine(line); },
-  onDisconnect() { controller.onDisconnected(); },
+  onDisconnect() { controller.onDisconnected(); renderApp(controller.state); },
   onError(error) {
     controller.onDisconnected();
     controller.state.message = `Bluetooth transport failed: ${error?.message || String(error)}`;
@@ -315,13 +315,35 @@ async function connect() {
 }
 
 async function ask(title, body, action) {
-  if (controller.state.phase !== "idle") return;
+  if (controller.state.link !== "ready") {
+    controller.state.message = "Connect the bridge before starting a test";
+    renderApp(controller.state);
+    return;
+  }
+  if (controller.state.phase !== "idle") {
+    controller.state.message = `Bridge is not idle (current phase: ${controller.state.phase})`;
+    renderApp(controller.state);
+    return;
+  }
   const ok = await confirmDialog(title, body);
   if (!ok) return;
+  if (controller.state.link !== "ready") {
+    controller.state.message = "Bridge disconnected while waiting for confirmation";
+    renderApp(controller.state);
+    return;
+  }
+  if (controller.state.phase !== "idle") {
+    controller.state.message = `Bridge is busy (current phase: ${controller.state.phase})`;
+    renderApp(controller.state);
+    return;
+  }
   recordDiagnosticEvent("OPERATOR_CONFIRMED_ACTION", { action: title }, "action");
-  if (controller.state.phase !== "idle") return;
-  const result = await action();
-  if (result && result.ok === false) controller.state.message = result.error;
+  try {
+    const result = await action();
+    if (result && result.ok === false) controller.state.message = result.error;
+  } catch (error) {
+    controller.state.message = error?.message || String(error);
+  }
   renderApp(controller.state);
 }
 
@@ -672,24 +694,40 @@ function wire() {
   });
   document.getElementById("dcl-probe-export").addEventListener("click", async () => {
     const probe = controller.state.lastDclProbe;
-    if (!probe) return;
+    const variant = probe?.variant || controller.state.lastSession?.variant || "probe";
+    const stamp = new Date(probe?.completedAt || Date.now()).toISOString().replaceAll(":", "-");
+    const recId = probe?.recordingId || controller.state.lastSession?.recordingId || controller.state.archive?.id;
     try {
-      if (!probe.rawLines?.length) { await saveFullDiagnostic(); return; }
-      const stamp = new Date(probe.completedAt || Date.now()).toISOString().replaceAll(":", "-");
-      const report = [
-        "SME105 DCL discovery probe — raw evidence",
-        `Variant: ${probe.variant}`,
-        `Command word: ${probe.word}`,
-        `Purpose: ${probe.description}`,
-        ...(probe.parityNote ? [`Parity note: ${probe.parityNote}`] : []),
-        `Source: ${probe.source} (${probe.sourceUrl})`,
-        `Bridge capture: ${probe.verdict?.status || probe.bridgeCaptureStatus || "UNKNOWN"}`,
-        `Raw RO bytes: ${probe.responseBytes ?? "unknown"}`,
-        "ECU origin/support: unverified",
-        "",
-        ...probe.rawLines,
-      ].join("\n") + "\n";
-      await saveOrShare(new Blob([report], { type: "text/plain" }), `sme105-dcl-${probe.variant}-${stamp}.txt`);
+      if (recId) {
+        const archive = await exportExperimentArchive(recId);
+        const fileName = `sme105-dcl-${variant}-${stamp}.zip`;
+        await saveOrShare(archive.blob, fileName);
+        controller.state.message = `Exported probe archive ${archive.fileName || fileName} (SHA-256 ${archive.archiveSha.slice(0, 8)}...)`;
+        renderApp(controller.state);
+        return;
+      }
+      if (probe?.rawLines?.length) {
+        const report = [
+          "SME105 DCL discovery probe — raw evidence",
+          `Variant: ${probe.variant}`,
+          `Command word: ${probe.word}`,
+          `Purpose: ${probe.description}`,
+          ...(probe.parityNote ? [`Parity note: ${probe.parityNote}`] : []),
+          `Source: ${probe.source} (${probe.sourceUrl})`,
+          `Bridge capture: ${probe.verdict?.status || probe.bridgeCaptureStatus || "UNKNOWN"}`,
+          `Raw RO bytes: ${probe.responseBytes ?? "unknown"}`,
+          "ECU origin/support: unverified",
+          "",
+          ...probe.rawLines,
+        ].join("\n") + "\n";
+        const fileName = `sme105-dcl-${variant}-${stamp}.txt`;
+        await saveOrShare(new Blob([report], { type: "text/plain" }), fileName);
+        controller.state.message = `Exported probe text evidence ${fileName}`;
+        renderApp(controller.state);
+        return;
+      }
+      controller.state.message = "No probe recording data available to export.";
+      renderApp(controller.state);
     } catch (error) {
       controller.state.message = `DCL probe export failed: ${error.message}`;
       renderApp(controller.state);

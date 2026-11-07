@@ -101,6 +101,7 @@
     </section>
     <section id="view-codes" class="view" hidden>
       <h2>Faults and self-tests</h2>
+      <div id="codes-link-warning" class="banner warning-banner" hidden>Bridge disconnected — tap <strong>Connect</strong> in the top header to enable fault tests.</div>
       <p id="codes-banner" class="banner" hidden></p>
       <label class="stack" for="stored-code-mode">Stored-code request (read only)
         <select id="stored-code-mode" aria-describedby="stored-code-mode-help">
@@ -179,6 +180,7 @@
       </details>
       <details class="history-panel" open>
         <summary>Experimental DCL command discovery</summary>
+        <div id="dcl-link-warning" class="banner warning-banner" hidden>Bridge disconnected — tap <strong>Connect</strong> in the top header to enable candidate tests.</div>
         <p class="help">Fixed, source-pinned candidate read requests for reverse engineering. They are not confirmed as supported by SME-105. Each probe sends one command word, captures the raw response, and does not scan arbitrary opcodes or retry automatically.</p>
         <label class="stack" for="dcl-probe-select">Candidate read request (unverified)<select id="dcl-probe-select"></select></label>
         <p id="dcl-probe-description" class="help"></p>

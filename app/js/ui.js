@@ -593,6 +593,8 @@ export function render(state) {
   latestState = state;
   const busy = state.phase !== "idle" || !!state.combined?.active;
   const linked = state.link === "ready";
+  const codesWarning = $("codes-link-warning"); if (codesWarning) codesWarning.hidden = linked;
+  const dclWarning = $("dcl-link-warning"); if (dclWarning) dclWarning.hidden = linked;
   const authenticated = linked && state.identity.auth === "OK";
   const demoTransport = state.transport === "demo";
   $("link-pill").textContent = demoTransport ? "DEMO · REPLAY" : authenticated ? "BLE · AUTH" : linked ? "BLE · CHECKING" : state.link === "denied" ? "AUTH DENIED" : STR.disconnected;

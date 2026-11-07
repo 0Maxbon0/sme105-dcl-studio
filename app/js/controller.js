@@ -166,6 +166,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       verdict = { valid: false, status: "INCOMPLETE", reasons: ["session did not start"], end: null };
     }
     state.lastSession = buildResult(verdict);
+    state.lastSession.recordingId = state.archive?.id || null;
     if (state.lastSession.dclProbe) {
       state.lastDclProbe = {
         ...state.lastSession.dclProbe,
@@ -173,6 +174,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
         completedAt: state.lastSession.completedAt,
         verdict: state.lastSession.verdict,
         rawLines: latestDclCaptureLines(state.log),
+        recordingId: state.lastSession.recordingId || state.archive?.id || null,
       };
     }
     if (noResponseFromStart(session, state.lastSession, state.op?.operatorStop, override)) {
@@ -183,7 +185,6 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       state.lastSession.outcome = "OPERATOR_CONFIRMATION_PENDING";
       verdict.outcome = state.lastSession.outcome;
     }
-    state.lastSession.recordingId = state.archive?.id || null;
     if (state.op?.variant === "ALL" && verdict.valid) {
       const map = state.op.session?.pidMap;
       const complete = [15, 16].includes(verdict.end?.reason) && verdict.end?.de === "LOW"

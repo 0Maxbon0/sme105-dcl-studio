@@ -58,6 +58,7 @@ main { display: grid; gap: 16px; max-width: 1024px; margin: 0 auto; padding-top:
 .view[hidden] { display: none !important; }
 .banner { margin: 0; padding: 11px 13px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); color: var(--cyan); font-size: .87rem; }
 .banner.warn { color: var(--amber); background: var(--amber-dim); border-color: color-mix(in srgb, var(--amber) 50%, var(--line)); }
+.banner.warning-banner { color: var(--amber); background: var(--amber-dim); border-color: color-mix(in srgb, var(--amber) 50%, var(--line)); }
 .onboarding { position: relative; display: grid; gap: 8px; padding: 13px 46px 13px 13px; border: 1px solid var(--line); border-radius: 16px; background: linear-gradient(135deg, var(--surface-raised), var(--surface)); }
 .onboarding > div { display: flex; align-items: center; gap: 10px; }
 .onboarding p { margin: 0; font-size: .79rem; }

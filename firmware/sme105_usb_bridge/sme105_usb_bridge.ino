@@ -161,7 +161,7 @@ constexpr bool joinsRunningCart(uint8_t v) {
 // faults stay latched until reboot. Handshake failures are included because
 // they happen before any 9600 DPS word is armed.
 constexpr bool faultAllowsRearm(Fault reason) {
-  return reason == CAPTURE_TIMEOUT || reason == HOST_STOP || reason == BAD_IDLE ||
+  return reason == NO_FAULT || reason == CAPTURE_TIMEOUT || reason == HOST_STOP || reason == BAD_IDLE ||
          reason == HSK_TIMEOUT || reason == HSK_ACK || reason == HSK_TX ||
          reason == CART_INIT;
 }
@@ -2831,8 +2831,9 @@ void reportEnd() {
   // CART_READ only. LISTEN/OBSERVE keep their own one-shot flags.
   // tx2BenchPassed stays valid for the rest of this boot.
   if (isRequestVariant(variant) && faultAllowsRearm(failure)) {
+    failure = NO_FAULT;
+    transmitConsumed = false;
     if (variant == kVariantOffline) offlineConsumed = false;
-    else transmitConsumed = false;
   }
   stage = IDLE;
 }
@@ -3382,7 +3383,13 @@ void runCommand(const char* cmd) {
   if (!strcmp(cmd, "RMT_DUMP")) { dumpGateRmt(); return; }
   if (!strcmp(cmd, "RESET_IDLE")) {
     if (stage != IDLE || slotInFlight || !stopLatched) out.println(F("DENIED busy"));
-    else { failure = NO_FAULT; armedVariant = 255; out.println(F("EVENT idle_reset no_read_rearm=1")); }
+    else {
+      failure = NO_FAULT;
+      armedVariant = 255;
+      transmitConsumed = false;
+      offlineConsumed = false;
+      out.println(F("EVENT idle_reset read_rearm_allowed=1"));
+    }
     return;
   }
   const uint8_t armKind = !strcmp(cmd, "ARM_A4") ? 0 : !strcmp(cmd, "ARM_0E") ? 1 :
