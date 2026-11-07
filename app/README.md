@@ -2,6 +2,22 @@
 
 Offline, installable web app for a 1998 European Ford Escort 1.6 Zetec (Ford EEC-IV, DCL/CART). The phone talks Bluetooth Low Energy to the `SME105-DCL` ESP32 bridge. The bridge is the only thing that transmits on the car.
 
+## Coordinated release — 2026-11-07
+
+This app release is **v1.8.12** (Android versionCode **14**), coordinated with
+ESP32 bridge firmware **v25** (`esp32dev_ble`). See the
+[release report](../artifacts/releases/2026-11-07-v25-release-report.md) for
+binary hashes, recorded verification results, and deployment pre-checks.
+
+The full command catalogue is in the
+[A–R experiment plan](../docs/sme105-dcl-experiment-plan-2026-11-07.md).
+Historical target-session evidence covers `26A4`, `260E`, `253E`, and the
+`4196` / `21F6` live sequence. Prepared new raw-read candidates are `0381`,
+published literal `005E`, and `242E`. DMR values (`22C6`), combined values
+(`271E`), MEM, CLR, and OFF remain separate experimental variants. In
+particular, `005E` stays distinct from parity-derived `004E`; the latter is
+neither an automatic fallback nor the same thing as a received frame-ID E.
+
 ## Android app
 
 The native Android app works offline after installation and uses authenticated BLE through the ESP32 bridge. It needs no phone Wi-Fi or network permission. Android WebView storage is private to this installed app; Chrome PWA recordings do not migrate automatically. Export the old PWA data before removing it.
@@ -43,11 +59,12 @@ five seconds without ECU data ends live capture as incomplete, without retry.
 Turning off the key stops ECU communication; it does not provide a clean final
 capture verdict, and does not replace the link/overflow checks during a trip.
 
-The phone saves every raw received line and CSV row in IndexedDB chunks once
-per second. The UI retains at most 512 readings per channel and a recent log
-window in RAM; full-trip counts and min/max remain cumulative. CSV/log export
-reads the full saved recording, not just recent history. Saved recordings can
-be exported after reopening the app. The app never automatically deletes them.
+The app stores per-operation metadata in IndexedDB `captures` and ordered raw
+and CSV Blob chunks in `chunks`, flushing about once per second. The UI retains
+at most 512 readings per channel and a recent log window in RAM; full-trip
+counts and min/max remain cumulative. CSV/log export reads the full saved
+recording, not just recent history. Saved recordings can be exported after
+reopening the app. The app never automatically deletes them.
 At least 1 GB of estimated free browser quota is required before live capture;
 this is headroom, not a promise of three hours. Browser quota, actual free space,
 link throughput, battery, Android background suspension and browser eviction
@@ -55,6 +72,32 @@ still apply. A failed write or a queued backlog over 4 MB stops capture and
 retains pending chunks for export in that tab. A process/power loss may lose the
 latest uncommitted chunk. Export recordings before clearing browser data.
 See [browser storage documentation](https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria).
+
+### Durable experiment recordings
+
+For command experiments, the capture record is created before command dispatch
+and includes the experiment/session ID, variant, persistence status, unit
+system, start/end times, sample count, duration, verdict, and outcome. Raw
+bridge lines remain in order. Startup recovery marks an unended operation
+`INCOMPLETE` without fabricating an `END`; storage failure preserves queued
+chunks for export in the still-open tab and stops capture.
+
+The `exportExperimentArchive(id)` helper builds and verifies a ZIP containing:
+
+| Member | Contents |
+|---|---|
+| `metadata.json` | Saved experiment metadata and verdict. |
+| `raw.txt` | Original stored bridge lines. |
+| `events.jsonl` | JSON Lines for selected `EVENT`, `FAULT`, `DENIED`, `END`, `STATUS`, `PINS`, `BOOT`, and `HELLO` lines. |
+| `ro.bin` | Raw RO bytes reconstructed from `RX` / `RXB` records. |
+| `ro-timestamps.csv` | `index,t_us,byte_hex` timestamps for each RO byte. |
+| `tx-pad.jsonl` | Local transmit-pad witness rows. |
+| `SHA256SUMS` | SHA-256 for all preceding members; each member is re-read and verified before success. |
+
+The helper also returns the ZIP's SHA-256. Keep the archive unchanged and save
+that hash with the experiment. Android WebView IndexedDB is private to the
+installed app; existing Chrome PWA recordings do not migrate automatically.
+Export PWA evidence before removing site data or the old app installation.
 
 Three hours of simulated ECU frames, including two clock wraps and more than
 1.3 million samples, pass decoder/bounded-memory checks. IndexedDB transaction
@@ -101,10 +144,10 @@ Device name filter: `SME105` (the bridge advertises `SME105-DCL`). Service: Nord
 
 ## Using it
 
-1. **Connect.** The app checks `HELLO`, `PINS`, and `STATUS` against this bridge. DE must be LOW, `auto_tx=0`, `gate4=1`, stage 0 (idle) before any vehicle command.
+1. **Connect.** The app checks `HELLO`, `PINS`, and `STATUS` against this bridge. DE must be LOW, `auto_tx=0`, `gate4=1`, stage 0 (idle) before any vehicle command. Firmware v25 requires a successful `TX2_BENCH` on every boot before an active read; a matching `ARM_*` remains required for each operation.
 2. **Codes.** “Read stored codes” sends `ARM_0E` then `READ_0E`. “Run KOEO self-test” is about 60 seconds with the ignition ON, engine OFF, gear in P/N, feet off the pedals. Codes are not cleared.
 3. **Live.** Set 1 is engine and temperatures. Set 2 is flags, idle, and bitmaps. A capture runs about 90 seconds. “Record CSV” downloads the time series.
-4. **Tools.** Go offline silences the ECU link until the next ignition cycle. Self-test is local to the bridge (no car transmission) and runs automatically once per boot before a vehicle read if it has not passed. Stop is in the header during an operation. Reboot drops the link.
+4. **Tools.** Go offline silences the ECU link until the next ignition cycle. `TX2_BENCH` is local to the bridge (no ECU request), keeps DE LOW, and runs at most once per boot; the app runs it before the first active operation when `STATUS` has no pass latch. It must pass before active reads and is not retried automatically. It proves the GPIO pad path only, not the differential vehicle bus. Stop is in the header during an operation. Reboot drops the link and resets the pass latch.
 5. **Log.** Raw lines from this connection, plus valid / incomplete / failed and the END reason. Reason 16 (`CAPTURE_TIMEOUT`) is the normal end of a timed capture.
 
 The app sends `ARM` only after you confirm, then `READ` as soon as the arm event arrives (the arm window is 15 seconds). It never repeats a vehicle command by itself. If the Bluetooth link drops, the running operation is marked failed; the bridge stops the vehicle session on its own.
@@ -141,4 +184,4 @@ The five notes on codes 113, 122, 157, 214, and 452 were added for this car. Unk
 
 ## Safety
 
-Park the car. Stored codes and KOEO: ignition ON, engine OFF. Live data: the engine may run, but the vehicle stays parked. Going offline means the ECU will not answer until the ignition is cycled. This is not a workshop manual, and this version cannot clear codes.
+Park the car. Stored codes and KOEO: ignition ON, engine OFF. Live data: the engine may run, but the vehicle stays parked. Going offline means the ECU will not answer until the ignition is cycled. `CLR` clears DTCs and changes ECU diagnostic state; treat it as a separately approved state-changing operation. This is not a workshop manual.

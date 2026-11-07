@@ -115,7 +115,11 @@ export function sessionVerdict(session, flags = {}) {
   const markers = ["evidence", "epoch", "boot_id", "witness_started", "witness_verified", "tx_seq", "block", "complete"];
   const versioned = activeRead && (flags.requireVersioned || session.epoch !== null || session.bootId !== null ||
     markers.some(key => key in fields || session.pads.some(p => key in p.fields)));
-  const mode = { "0E": "260E", A4: "26A4", KOEO: "253E", KOER: "253E", CLR: "0291", MEM: "26A4", OFF: "80CE", LIVE: "4196", LIVE2: "4196", LIVE3: "4196", ALL: "4196" }[flags.variant];
+  const mode = {
+    "0E": "260E", A4: "26A4", KOEO: "253E", KOER: "253E", CLR: "0291",
+    MEM: "42F3", OFF: "80CE", LIVE: "4196", LIVE2: "4196", LIVE3: "4196", ALL: "4196",
+    ECU_STATUS: "0381", PIDMAP: "005E", DMRMAP: "242E", DMR: "22C6", BOTH: "271E",
+  }[flags.variant];
   const expectedWords = mode ? ["01B0", "FF5F", mode, flags.variant === "OFF" ? "7F20" : "00A0"] : null;
   const counters = uint(fields.witness_started) && uint(fields.witness_verified) &&
     Number(fields.witness_started) >= 4 && fields.witness_started === fields.witness_verified;

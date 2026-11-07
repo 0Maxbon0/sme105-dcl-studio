@@ -1,5 +1,31 @@
 # SME-105 DCL Diagnostic Studio — situation report
 
+## Release update 2026-11-07
+
+The coordinated release is **firmware v25** (`esp32dev_ble`) with **Android
+app v1.8.12** (versionCode 14). The binary hashes and recorded verification
+results are in the [release report](artifacts/releases/2026-11-07-v25-release-report.md).
+
+The current authoritative A–R matrix, parity analysis, experiment evidence
+levels, alternate commands, and candidate sequence are in the
+[2026-11-07 experiment plan](docs/sme105-dcl-experiment-plan-2026-11-07.md).
+The app records per-operation metadata and ordered raw/CSV chunks in IndexedDB;
+`exportExperimentArchive(id)` creates a ZIP containing `metadata.json`,
+`raw.txt`, `events.jsonl`, `ro.bin`, `ro-timestamps.csv`, `tx-pad.jsonl`, and
+verified `SHA256SUMS`.
+
+Firmware v25 has fixed named active profiles behind a fail-closed per-boot
+electrical qualification gate. `TX2_BENCH` must complete once per boot before
+an active read, and each operation requires its matching explicit arm. The
+bench proves only the local GPIO17 pad path with DE LOW and independent RMT
+observation; it does not prove the differential transceiver path, vehicle
+wiring, or ECU acceptance. A hardware deployment still requires the separate
+electrical pre-checks in the release report and
+`firmware/sme105_usb_bridge/README.md`.
+
+The sections below retain the **2026-08-22** situation snapshot as historical
+baseline context. Use this release update for the coordinated release details.
+
 **Date:** 2026-08-22  
 **Author / attribution:** Eng. Maxim Salib  
 **Vehicle target:** 1998 European Ford Escort Sedan, 1.6 L 16V Zetec, EEC-IV ECU SME-105  

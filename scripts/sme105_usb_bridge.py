@@ -28,15 +28,33 @@ BAUD = 115200
 TCP_PORT = 8765
 DEFAULT_TOKEN_FILE = Path("~/.config/sme105/bridge-token").expanduser()
 TOKEN_HEX = re.compile(rb"^[0-9a-fA-F]{32}$")
-COMMANDS = ("STATUS", "TX2_BENCH", "LISTEN", "HELLO", "REQUEST_A4", "REQUEST_0E",
-            "REQUEST_KOEO", "REQUEST_LIVE", "REQUEST_LIVE2", "REQUEST_ALL", "REQUEST_OFF", "RMT_DUMP", "DE_BENCH",
-            "STOP", "REBOOT", "EXIT")
-CAR_TRANSMIT = frozenset(("HELLO", "REQUEST_A4", "REQUEST_0E", "REQUEST_KOEO",
-                          "REQUEST_LIVE", "REQUEST_LIVE2", "REQUEST_ALL", "REQUEST_OFF"))
-WIRE_COMMANDS = frozenset(("HELLO", "PINS", "STATUS", "TX2_BENCH", "LISTEN_9600", "OBSERVE", "ARM_A4",
-                           "READ_A4", "ARM_0E", "READ_0E", "ARM_KOEO", "READ_KOEO",
-                           "ARM_LIVE", "READ_LIVE", "ARM_LIVE2", "READ_LIVE2", "ARM_ALL", "READ_ALL",
-                           "ARM_OFF", "READ_OFF", "RMT_DUMP", "DE_BENCH", "STOP", "REBOOT"))
+COMMANDS = (
+    "STATUS", "PINS", "TX2_BENCH", "LISTEN", "HELLO", "OBSERVE",
+    "REQUEST_A4", "REQUEST_0E", "REQUEST_KOEO", "REQUEST_KOER",
+    "REQUEST_LIVE", "REQUEST_LIVE2", "REQUEST_LIVE3", "REQUEST_ALL",
+    "REQUEST_CLR", "REQUEST_MEM", "REQUEST_OFF",
+    "REQUEST_ECU_STATUS", "REQUEST_PIDMAP", "REQUEST_DMRMAP",
+    "REQUEST_DMR", "REQUEST_BOTH",
+    "RMT_DUMP", "DE_BENCH", "STOP", "RESET_IDLE", "REBOOT", "EXIT",
+)
+CAR_TRANSMIT = frozenset((
+    "OBSERVE",
+    "REQUEST_A4", "REQUEST_0E", "REQUEST_KOEO", "REQUEST_KOER",
+    "REQUEST_LIVE", "REQUEST_LIVE2", "REQUEST_LIVE3", "REQUEST_ALL",
+    "REQUEST_CLR", "REQUEST_MEM", "REQUEST_OFF",
+    "REQUEST_ECU_STATUS", "REQUEST_PIDMAP", "REQUEST_DMRMAP",
+    "REQUEST_DMR", "REQUEST_BOTH",
+))
+WIRE_COMMANDS = frozenset((
+    "HELLO", "HELP", "PINS", "STATUS", "BLE_STATUS", "TX2_BENCH", "LISTEN_9600", "OBSERVE",
+    "ARM_A4", "READ_A4", "ARM_0E", "READ_0E", "ARM_KOEO", "READ_KOEO",
+    "ARM_KOER", "READ_KOER", "ARM_LIVE", "READ_LIVE", "ARM_LIVE2", "READ_LIVE2",
+    "ARM_LIVE3", "READ_LIVE3", "ARM_ALL", "READ_ALL", "ARM_CLR", "READ_CLR",
+    "ARM_MEM", "READ_MEM", "ARM_OFF", "READ_OFF",
+    "ARM_ECU_STATUS", "READ_ECU_STATUS", "ARM_PIDMAP", "READ_PIDMAP",
+    "ARM_DMRMAP", "READ_DMRMAP", "ARM_DMR", "READ_DMR", "ARM_BOTH", "READ_BOTH",
+    "RMT_DUMP", "DE_BENCH", "STOP", "RESET_IDLE", "REBOOT",
+))
 # Firmware faultAllowsRearm: idle, BAD_IDLE, handshake failures, CART_INIT,
 # HOST_STOP, CAPTURE_TIMEOUT. Pad/DE/phase/overflow stay denied.
 REARM_FAULTS = ("0", "1", "2", "3", "4", "5", "15", "16")
@@ -45,11 +63,19 @@ REQUEST_WORDS = {
     "A4": ("01B0", "FF5F", "26A4", "00A0"),
     "0E": ("01B0", "FF5F", "260E", "00A0"),
     "KOEO": ("01B0", "FF5F", "253E", "00A0"),
-    # First block requests 41H (4196); TX_PAD reports the steady 21H block.
+    "KOER": ("01B0", "FF5F", "253E", "00A0"),
     "LIVE": ("01B0", "FF5F", "21F6", "00A0"),
     "LIVE2": ("01B0", "FF5F", "21F6", "00A0"),
+    "LIVE3": ("01B0", "FF5F", "21F6", "00A0"),
     "ALL": ("01B0", "FF5F", "21F6", "00A0"),
+    "CLR": ("01B0", "FF5F", "0291", "00A0"),
+    "MEM": ("01B0", "FF5F", "42F3", "00A0"),
     "OFF": ("01B0", "FF5F", "80CE", "7F20"),
+    "ECU_STATUS": ("01B0", "FF5F", "0381", "00A0"),
+    "PIDMAP": ("01B0", "FF5F", "005E", "00A0"),
+    "DMRMAP": ("01B0", "FF5F", "242E", "00A0"),
+    "DMR": ("01B0", "FF5F", "22C6", "00A0"),
+    "BOTH": ("01B0", "FF5F", "271E", "00A0"),
 }
 SOURCE_WORDS = "01B0 FF5F 26A4 00A0"
 V5_GPIO17_WORDS = "6DCC 29E9 6C3C 9847"
@@ -60,7 +86,7 @@ HELLO_REPLY = b"HELLO SME105_USB_BRIDGE_V1 protocol=1 usb_baud=115200 no_auto_tx
 PINS_REPLY = (b"PINS ro16=GPIO16_UART1 de18=GPIO18_RMT2..5 "
               b"di17=GPIO17_UART2_TX+PAD_RX no_arbitrary_tx=1")
 ARM_EVENT = re.compile(
-    rb"^EVENT read_armed variant=(A4|0E|KOEO|KOER|LIVE3|LIVE2|LIVE|ALL|CLR|MEM|OFF) valid_ms=15000 no_tx_yet=1$"
+    rb"^EVENT read_armed variant=(A4|0E|KOEO|KOER|LIVE3|LIVE2|LIVE|ALL|CLR|MEM|OFF|ECU_STATUS|PIDMAP|DMRMAP|DMR|BOTH) valid_ms=15000 no_tx_yet=1$"
 )
 TX2_BENCH_TIMEOUT = 15.0
 TX2_REF = re.compile(
@@ -174,7 +200,7 @@ class SessionWitness:
         words = REQUEST_WORDS.get(self.variant or "")
         # v24 reports the first map-loading block, not a later steady block.
         expected = words[slot] if words else None
-        if slot == 2 and ((self.versioned and self.variant in ("LIVE", "LIVE2", "ALL")) or
+        if slot == 2 and ((self.versioned and self.variant in ("LIVE", "LIVE2", "LIVE3", "ALL")) or
                           (self.variant == "ALL" and fields[b"expected"] == b"4196")):
             expected = "4196"
         if (not words or not re.fullmatch(rb"[0-9A-F]{4}", fields[b"expected"]) or
@@ -607,6 +633,7 @@ class BridgeClient:
         self._di_mismatch = False
         self._pending_transmit = False
         self._hello_sent = False
+        self._observe_sent = False
         self._requests_sent: set[str] = set()
         self._verified_status = False
         self._session_ended = threading.Event()
@@ -933,8 +960,26 @@ class BridgeClient:
                 return
             self._send("DE_BENCH")
             return
-        if command == "HELLO" and self._hello_sent:
-            raise BridgeError("HELLO already attempted this host session")
+        if command == "PINS":
+            with self._condition:
+                start = self._pins_generation
+            self._send("PINS")
+            self._wait_response("_pins_generation", start, 2.0)
+            self.display("PINS verified: ro16=GPIO16_UART1, de18=GPIO18_RMT2..5, di17=GPIO17_UART2_TX+PAD_RX.")
+            return
+        if command == "RESET_IDLE":
+            self._send("RESET_IDLE")
+            self.display("RESET_IDLE dispatched; non-fatal fault cleared.")
+            return
+        if command == "HELLO":
+            with self._condition:
+                start = self._hello_generation
+            self._send("HELLO")
+            self._wait_response("_hello_generation", start, 2.0)
+            self.display("HELLO verified: bridge identity confirmed.")
+            return
+        if command == "OBSERVE" and self._observe_sent:
+            raise BridgeError("OBSERVE already attempted this host session")
         variant = command.removeprefix("REQUEST_") if command.startswith("REQUEST_") else None
         request_key = "OFF" if variant == "OFF" else "READ"
         if variant is not None and request_key in self._requests_sent:
@@ -948,45 +993,47 @@ class BridgeClient:
             self._send("LISTEN_9600")
             self.display("Started passive RO16 UART1 listening; raw events recorded.")
             return
+        if command == "OBSERVE":
+            self._validate_idle_for_vehicle(initial)
+            if not authorize("OBSERVE"):
+                self.display("Cancelled; no vehicle TX.")
+                return
+            checked = self.status()
+            self._validate_idle_for_vehicle(checked)
+            self._observe_sent = True
+            self._pending_transmit = True
+            self._session_requested = True
+            self._session_ended.clear()
+            self._send("OBSERVE")
+            self.display("OBSERVE dispatched once. Streaming raw evidence; "
+                         "no automatic retry or DTC interpretation.")
+            return
+        if variant is None:
+            raise BridgeError(f"unsupported command: {command}")
         self._validate_idle_for_vehicle(initial, variant)
-        if command == "HELLO":
-            if self._hello_sent:
-                raise BridgeError("HELLO already attempted this host session")
-        elif variant is None:
-            raise BridgeError("unsupported vehicle TX command")
         if not authorize(command):
             self.display("Cancelled; no vehicle TX.")
             return
         checked = self.status()
         self._validate_idle_for_vehicle(checked, variant)
-        if variant is not None:
-            # Firmware requires two physical USB messages: ARM then READ.
-            # A second typed confirmation and fresh firmware STATUS is
-            # required between them. No automatic ARM->READ execution.
-            self._requests_sent.add(request_key)  # uncertain ARM may not be repeated
-            self._await_arm(variant)
-            if not authorize("READ_" + variant):
-                self.display("Cancelled after ARM; no vehicle READ sent.")
-                return
-            checked = self.status()
-            self._validate_idle_for_vehicle(checked, variant)
-            if (self._arm_variant != variant or
-                    time.monotonic() >= self._arm_deadline - 1.0):
-                raise BridgeError("ARM timed out or changed; READ denied")
-            wire = "READ_" + variant
-            self._read_variant = variant
-            self._session_witness = None
-            self.last_end = None
-        else:
-            wire = "OBSERVE"
-        # Mark the command spent BEFORE attempting a potentially partial write.
+        self._requests_sent.add(request_key)  # uncertain ARM may not be repeated
+        self._await_arm(variant)
+        if not authorize("READ_" + variant):
+            self.display("Cancelled after ARM; no vehicle READ sent.")
+            return
+        checked = self.status()
+        self._validate_idle_for_vehicle(checked, variant)
+        if (self._arm_variant != variant or
+                time.monotonic() >= self._arm_deadline - 1.0):
+            raise BridgeError("ARM timed out or changed; READ denied")
+        wire = "READ_" + variant
+        self._read_variant = variant
+        self._session_witness = None
+        self.last_end = None
         self._pending_transmit = True
         self._session_requested = True
         self._session_ended.clear()
-        if command == "HELLO":
-            self._hello_sent = True
-        else:
-            self._requests_sent.add(request_key)
+        self._requests_sent.add(request_key)
         self._send(wire)
         self.display(f"{wire} dispatched once. Streaming raw evidence; "
                      "no automatic retry or DTC interpretation.")
@@ -1005,16 +1052,19 @@ def confirm_vehicle(command: str, user_input: Callable[[str], str] = input,
     display("WARNING: Real V5 GPIO17 DI packet decoded as "
             f"{V5_GPIO17_WORDS} despite requested {SOURCE_WORDS}. "
             "The transmit mismatch is unresolved; no DTC verified.")
-    display("HELLO means active EchoID/GoCART. REQUEST uses source-fixed "
+    display("OBSERVE means active EchoID/GoCART. REQUEST uses source-fixed "
             "experimental B words. Confirm the adapter and KOEO condition.")
     return user_input(f"Type SEND {command} to authorize exactly one vehicle command: ").strip() == f"SEND {command}"
 
 
 def menu(display: Callable[[str], None] = print) -> None:
-    display("Commands: STATUS | TX2_BENCH | LISTEN | HELLO | REQUEST_A4 | REQUEST_0E | "
-            "REQUEST_KOEO | REQUEST_OFF | STOP | REBOOT | EXIT")
+    display("Commands: STATUS | PINS | TX2_BENCH | LISTEN | HELLO | OBSERVE | "
+            "REQUEST_A4 | REQUEST_0E | REQUEST_KOEO | REQUEST_KOER | REQUEST_LIVE | "
+            "REQUEST_LIVE2 | REQUEST_LIVE3 | REQUEST_ALL | REQUEST_CLR | REQUEST_MEM | "
+            "REQUEST_OFF | REQUEST_ECU_STATUS | REQUEST_PIDMAP | REQUEST_DMRMAP | "
+            "REQUEST_DMR | REQUEST_BOTH | RMT_DUMP | DE_BENCH | STOP | RESET_IDLE | REBOOT | EXIT")
     display("TX2_BENCH is local GPIO17 pad/RMT preflight with DE LOW. "
-            "LISTEN is RX-only. HELLO uses active 2400-baud handshake; "
+            "LISTEN is RX-only. OBSERVE uses active 2400-baud handshake; "
             "REQUEST needs ARM and a separately approved READ.")
 
 

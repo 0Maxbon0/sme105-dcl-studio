@@ -257,3 +257,41 @@ test("controller carries current v24 evidence requirement into the final verdict
   assert.equal(controller.state.lastSession.verdict.valid,false);
   assert.match(controller.state.lastSession.verdict.reasons.join(' '),/provenance/);
 });
+
+
+test("DCL discovery variants arm and transmit only their named fixed probe", () => {
+  const commands = {
+    ECU_STATUS: "0381", PIDMAP: "005E", DMRMAP: "242E", DMR: "22C6", BOTH: "271E",
+  };
+  for (const [variant, word] of Object.entries(commands)) {
+    const { controller, sent } = harness();
+    identify(controller, { pass: "1" });
+    assert.equal(controller.requestVehicle(variant).ok, true, variant);
+    controller.handleLine("STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fw=24 pad_evidence=2 out_overflow=0 transport_lost=0 usb_skipped=0 fault=0");
+    assert.equal(sent.at(-1), `ARM_${variant}`, variant);
+    controller.handleLine(`EVENT read_armed variant=${variant} valid_ms=15000 no_tx_yet=1`);
+    assert.equal(sent.at(-1), `READ_${variant}`, variant);
+    controller.handleLine("EVENT session=READ_CANDIDATE epoch=5 boot_id=77");
+    const expected = ["01B0", "FF5F", word, "00A0"];
+    for (let slot = 0; slot < expected.length; ++slot) {
+      controller.handleLine(`TX_PAD slot=${slot} expected=${expected[slot]} observed=${expected[slot]} tx_us=${1000 + slot * 3000} done_us=${3000 + slot * 3000} match=1 evidence=2 epoch=5 boot_id=77 tx_seq=${slot + 1} block=0 complete=1`);
+    }
+    controller.handleLine("RX t_us=16000 byte=AA");
+    controller.handleLine("END reason=16 ro_bytes=1 ro_lost=0 uart_errors=0 evidence=2 epoch=5 boot_id=77 witness_started=4 witness_verified=4 pad_verified=4 words_started=4 DE=LOW");
+    assert.equal(controller.state.lastSession.verdict.valid, true, variant);
+    assert.equal(controller.state.lastSession.dclProbe.word, word, variant);
+    assert.equal(controller.state.lastSession.dclProbe.responseBytes, 1, variant);
+    assert.equal(controller.state.lastSession.dclProbe.ecuOriginVerified, false, variant);
+    assert.equal(controller.state.lastDclProbe.rawLines.some(line => line.startsWith("RX ")), true, variant);
+    assert.deepEqual(sent.filter(command => command.startsWith("ARM_") || command.startsWith("READ_")), [`ARM_${variant}`, `READ_${variant}`]);
+  }
+});
+
+test("vehicle preflight retains the matching operation recording archive", () => {
+  const { controller } = harness();
+  identify(controller, { pass: "1" });
+  const archive = { id: "capture-1", variant: "DMR", closed: false };
+  controller.setArchive(archive);
+  assert.equal(controller.requestVehicle("DMR").ok, true);
+  assert.equal(controller.state.archive, archive);
+});

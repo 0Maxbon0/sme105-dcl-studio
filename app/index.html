@@ -177,6 +177,21 @@
         <pre id="status-raw" class="mono"></pre>
         <button id="connect-settings" type="button"></button>
       </details>
+      <details class="history-panel" open>
+        <summary>Experimental DCL command discovery</summary>
+        <p class="help">Fixed, source-pinned candidate read requests for reverse engineering. They are not confirmed as supported by SME-105. Each probe sends one command word, captures the raw response, and does not scan arbitrary opcodes or retry automatically.</p>
+        <label class="stack" for="dcl-probe-select">Candidate read request (unverified)<select id="dcl-probe-select"></select></label>
+        <p id="dcl-probe-description" class="help"></p>
+        <button id="dcl-probe-run" type="button" class="primary" disabled>Send one candidate request</button>
+        <p id="dcl-probe-summary" class="banner" role="status">No DCL discovery probe has been recorded yet.</p>
+        <button id="dcl-probe-export" type="button" disabled>Export last probe evidence</button>
+        <pre id="dcl-probe-raw" class="mono">The selected command will be sent once after bridge prechecks. All received bytes are retained in the diagnostic journal.</pre>
+        <details>
+          <summary>Known commands deferred or already implemented</summary>
+          <ul id="dcl-probe-blocked" class="help"></ul>
+        </details>
+        <p class="help">For every result, distinguish bridge capture integrity from ECU acceptance. Raw RO bytes can include local self-echo; a response is not attributed to the ECU until its frame and direction are verified. Full raw records are included in History → Save full diagnostic ZIP.</p>
+      </details>
       <details>
         <summary>Vehicle and display</summary>
         <p id="vehicle-profile" class="help"></p>
@@ -278,6 +293,6 @@
     <button id="ignition-review" type="button" hidden>Ignition confirmation pending · Review</button>
   </div>
   <script src="vendor/jszip.min.js"></script>
-  <script type="module" src="js/app.js?v=17"></script>
+  <script type="module" src="js/app.js?v=18"></script>
 </body>
 </html>

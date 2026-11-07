@@ -7,10 +7,10 @@ import { wireKline } from "./kline-ui.js";
 import { createKoerGuide } from "./koer-guide.js";
 import { BleTransport, bluetoothAvailable } from "./ble.js";
 import { createController } from "./controller.js";
-import { APP_VERSION, createLineBuffer } from "./protocol.js";
+import { APP_VERSION, createLineBuffer, DCL_PROBE_VARIANTS, DCL_BLOCKED_CANDIDATES } from "./protocol.js";
 import { createMockTransport, createReplay } from "./mock-transport.js";
 import { STR } from "./strings.js";
-import { createRecording, listRecordings, recordingBlob } from "./recording.js";
+import { createRecording, listRecordings, recordingBlob, recoverInterruptedRecordings } from "./recording.js";
 import { applyStaticStrings, confirmDialog, exportCsv, exportLog, reorderPinnedSensor, pinnedSensors, isDashboardArranging, toggleDashboardArrangement, setDashboardDensity, setDashboardColumns, toggleDashboardFocus, inspectSensorChart, closeSensorDetails, openSensorDetails, refreshDashboardCharts, render, renderEventHistory, renderWarningHistory, setSensorChartRange, showView, toggleSensorPin } from "./ui.js";
 import { closeDiagnosticRun, flushDiagnosticQueue, diagnosticHistory, recentDiagnosticEvents, recordDiagnosticEvent, recordDiagnosticWarning, setDiagnosticStorageErrorHandler, startDiagnosticRun } from "./diagnostics.js";
 import { exportDiagnosticZip, exportGroupCsv, exportSensorCsv, saveOrShare } from "./exports.js";
@@ -50,9 +50,70 @@ const controller = createController({
 });
 
 const reviewControls = createReviewControls({ state: controller.state, render: renderApp, closeDetails: closeSensorDetails });
+function latestDclCaptureLines(log) {
+  let start = -1;
+  for (let index = log.length - 1; index >= 0; --index) {
+    if (String(log[index]).startsWith("EVENT session=READ_CANDIDATE")) { start = index; break; }
+  }
+  if (start < 0) return [];
+  let first = start;
+  for (let index = start - 1; index >= 0; --index) {
+    if (String(log[index]).startsWith("EVENT read_armed ")) { first = index; break; }
+    if (String(log[index]).startsWith("END ") || String(log[index]).startsWith("EVENT session=")) break;
+  }
+  let end = log.findIndex((line, index) => index > start && String(line).startsWith("END "));
+  if (end < 0) end = log.length - 1;
+  return log.slice(first, end + 1).map(String);
+}
+
+function renderDclExplorer(state) {
+  const select = document.getElementById("dcl-probe-select");
+  if (!select) return;
+  const selected = DCL_PROBE_VARIANTS[select.value];
+  const description = document.getElementById("dcl-probe-description");
+  if (description) {
+    const blockedSuffix = selected?.blockedReason ? ` · [BLOCKED: ${selected.blockedReason}]` : "";
+    description.textContent = selected
+      ? `${selected.word} · ${selected.description} ${selected.parityNote ? `${selected.parityNote} ` : ""}Source: ${selected.source}. ${selected.evidence}${blockedSuffix}`
+      : "Select a fixed read candidate.";
+  }
+  const activeVariant = state.op?.kind === "probe" ? state.op.variant : "";
+  const activeMeta = DCL_PROBE_VARIANTS[activeVariant];
+  const activeLines = activeMeta ? latestDclCaptureLines(state.log) : [];
+  const probe = activeMeta ? {
+    ...activeMeta, variant: activeVariant, responseBytes: state.op?.session?.rx || 0,
+    bridgeCaptureStatus: "IN_PROGRESS", rawLines: activeLines,
+  } : state.lastDclProbe;
+  const run = document.getElementById("dcl-probe-run");
+  const exportButton = document.getElementById("dcl-probe-export");
+  if (run) run.disabled = !selected || state.link !== "ready" || state.phase !== "idle" || state.transport === "demo";
+  if (exportButton) exportButton.disabled = !probe;
+  const summary = document.getElementById("dcl-probe-summary");
+  const raw = document.getElementById("dcl-probe-raw");
+  if (!probe) {
+    if (summary) summary.textContent = "No DCL discovery probe has been recorded yet.";
+    if (raw) raw.textContent = "The selected command will be sent once after bridge prechecks. All received bytes are retained in the diagnostic journal.";
+    return;
+  }
+  const status = probe.bridgeCaptureStatus || probe.verdict?.status || "UNKNOWN";
+  const count = Number(probe.responseBytes || 0);
+  if (summary) summary.textContent = activeMeta
+    ? `Running ${probe.label} (${probe.word}) · ${count} raw RO byte(s) observed so far. ECU ownership is not verified.`
+    : `Last probe: ${probe.label} (${probe.word}) · bridge capture ${status} · ${count} raw RO byte(s). ECU ownership and command support remain unverified.`;
+  const lines = (probe.rawLines || []).filter(line => /^(EVENT read_armed |EVENT session=|TX_PAD |RX |RXB |FAULT |DENIED |END )/.test(line));
+  if (raw) {
+    if (!lines.length) raw.textContent = "Raw response lines are retained in the diagnostic journal. Use History → Export diagnostics to retrieve the complete raw transcript.";
+    else {
+      const shown = lines.slice(-160);
+      raw.textContent = `${lines.length > shown.length ? `… ${lines.length - shown.length} earlier evidence lines omitted from this preview …\n` : ""}${shown.join("\n")}`;
+    }
+  }
+}
+
 function renderApp(state) {
   reviewControls.update();
   render(state);
+  renderDclExplorer(state);
 }
 
 const ignitionReview = createIgnitionReview({ controller, render: renderApp, refreshWarnings, refreshRecordings });
@@ -143,9 +204,10 @@ function auditState(state) {
     recordingId: session.recordingId, bridgeStatus: session.bridgeStatus, denial: session.denial, channel: "DCL", source: session.source, hardwareVerified: false, variant: session.variant, kind: session.kind, startedAt: session.startedAt, completedAt: session.completedAt,
     verdict: session.verdict, outcome: session.outcome || null, requestedMode: session.requestedMode, observedModes: session.observedModes,
     dtcVerified: session.dtcVerified, selfTestComplete: session.selfTestComplete,
+    dclProbe: session.dclProbe || null,
     integrity: session.integrity, ecuEvidence: session.ecuEvidence,
     codes: session.codes, blocks25: session.blocks25, blocks26: session.blocks26,
-    rx: session.verdict?.end?.rx ?? null, parityRejects: session.parityRejects,
+    rx: session.verdict?.end?.ro_bytes ?? null, parityRejects: session.parityRejects,
     codeParityRejects: session.codeParityRejects,
   };
   recordDiagnosticEvent("SESSION_RESULT", evidence, "session").then(refreshTestHistory);
@@ -304,6 +366,27 @@ async function startLive() {
   }
 }
 
+async function startVehicleOperation(variant) {
+  if (controller.state.review?.active) return { ok: false, error: "Exit offline review before starting a vehicle operation" };
+  try {
+    const archive = await createRecording(variant, error => controller.failRecording(`Recording stopped: ${error.message}`), readStorage("eeciv-unit-system") || "metric");
+    archive.line(`CAPTURE_START variant=${variant} started=${archive.started}`);
+    for (const line of [controller.state.identity.hello, controller.state.identity.pins, controller.state.status?.raw]) if (line) archive.line(line);
+    if (controller.state.phase !== "idle" || controller.state.link !== "ready") {
+      await archive.finish({ valid: false, status: "INCOMPLETE", reasons: ["Bridge connection changed before operation start"] });
+      await refreshRecordings();
+      return { ok: false, error: "Connect the bridge before starting a vehicle operation" };
+    }
+    controller.setArchive(archive);
+    const result = controller.requestVehicle(variant);
+    if (!result.ok) await archive.finish({ valid: false, status: "INCOMPLETE", reasons: [result.error] });
+    await refreshRecordings();
+    return result;
+  } catch (error) {
+    return { ok: false, error: `Cannot start recording: ${error.message}` };
+  }
+}
+
 async function refreshRecordings() { await reviewControls.refresh(); }
 
 async function downloadSaved(kind) {
@@ -345,8 +428,11 @@ async function refreshTestHistory() {
     const select = document.getElementById("saved-tests");
     const prior = savedTests[Number(select.value)];
     savedTests = savedDiagnosticTests(events);
-    select.replaceChildren(...savedTests.map((event, index) => new Option(
-      `${new Date(event.detail.completedAt).toLocaleString()} · ${event.detail.variant} · ${event.detail.codes?.length || 0} codes · ${event.detail.verdict?.status || "UNKNOWN"}`, index)));
+    select.replaceChildren(...savedTests.map((event, index) => {
+      const probe = event.detail.dclProbe;
+      const detail = probe ? `${probe.word} · ${probe.responseBytes ?? "?"} RO bytes` : `${event.detail.codes?.length || 0} codes`;
+      return new Option(`${new Date(event.detail.completedAt).toLocaleString()} · ${event.detail.variant} · ${detail} · ${event.detail.verdict?.status || "UNKNOWN"}`, index);
+    }));
     const index = prior ? savedTests.findIndex(event => event.id === prior.id && event.runId === prior.runId) : -1;
     if (index >= 0) select.value = String(index);
     document.getElementById("export-saved-test").disabled = !savedTests.length;
@@ -376,6 +462,10 @@ async function restoreLastDiagnosticResult() {
   const recording = (await listRecordings()).find(item => item.id === detail.recordingId);
   if (recording?.outcome) Object.assign(detail, { outcome: recording.outcome, operatorConfirmation: recording.operatorConfirmation });
   controller.state.lastSession = { ...detail, rows: [], pids: {}, mem: {}, rom: null, totalRows: 0 };
+  if (detail.dclProbe) controller.state.lastDclProbe = {
+    ...detail.dclProbe, variant: detail.variant, startedAt: detail.startedAt,
+    completedAt: detail.completedAt, verdict: detail.verdict, rawLines: [],
+  };
   controller.state.trust = detail.verdict?.valid ? "valid" : "untrusted";
   if (detail.variant === "KOER") Object.assign(koerGuide.state, { phase: "ENDED_UNVERIFIED", sessionId: detail.startedAt, prompt: null, verifiedSuccess: false });
   previousSessionKey = `${detail.variant}:${detail.startedAt}:${detail.completedAt}`;
@@ -383,6 +473,20 @@ async function restoreLastDiagnosticResult() {
 
 function wire() {
   applyStaticStrings();
+  const probeSelect = document.getElementById("dcl-probe-select");
+  probeSelect.replaceChildren(...Object.entries(DCL_PROBE_VARIANTS).map(([variant, spec]) => {
+    const option = document.createElement("option");
+    option.value = variant;
+    option.textContent = `${spec.label} · ${spec.word}`;
+    return option;
+  }));
+  const blockedList = document.getElementById("dcl-probe-blocked");
+  blockedList.replaceChildren(...DCL_BLOCKED_CANDIDATES.map(item => {
+    const li = document.createElement("li");
+    li.textContent = `${item.word} · ${item.label} — ${item.reason}`;
+    return li;
+  }));
+  renderDclExplorer(controller.state);
   document.getElementById("about-version").textContent = APP_VERSION;
   document.getElementById("secure-warning").hidden = window.isSecureContext;
   document.getElementById("bt-warning").hidden = bluetoothAvailable() || demoEnabled();
@@ -559,28 +663,60 @@ function wire() {
       closeSensorDetails();
     }
   });
+  document.getElementById("dcl-probe-select").addEventListener("change", () => renderDclExplorer(controller.state));
+  document.getElementById("dcl-probe-run").addEventListener("click", () => {
+    const variant = document.getElementById("dcl-probe-select").value;
+    const spec = DCL_PROBE_VARIANTS[variant];
+    if (!spec) return;
+    ask(`DCL discovery · ${spec.word}`, `Park the car, apply the parking brake, select neutral, switch ignition ON and keep the engine OFF. This sends exactly one fixed candidate request (${spec.word}); there is no opcode scan and no automatic retry. The source is an experimental third-party EEC-IV implementation, not proof that SME-105 supports it. Captured RO bytes may include local self-echo and will not be attributed to the ECU automatically.`, () => startVehicleOperation(variant));
+  });
+  document.getElementById("dcl-probe-export").addEventListener("click", async () => {
+    const probe = controller.state.lastDclProbe;
+    if (!probe) return;
+    try {
+      if (!probe.rawLines?.length) { await saveFullDiagnostic(); return; }
+      const stamp = new Date(probe.completedAt || Date.now()).toISOString().replaceAll(":", "-");
+      const report = [
+        "SME105 DCL discovery probe — raw evidence",
+        `Variant: ${probe.variant}`,
+        `Command word: ${probe.word}`,
+        `Purpose: ${probe.description}`,
+        ...(probe.parityNote ? [`Parity note: ${probe.parityNote}`] : []),
+        `Source: ${probe.source} (${probe.sourceUrl})`,
+        `Bridge capture: ${probe.verdict?.status || probe.bridgeCaptureStatus || "UNKNOWN"}`,
+        `Raw RO bytes: ${probe.responseBytes ?? "unknown"}`,
+        "ECU origin/support: unverified",
+        "",
+        ...probe.rawLines,
+      ].join("\n") + "\n";
+      await saveOrShare(new Blob([report], { type: "text/plain" }), `sme105-dcl-${probe.variant}-${stamp}.txt`);
+    } catch (error) {
+      controller.state.message = `DCL probe export failed: ${error.message}`;
+      renderApp(controller.state);
+    }
+  });
   document.getElementById("read-codes-btn").addEventListener("click", () => {
     const variant = document.getElementById("stored-code-mode").value === "A4" ? "A4" : "0E";
-    ask(`${STR.confirmStoredTitle} (${variant})`, `${STR.confirmStoredBody}\n\nSelected request: ${variant}; expected response mode: 26H.`, () => controller.requestVehicle(variant));
+    ask(`${STR.confirmStoredTitle} (${variant})`, `${STR.confirmStoredBody}\n\nSelected request: ${variant}; expected response mode: 26H.`, () => startVehicleOperation(variant));
   });
   document.getElementById("koeo-btn").addEventListener("click", () => ask(
-    STR.confirmKoeoTitle, STR.confirmKoeoBody, () => controller.requestVehicle("KOEO"),
+    STR.confirmKoeoTitle, STR.confirmKoeoBody, () => startVehicleOperation("KOEO"),
   ));
   document.getElementById("koer-btn").addEventListener("click", () => ask(
-    STR.confirmKoerTitle, STR.confirmKoerBody, () => controller.requestVehicle("KOER"),
+    STR.confirmKoerTitle, STR.confirmKoerBody, () => startVehicleOperation("KOER"),
   ));
   document.getElementById("live-start").addEventListener("click", () => ask(
     STR.confirmLiveTitle, selectedLive() === "ALL" ? STR.confirmAllLiveBody : STR.confirmLiveBody,
     startLive,
   ));
   document.getElementById("offline-btn").addEventListener("click", () => ask(
-    STR.confirmOffTitle, STR.confirmOffBody, () => controller.requestVehicle("OFF"),
+    STR.confirmOffTitle, STR.confirmOffBody, () => startVehicleOperation("OFF"),
   ));
   document.getElementById("clear-btn").addEventListener("click", () => ask(
-    STR.confirmClearTitle, STR.confirmClearBody, () => controller.requestVehicle("CLR"),
+    STR.confirmClearTitle, STR.confirmClearBody, () => startVehicleOperation("CLR"),
   ));
   document.getElementById("mem-btn").addEventListener("click", () => ask(
-    STR.confirmMemTitle, STR.confirmMemBody, () => controller.requestVehicle("MEM"),
+    STR.confirmMemTitle, STR.confirmMemBody, () => startVehicleOperation("MEM"),
   ));
   document.getElementById("reboot-btn").addEventListener("click", () => ask(
     STR.confirmRebootTitle, STR.confirmRebootBody, () => controller.requestReboot(),
@@ -677,6 +813,7 @@ async function boot() {
   });
   try {
     await startDiagnosticRun();
+    await recoverInterruptedRecordings();
     await restoreLastDiagnosticResult();
     for (const item of await listRecordings()) if (item.operatorConfirmation && item.session) await reconcileOutcome(item);
   }

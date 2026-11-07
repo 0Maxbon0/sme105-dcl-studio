@@ -230,5 +230,92 @@ class GuardedReadOnlyPlanningTests(unittest.TestCase):
             inspect_candidate_response(forged, response)
 
 
+class CartCommandParityCatalogueTests(unittest.TestCase):
+    """Mechanically verify all A-R source commands, parity, and variants."""
+
+    # Upstream doncreat0r/eeciv tables.h A-R words:
+    UPSTREAM_AR = {
+        "A": "0381",  # ECU status
+        "B": "260E",  # Read stored DTC
+        "C": "0291",  # Clear DTC
+        "D": "253E",  # KOEO / KOER
+        "E": "4196",  # Load/transmit PID map
+        "F": "005E",  # Read PID map (published literal)
+        "G": "21F6",  # Read PID values
+        "H": "01A1",  # Clear DCL flags
+        "I": "42A6",  # Load/transmit DMR map
+        "J": "242E",  # Read DMR map
+        "K": "22C6",  # Read DMR values
+        "L": "271E",  # Read combined PID/DMR values
+        "M": "8174",  # Baud-rate change
+        "Q": "411E",  # Stop PID flow
+        "R": "FF5F",  # Idle/control block
+    }
+
+    # Alternate variants from flxkrmr and local investigations:
+    ALTERNATES_WITH_VALID_VPARITY = {
+        "B_ALT": "26A4",  # Alternative stored-code read
+        "D_ALT": "2594",  # Alternative KOEO profile
+        "H_ALT": "01F4",  # Alternative DCL flag-clear profile
+        "MEM_HDR": "42F3",  # Local memory-read sequence header
+        "OFF_HDR": "80CE",  # Offline mode control
+        "OFF_QUAL": "7F20",  # Offline qualifier word
+        "ENV_SEL": "01B0",  # Request envelope module-select word
+        "ENV_END": "00A0",  # Request envelope trailer word
+    }
+
+    def test_generic_vparity_matches_exactly_14_of_15_ar_words(self):
+        matches = {}
+        for letter, hexword in self.UPSTREAM_AR.items():
+            first = int(hexword[:2], 16)
+            second = int(hexword[2:], 16)
+            low_nibble = second & 0x0F
+            expected_second = parity_byte(first, low_nibble)
+            matches[letter] = (expected_second == second)
+
+        matching_keys = [k for k, v in matches.items() if v]
+        mismatch_keys = [k for k, v in matches.items() if not v]
+
+        self.assertEqual(len(matching_keys), 14)
+        self.assertEqual(mismatch_keys, ["F"])
+
+    def test_pidmap_005e_parity_mismatch_and_no_automatic_fallback(self):
+        first = 0x00
+        second = 0x5E
+        low_nibble = second & 0x0F
+        derived_second = parity_byte(first, low_nibble)
+        derived_hex = f"{first:02X}{derived_second:02X}"
+
+        # Generic parity for data nibble E with first=00 is 004E:
+        self.assertEqual(derived_hex, "004E")
+        self.assertNotEqual("005E", derived_hex)
+
+        # Distinguish 004E received as frame-ID E vs transmitted command:
+        # A received CART frame ID E with status 0 has byte pair: 00 4E
+        rx_status = 0x00
+        rx_frame_id = 0x0E
+        rx_parity_id_byte = parity_byte(rx_status, rx_frame_id)
+        self.assertEqual(f"{rx_status:02X}{rx_parity_id_byte:02X}", "004E")
+        # That is frame header syntax, NOT evidence of a transmitted diagnostic command.
+
+    def test_known_alternate_profiles_satisfy_vparity(self):
+        for name, hexword in self.ALTERNATES_WITH_VALID_VPARITY.items():
+            first = int(hexword[:2], 16)
+            second = int(hexword[2:], 16)
+            low_nibble = second & 0x0F
+            expected_second = parity_byte(first, low_nibble)
+            self.assertEqual(
+                expected_second, second,
+                f"Alternate profile {name} ({hexword}) must satisfy VPARITY"
+            )
+
+    def test_mem_sequence_words_and_blocking_justification(self):
+        # 42F3 has valid VPARITY:
+        self.assertEqual(parity_byte(0x42, 0x03), 0xF3)
+        # 22D3 differs from generic parity (which is 2293):
+        self.assertEqual(parity_byte(0x22, 0x03), 0x93)
+        self.assertNotEqual(parity_byte(0x22, 0x03), 0xD3)
+
+
 if __name__ == "__main__":
     unittest.main()

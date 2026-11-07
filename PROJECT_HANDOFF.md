@@ -1,5 +1,15 @@
 # SME-105 DCL Diagnostic Studio — project handoff
 
+## Coordinated release 2026-11-07
+
+- Firmware: **v25**, PlatformIO `esp32dev_ble`.
+- Android app: **v1.8.12**, versionCode **14**.
+- Release sums and recorded software results: [release report](artifacts/releases/2026-11-07-v25-release-report.md).
+- Current command definitions and experiment boundaries: [A–R command matrix and experiment plan](docs/sme105-dcl-experiment-plan-2026-11-07.md).
+- Durable phone recordings use IndexedDB `captures` and ordered `chunks`; `exportExperimentArchive(id)` produces a ZIP with `metadata.json`, `raw.txt`, `events.jsonl`, `ro.bin`, `ro-timestamps.csv`, `tx-pad.jsonl`, and `SHA256SUMS`.
+- Active profiles are compiled in this firmware build, but the runtime remains fail-closed until the per-boot `TX2_BENCH` has a complete GPIO17 pad and independent RMT pass with DE LOW. Every operation also needs its matching arm. A pad pass is not a vehicle-side electrical qualification or proof of ECU acceptance.
+- Existing hardware and vehicle observations below are dated baseline evidence. Use the release report and current experiment plan for present software behavior and deployment checks.
+
 ## New-session instruction
 
 Use this file with `ROADMAP.md` as the first context in a new engineering
@@ -7,10 +17,10 @@ session:
 
 > Continue the SME-105 DCL Diagnostic Studio project from `ROADMAP.md` and
 > `PROJECT_HANDOFF.md`.
-> Preserve the evidence labels and all safety gates. Do not enable active DCL
-> transmission or claim a vehicle diagnosis without the missing physical
-> evidence. Inspect the current implementation and verification results before
-> changing code.
+> Preserve the evidence labels and all safety gates. Do not bypass the v25
+> per-boot `TX2_BENCH` gate or claim a vehicle diagnosis without the required
+> physical evidence. Inspect the current implementation and verification
+> results before changing code.
 
 ## Project identity
 
@@ -64,7 +74,7 @@ boot-safe DE pull-down, and independently verified complete transactions.
 Never use OBD pin 16 as project power. Keep ESP32 TX disconnected during
 passive work. Establish vehicle signal ground before A/B.
 
-## Current observations
+## Historical observations — 2026-08-22 baseline
 
 1. The connected CP2102 was detected successfully.
 2. The firmware originally on the ESP32 emitted one literal dot every 500 ms;

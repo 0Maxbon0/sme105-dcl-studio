@@ -26,6 +26,18 @@ test("recording chunks retain all rows/raw data, export while active, and surviv
   assert.equal(failures.length, 0);
 });
 
+test("vehicle transcript chunks preserve status, pad and RO lines verbatim", options, async () => {
+  const recording = await createRecording("ECU_STATUS");
+  const lines = [
+    "STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW",
+    "TX_PAD slot=2 expected=0381 observed=0381 match=1",
+    "RX t_us=16000 byte=AA",
+  ];
+  lines.forEach(line => recording.line(line));
+  await recording.finish({ valid: false, status: "INCOMPLETE", reasons: ["test capture"] });
+  assert.equal(await (await recordingBlob(recording.id, "raw")).text(), `${lines.join("\n")}\n`);
+});
+
 test("a failed atomic write stops recording and retains its queued data for export", options, async () => {
   let failures = 0;
   const recording = await createRecording("ALL", () => failures++);

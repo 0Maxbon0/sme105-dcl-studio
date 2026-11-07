@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { JSDOM } from 'jsdom';
 import * as fake from 'fake-indexeddb';
-import { createRecording } from '../js/recording.js';
+import { createRecording, listRecordings } from '../js/recording.js';
 const until = async fn => { for(let i=0;i<200;i++){if(fn())return;await new Promise(r=>setTimeout(r,5));}throw new Error('App did not finish booting'); };
 test('actual app entry boots existing recording into offline dashboard and wires review and normal throttle card', async () => {
   const dom=new JSDOM(readFileSync(new URL('../index.html',import.meta.url),'utf8'),{url:'https://offline.test/'});
@@ -17,16 +17,27 @@ test('actual app entry boots existing recording into offline dashboard and wires
   const previous=setInterval,clear=clearInterval;const callbacks=[];
   globalThis.setInterval=(fn)=>{callbacks.push(fn);return callbacks.length;}; globalThis.clearInterval=()=>{};
   try {
+    const interrupted=await createRecording('ECU_STATUS');
+    interrupted.line('STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW');
     await import('../js/app.js');
     const $=id=>document.getElementById(id);
     const percent=()=>$('throttle-percent-value').textContent;
+    await until(()=>$('saved-recordings').options.length>=2);
+    $('saved-recordings').value=rec.id;$('saved-recordings').dispatchEvent(new window.Event('change'));
     await until(()=>$('review-selected').textContent.includes('2 samples') && percent()==='0');
+    const recovered=(await listRecordings()).find(item=>item.id===interrupted.id);
+    assert.ok(recovered?.ended);
+    assert.equal(recovered.verdict.status,'INCOMPLETE');
     assert.equal($('tps-calibration-card'),null);
     assert.equal($('tps-profile-details'),null);
     assert.equal(document.querySelector('[data-pid=ITP] .reading-number').textContent,'179');
     assert.equal($('saved-recordings').value,rec.id);
     assert.equal($('review-mode').hidden,false);
     assert.equal($('live-start').disabled,true);
+    assert.deepEqual([...$('dcl-probe-select').options].map(option => option.value), ['ECU_STATUS','PIDMAP','DMRMAP','DMR','BOTH']);
+    assert.equal($('dcl-probe-run').disabled,true); // No live bridge: discovery must stay inert.
+    assert.match($('dcl-probe-blocked').textContent,/01A1/);
+    assert.match($('dcl-probe-blocked').textContent,/Cylinder Balance Test/);
     $('review-position').value=5; $('review-position').dispatchEvent(new window.Event('input'));
     await until(()=>percent()==='100');
     assert.match($('live-banner').textContent,/INCOMPLETE/);

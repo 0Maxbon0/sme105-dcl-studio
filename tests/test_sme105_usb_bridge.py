@@ -114,13 +114,16 @@ class FakePort:
                 self.pending_end = result
             else:
                 self._emit(result)
-        elif cmd in ("ARM_A4", "ARM_0E"):
+        elif cmd.startswith("ARM_"):
             which = "0E" if cmd == "ARM_A4" and self.bad_arm else cmd[4:]
             self._emit(
                 f"EVENT read_armed variant={which} valid_ms=15000 no_tx_yet=1\n".encode()
             )
-        elif cmd in ("READ_A4", "READ_0E"):
-            third = b"26A4" if cmd == "READ_A4" else b"260E"
+        elif cmd.startswith("READ_"):
+            variant = cmd[5:]
+            words = bridge.REQUEST_WORDS.get(variant, ("01B0", "FF5F", "26A4", "00A0"))
+            third = words[2].encode("ascii")
+            fourth = words[3].encode("ascii")
             observed = b"6DCC" if self.mismatch else b"01B0"
             match = b"0" if self.mismatch else b"1"
             self._emit(b"EVENT session=READ_CANDIDATE\n")
@@ -132,8 +135,9 @@ class FakePort:
             self._emit(b"TX_PAD slot=2 expected=" + third +
                        b" observed=" + third +
                        b" tx_us=20000 done_us=22100 match=1\n")
-            self._emit(b"TX_PAD slot=3 expected=00A0 observed=00A0 "
-                       b"tx_us=30000 done_us=32100 match=1\n")
+            self._emit(b"TX_PAD slot=3 expected=" + fourth +
+                       b" observed=" + fourth +
+                       b" tx_us=30000 done_us=32100 match=1\n")
             self._emit(END_GOOD.replace(b"pad_verified=0 words_started=0",
                                          b"pad_verified=4 words_started=4"))
         elif cmd == "OBSERVE":
@@ -296,19 +300,60 @@ class BridgeTerminalTests(unittest.TestCase):
         self.assertEqual(evidence.bin_path.read_bytes(), b"\x00\x6d\xcc")
         self.assertIsNone(client.fault)
 
-    def test_car_hello_requires_confirmation_and_dispatches_observe_once(self):
+    def test_observe_requires_confirmation_and_dispatches_observe_once(self):
         port = FakePort()
         client, evidence, _ = self.start_client(port)
-        client.execute("HELLO", lambda _: False)
+        client.execute("OBSERVE", lambda _: False)
         self.assertNotIn(b"OBSERVE\n", port.writes)
-        client.execute("HELLO", lambda name: name == "HELLO")
+        client.execute("OBSERVE", lambda name: name == "OBSERVE")
         client.wait_end(2)
         self.assertEqual(port.writes.count(b"OBSERVE\n"), 1)
         with self.assertRaisesRegex(bridge.BridgeError, "already attempted"):
-            client.execute("HELLO", lambda _: True)
+            client.execute("OBSERVE", lambda _: True)
         client.stop()
         client.close()
         self.assertEqual(evidence.bin_path.read_bytes(), b"\x00\x6d\xcc")
+
+    def test_hello_is_read_only_desk_command_and_does_not_send_observe(self):
+        port = FakePort()
+        client, evidence, output = self.start_client(port)
+        initial_writes = list(port.writes)
+        client.execute("HELLO", lambda _: self.fail("no vehicle confirmation needed"))
+        self.assertEqual(port.writes, initial_writes + [b"HELLO\n"])
+        self.assertNotIn(b"OBSERVE\n", port.writes)
+        client.close()
+
+    def test_car_transmit_set_membership(self):
+        self.assertNotIn("HELLO", bridge.CAR_TRANSMIT)
+        self.assertIn("OBSERVE", bridge.CAR_TRANSMIT)
+        self.assertIn("REQUEST_A4", bridge.CAR_TRANSMIT)
+        self.assertIn("REQUEST_KOER", bridge.CAR_TRANSMIT)
+        self.assertIn("REQUEST_CLR", bridge.CAR_TRANSMIT)
+        self.assertIn("REQUEST_MEM", bridge.CAR_TRANSMIT)
+        self.assertIn("REQUEST_LIVE3", bridge.CAR_TRANSMIT)
+        self.assertIn("REQUEST_ECU_STATUS", bridge.CAR_TRANSMIT)
+        self.assertIn("REQUEST_PIDMAP", bridge.CAR_TRANSMIT)
+        self.assertIn("REQUEST_DMRMAP", bridge.CAR_TRANSMIT)
+        self.assertIn("REQUEST_DMR", bridge.CAR_TRANSMIT)
+        self.assertIn("REQUEST_BOTH", bridge.CAR_TRANSMIT)
+
+    def test_all_probe_and_self_test_variants_execute_arm_then_read(self):
+        test_variants = (
+            "REQUEST_KOER", "REQUEST_LIVE3", "REQUEST_CLR", "REQUEST_MEM",
+            "REQUEST_ECU_STATUS", "REQUEST_PIDMAP", "REQUEST_DMRMAP",
+            "REQUEST_DMR", "REQUEST_BOTH",
+        )
+        for variant_cmd in test_variants:
+            with self.subTest(variant=variant_cmd):
+                port = FakePort()
+                client, evidence, _ = self.start_client(port)
+                var = variant_cmd.removeprefix("REQUEST_")
+                client.execute(variant_cmd, lambda name: True)
+                client.wait_end(2)
+                self.assertIn(f"ARM_{var}\n".encode(), port.writes)
+                self.assertIn(f"READ_{var}\n".encode(), port.writes)
+                client.stop()
+                client.close()
 
     def test_arm_ack_second_approval_and_matching_source(self):
         port = FakePort()

@@ -11,8 +11,21 @@ engineering tool and is not affiliated with Ford Motor Company.
 
 ## Current status
 
-See [STATUS_REPORT.md](STATUS_REPORT.md) for the 2026-08-22 situation report
-(desk loopback PASS, Windows Studio operational, vehicle DCL still uncaptured).
+**Coordinated release (2026-11-07): firmware v25** (`esp32dev_ble`) with
+**Android app v1.8.12** (versionCode 14). See the
+[release report](artifacts/releases/2026-11-07-v25-release-report.md) for
+artifact hashes, recorded software verification, and hardware deployment
+pre-checks. The August situation report remains historical context; the
+[current status update](STATUS_REPORT.md#release-update-2026-11-07) and
+[project handoff](PROJECT_HANDOFF.md#coordinated-release-2026-11-07) describe
+the coordinated release.
+
+The complete A–R command matrix, parity notes, evidence levels, alternate
+variants, and bounded experiment sequence are in the
+[SME-105 DCL experiment plan](docs/sme105-dcl-experiment-plan-2026-11-07.md).
+Per-operation captures are stored in IndexedDB and can be exported with
+`exportExperimentArchive(id)` as a checksummed ZIP; see the [app README](app/README.md#durable-experiment-recordings)
+for the durable recording format.
 
 The project is experimental. No command, address, scaling formula, wiring
 polarity, baud rate, or SME-105 parameter mapping is treated as verified until
@@ -87,8 +100,10 @@ ford-dcl-gui
 The application opens a token-protected localhost URL and provides guided
 safety/setup questions, serial discovery, bounded capture, live logs, session
 inspection, decode/framing tools, DTC lookup, high-idle evidence records,
-firmware build/upload controls, and embedded documentation. Active DCL
-transmission remains locked.
+firmware build/upload controls, and embedded documentation. The Python
+capture GUI's legacy active-master upload remains locked. The separate v25
+ESP32 bridge exposes fixed named profiles after its per-boot electrical
+qualification gate and explicit arm command.
 
 Build or launch the Ubuntu portable bundle:
 
@@ -137,8 +152,11 @@ ford-dcl dtc 0x116 0x121 0x551 --source continuous_memory --json
 ford-dcl diagnose examples/high_idle_evidence.example.json --json
 ```
 
-The shipped active-master firmware contains no enabled DCL transaction. It
-cannot transmit guessed request bytes.
+The legacy `firmware/dcl_master` shell contains no enabled DCL transaction.
+The separate v25 `firmware/sme105_usb_bridge` supports fixed named profiles
+behind a per-boot `TX2_BENCH` gate and explicit `ARM_*` / `READ_*` actions; it
+has no arbitrary-byte or opcode-scan path. The local pad gate does not qualify
+the vehicle-side A/B electrical path or prove ECU acceptance.
 
 ## Immutable captures
 

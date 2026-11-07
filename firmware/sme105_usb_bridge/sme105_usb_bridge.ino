@@ -49,8 +49,10 @@ extern "C" bool verifyRollbackLater(void) { return true; }
 
 // Ford EEC-IV experimental 97AB SME-105 USB field bridge.
 // There is NO arbitrary bus write API and NO automatic vehicle transmission.
-// Flxkrmr B=26A4 and doncreat0r B=260E are competing SOURCE CANDIDATES,
-// not an ECU-supported or verified DTC command. No erase/actuator modes.
+// Only named, source-pinned command profiles are available. Some existing
+// profiles are state-changing (CLR, KOEO/KOER, OFF); no generic output-control
+// or arbitrary-opcode interface is provided. All new discovery probes are
+// fixed, single-word read candidates and remain unverified on this ECU.
 namespace {
 constexpr int kRO = 16, kDI = 17, kDE = 18;
 constexpr uint8_t kEchoId[] = {0, 0, 0, 0, 0, 1, 0x82, 0, 0, 0, 0x83};
@@ -98,7 +100,10 @@ constexpr uint32_t kOtaCurrentVersion = 1;
 // still be able to boot PENDING_VERIFY from an older accepted version and
 // prove their manifest before promoting ota_ver. On a VALID app with NO pending
 // ledger, a supervised physical USB flash may adopt this build baseline.
-constexpr uint32_t kUsbInstalledBuildVersion = 24;
+constexpr uint32_t kUsbInstalledBuildVersion = 25;
+// This field build permits active-master commands only after the required
+// per-boot TX2_BENCH passes and each fixed profile is explicitly armed.
+constexpr bool kActiveMasterQualified = true;
 constexpr size_t kOtaAppSlotMax = 0x140000; // default 4MB ESP32 OTA partition table
 constexpr char kOtaPublisherPublicPEM[] =
   "-----BEGIN PUBLIC KEY-----\n"
@@ -127,21 +132,30 @@ struct CmdWord { uint8_t first; uint8_t second; };
 constexpr uint8_t kVariantKoeo = 4, kVariantOffline = 5, kVariantLive = 6, kVariantLive2 = 7;
 constexpr uint8_t kVariantKoer = 8, kVariantClear = 9, kVariantMem = 10, kVariantLive3 = 11;
 constexpr uint8_t kVariantAllLive = 12;
+constexpr uint8_t kVariantEcuStatus = 13, kVariantPidMap = 14, kVariantDmrMap = 15;
+constexpr uint8_t kVariantDmrValues = 16, kVariantBothValues = 17;
+constexpr bool isDiscoveryReadVariant(uint8_t v) {
+  return v == kVariantEcuStatus || v == kVariantPidMap || v == kVariantDmrMap ||
+         v == kVariantDmrValues || v == kVariantBothValues;
+}
 constexpr bool isLiveVariant(uint8_t v) {
   return v == kVariantLive || v == kVariantLive2 || v == kVariantLive3 || v == kVariantAllLive;
 }
 constexpr bool isSelfTest(uint8_t v) { return v == kVariantKoeo || v == kVariantKoer; }
 constexpr bool isRepeating(uint8_t v) {
-  return isSelfTest(v) || isLiveVariant(v) || v == kVariantClear || v == kVariantMem;
+  // CLR (02 91) is deliberately single-shot: the source scanner issues one
+  // command word and then listens. Do not repeat a state-clearing request.
+  return isSelfTest(v) || isLiveVariant(v) || v == kVariantMem;
 }
 constexpr bool isRequestVariant(uint8_t v) {
-  return v <= 1 || isRepeating(v) || v == kVariantOffline;
+  return v <= 1 || isRepeating(v) || v == kVariantOffline ||
+         v == kVariantClear || isDiscoveryReadVariant(v);
 }
 // CART_READ kinds that may attach to a stream already running at 9600.
 // OBSERVE (3) and go-offline (5) are excluded: OBSERVE keeps BAD_IDLE,
 // and OFF joins from beginSession without a quiet window.
 constexpr bool joinsRunningCart(uint8_t v) {
-  return v <= 1 || isRepeating(v);
+  return v <= 1 || isRepeating(v) || v == kVariantClear || isDiscoveryReadVariant(v);
 }
 // Outcomes that never proved a bad TX path. Pad, DE, phase and overflow
 // faults stay latched until reboot. Handshake failures are included because
@@ -160,18 +174,39 @@ constexpr CmdWord IRAM_ATTR word(uint8_t variant, uint8_t slot) {
                       variant == kVariantClear ? CmdWord{0x02,0x91} :
                       variant == kVariantOffline ? CmdWord{0x80,0xCE} :
                       isLiveVariant(variant) ? CmdWord{0x21,0xF6} :
+                      variant == kVariantEcuStatus ? CmdWord{0x03,0x81} :
+                      variant == kVariantPidMap ? CmdWord{0x00,0x5E} :
+                      variant == kVariantDmrMap ? CmdWord{0x24,0x2E} :
+                      variant == kVariantDmrValues ? CmdWord{0x22,0xC6} :
+                      variant == kVariantBothValues ? CmdWord{0x27,0x1E} :
                       CmdWord{0x26,0xA4}) :
          variant == kVariantOffline ? CmdWord{0x7F,0x20} : CmdWord{0x00,0xA0};
 }
 constexpr uint8_t parity(uint8_t first, uint8_t id) {
   return static_cast<uint8_t>((((first >> 4) ^ (first & 15) ^ id ^ 10) << 4) | id);
 }
+static_assert(!isRepeating(kVariantClear) && isRequestVariant(kVariantClear) &&
+              joinsRunningCart(kVariantClear), "DTC clear must be one-shot but remain armable");
+static_assert(isDiscoveryReadVariant(kVariantEcuStatus) && isRequestVariant(kVariantEcuStatus) &&
+              !isRepeating(kVariantEcuStatus) && joinsRunningCart(kVariantEcuStatus),
+              "DCL discovery probes must be fixed single-shot reads");
+static_assert(isDiscoveryReadVariant(kVariantDmrValues) && isRequestVariant(kVariantDmrValues) &&
+              !isRepeating(kVariantDmrValues) && joinsRunningCart(kVariantDmrValues) &&
+              isDiscoveryReadVariant(kVariantBothValues) && isRequestVariant(kVariantBothValues) &&
+              !isRepeating(kVariantBothValues) && joinsRunningCart(kVariantBothValues),
+              "DMR and combined discovery probes must be fixed single-shot reads");
 static_assert(parity(1,0)==0xB0 && parity(0xFF,15)==0x5F &&
               parity(0x26,4)==0xA4 && parity(0x26,14)==0x0E &&
               parity(0x25,14)==0x3E && parity(0x80,14)==0xCE &&
               parity(0x7F,0)==0x20 && parity(0x41,6)==0x96 &&
-              parity(0x21,6)==0xF6,
+              parity(0x21,6)==0xF6 && parity(0x03,1)==0x81 &&
+              parity(0x00,14)==0x4E && parity(0x24,14)==0x2E &&
+              parity(0x22,6)==0xC6 && parity(0x27,14)==0x1E,
               "DPS word vertical parity");
+// PID-map query preserves the doncreat0r source literal 00 5E for a controlled
+// experiment. This is a source-table/parity mismatch, not a verified protocol
+// exception: parity(00,0E) computes 4E. The pad witness proves emission only;
+// neither ECU acceptance nor an alternate parity rule has been established.
 // PID index request word: data = 0x800 | pid (flxkrmr PID_CHECKSUM,
 // doncreat0r PIDMap). One PID per frame in IW2; frame 0 left idle because
 // the new frame period is only confirmed at frame 1.
@@ -199,7 +234,9 @@ const __FlashStringHelper* variantName(uint8_t v) {
          v == kVariantLive ? F("LIVE") : v == kVariantLive2 ? F("LIVE2") :
          v == kVariantLive3 ? F("LIVE3") : v == kVariantClear ? F("CLR") :
          v == kVariantAllLive ? F("ALL") :
-         v == kVariantMem ? F("MEM") : F("OFF");
+         v == kVariantMem ? F("MEM") : v == kVariantEcuStatus ? F("ECU_STATUS") :
+         v == kVariantPidMap ? F("PIDMAP") : v == kVariantDmrMap ? F("DMRMAP") :
+         v == kVariantDmrValues ? F("DMR") : v == kVariantBothValues ? F("BOTH") : F("OFF");
 }
 
 HardwareSerial referenceBus(2);
@@ -1184,13 +1221,16 @@ void initializeOtaBootHealth() {
   }
 
   if (!pendingKeysExist) {
-    if (stateKnown && imageState == ESP_OTA_IMG_VALID &&
+    if (stateKnown && (imageState == ESP_OTA_IMG_VALID || imageState == ESP_OTA_IMG_UNDEFINED) &&
         kUsbInstalledBuildVersion > otaAcceptedVersion) {
       // Trusted physical USB flash preserves otadata and NVS. Never make a
       // lower signed version acceptable merely because this version was
-      // installed directly into the already-VALID running app partition.
+      // installed directly into the running app partition.
       // PENDING_VERIFY images can reach this branch only AFTER their signed
       // ledger was accepted and cleared through the normal OTA pathway.
+      if (imageState == ESP_OTA_IMG_UNDEFINED) {
+        (void)esp_ota_mark_app_valid_cancel_rollback();
+      }
       if (prefsReady && wifiPrefs.putUInt("ota_ver", kUsbInstalledBuildVersion) == sizeof(uint32_t))
         otaAcceptedVersion = kUsbInstalledBuildVersion;
       else {
@@ -2453,14 +2493,28 @@ void tx2PadBench() {
   out.println(F(" DE=LOW no_rmt_start=1 ecu_tx=0 no_auto_retry=1"));
 }
 void beginSession(Stage target, uint8_t kind) {
+  const bool isVehicleTx = (target == CART_READ) || (target == CART_PASSIVE && kind == 3);
+  if (isVehicleTx && !kActiveMasterQualified) {
+    out.println(F("DENIED active_master_not_qualified")); return;
+  }
   if (target == CART_READ && !tx2BenchPassed) {
+    out.println(F("DENIED tx2_pad_bench_required")); return;
+  }
+  if (target == CART_PASSIVE && kind == 3 && !tx2BenchPassed) {
     out.println(F("DENIED tx2_pad_bench_required")); return;
   }
   if (stage != IDLE || !gateReady || deTimer == nullptr || slotTimer == nullptr) {
     out.println(F("DENIED busy_or_unready")); return;
   }
+  if (target == CART_READ) {
+    const bool validVariant = (kind <= 1) || (kind >= kVariantKoeo && kind <= kVariantBothValues);
+    if (!validVariant) {
+      out.println(F("DENIED invalid_variant")); return;
+    }
+  }
   // OBSERVE transmits 2400-baud source frames, unlike LISTEN_9600.
   // Never allow repeated active handshakes from a persistent USB client.
+  // Latch is only consumed after qualification gate and bench have passed.
   if (target == CART_PASSIVE && kind == 3) {
     if (observeConsumed) {
       out.println(F("DENIED observe_already_used")); return;
@@ -3186,6 +3240,12 @@ void runCommand(const char* cmd) {
     beginSignedOta(cmd);
     return;
   }
+  if (!strcmp(cmd, "READ_PIDMAP_PARITY") || !strcmp(cmd, "READ_A1") || !strcmp(cmd, "READ_F4") ||
+      !strcmp(cmd, "READ_BAUD") || !strcmp(cmd, "READ_DMRMAP_TX") ||
+      !strcmp(cmd, "READ_STOPFLOW") || !strcmp(cmd, "READ_KOEO94")) {
+    out.println(F("DENIED command_deferred_not_sendable"));
+    return;
+  }
   if (otaFirstBootPending &&
       (!strcmp(cmd, "OBSERVE") || !strcmp(cmd, "READ_A4") ||
        !strcmp(cmd, "READ_0E") || !strcmp(cmd, "LISTEN_9600") ||
@@ -3194,6 +3254,11 @@ void runCommand(const char* cmd) {
        !strcmp(cmd, "READ_OFF") ||
        !strcmp(cmd, "READ_LIVE") || !strcmp(cmd, "ARM_LIVE") ||
        !strcmp(cmd, "READ_LIVE2") || !strcmp(cmd, "ARM_LIVE2") ||
+       !strcmp(cmd, "READ_ECU_STATUS") || !strcmp(cmd, "ARM_ECU_STATUS") ||
+       !strcmp(cmd, "READ_PIDMAP") || !strcmp(cmd, "ARM_PIDMAP") ||
+       !strcmp(cmd, "READ_DMRMAP") || !strcmp(cmd, "ARM_DMRMAP") ||
+       !strcmp(cmd, "READ_DMR") || !strcmp(cmd, "ARM_DMR") ||
+       !strcmp(cmd, "READ_BOTH") || !strcmp(cmd, "ARM_BOTH") ||
        !strcmp(cmd, "TX2_BENCH") || !strcmp(cmd, "DE_BENCH") ||
        !strcmp(cmd, "ARM_A4") || !strcmp(cmd, "ARM_0E") ||
        !strcmp(cmd, "ARM_KOEO") || !strcmp(cmd, "ARM_KOER") ||
@@ -3202,6 +3267,12 @@ void runCommand(const char* cmd) {
     out.println(F("DENIED boot_health_pending"));
     return;
   }
+#ifdef SME105_BLE
+  if (!strncmp(cmd, "WIFI_", 5)) {
+    out.println(F("DENIED unsupported_build_wifi_disabled"));
+    return;
+  }
+#else
   if (!strncmp(cmd, "WIFI_CONFIG ", sizeof("WIFI_CONFIG ") - 1)) {
     processWiFiProvision(cmd); return;
   }
@@ -3246,6 +3317,7 @@ void runCommand(const char* cmd) {
     else out.println(F("WIFI_FORGET OK"));
     return;
   }
+#endif
 #ifdef SME105_BLE
   if (!strcmp(cmd, "BLE_STATUS")) {
     out.print(F("BLE_STATUS enabled=1 link=")); out.print(ble_transport::connected() ? 1 : 0);
@@ -3284,11 +3356,23 @@ void runCommand(const char* cmd) {
   }
   if (!strcmp(cmd, "HELLO")) { out.println(F("HELLO SME105_USB_BRIDGE_V1 protocol=1 usb_baud=115200 no_auto_tx=1")); return; }
   if (!strcmp(cmd, "HELP")) {
-    out.println(F("COMMANDS HELLO HELP STATUS PINS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E ARM_KOEO READ_KOEO ARM_KOER READ_KOER ARM_LIVE READ_LIVE ARM_LIVE2 READ_LIVE2 ARM_LIVE3 READ_LIVE3 ARM_ALL READ_ALL ARM_CLR READ_CLR ARM_MEM READ_MEM ARM_OFF READ_OFF DE_BENCH RMT_DUMP STOP RESET_IDLE REBOOT"));
-    out.println(F("READ_* requires exact 4/4 TX2_BENCH pad pass this boot plus matching ARM_* within 15s; no automatic TX"));
+#ifdef SME105_BLE
+    out.println(F("COMMANDS HELLO HELP STATUS PINS BLE_STATUS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E ARM_KOEO READ_KOEO ARM_KOER READ_KOER ARM_LIVE READ_LIVE ARM_LIVE2 READ_LIVE2 ARM_LIVE3 READ_LIVE3 ARM_ALL READ_ALL ARM_CLR READ_CLR ARM_MEM READ_MEM ARM_OFF READ_OFF ARM_ECU_STATUS READ_ECU_STATUS ARM_PIDMAP READ_PIDMAP ARM_DMRMAP READ_DMRMAP ARM_DMR READ_DMR ARM_BOTH READ_BOTH DE_BENCH RMT_DUMP STOP RESET_IDLE REBOOT"));
+    out.println(F("BLE build: Nordic UART transport active. Wi-Fi transport disabled."));
+    out.println(F("DCL discovery probes are fixed single-shot read candidates: 0381 005E 242E 22C6 271E; captures raw RO bytes."));
+    out.println(F("DEFERRED (DENIED): READ_PIDMAP_PARITY=004E READ_A1=01A1 READ_F4=01F4 READ_BAUD=8174 READ_DMRMAP_TX=42A6 READ_STOPFLOW=411E READ_KOEO94=2594"));
+    out.println(F("ACTIVE-MASTER: exact 4/4 local TX2_BENCH pass required per boot; READ_* additionally needs matching ARM_* within 15s."));
+    out.println(F("No automatic TX; OBSERVE has a separate once-per-boot latch."));
+#else
+    out.println(F("COMMANDS HELLO HELP STATUS PINS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E ARM_KOEO READ_KOEO ARM_KOER READ_KOER ARM_LIVE READ_LIVE ARM_LIVE2 READ_LIVE2 ARM_LIVE3 READ_LIVE3 ARM_ALL READ_ALL ARM_CLR READ_CLR ARM_MEM READ_MEM ARM_OFF READ_OFF ARM_ECU_STATUS READ_ECU_STATUS ARM_PIDMAP READ_PIDMAP ARM_DMRMAP READ_DMRMAP ARM_DMR READ_DMR ARM_BOTH READ_BOTH DE_BENCH RMT_DUMP STOP RESET_IDLE REBOOT"));
+    out.println(F("DCL discovery probes are fixed single-shot read candidates: 0381 005E 242E 22C6 271E; captures raw RO bytes."));
+    out.println(F("DEFERRED (DENIED): READ_PIDMAP_PARITY=004E READ_A1=01A1 READ_F4=01F4 READ_BAUD=8174 READ_DMRMAP_TX=42A6 READ_STOPFLOW=411E READ_KOEO94=2594"));
+    out.println(F("ACTIVE-MASTER: exact 4/4 local TX2_BENCH pass required per boot; READ_* additionally needs matching ARM_* within 15s."));
+    out.println(F("No automatic TX; OBSERVE has a separate once-per-boot latch."));
     out.println(F("WIFI USB_ONLY: WIFI_CONFIG <SSID_B64> <PASS_B64> | WIFI_AP_CONFIG <SSID_B64> <PASS_B64> | WIFI_STA_MODE WIFI_AP_MODE | WIFI_TOKEN | WIFI_FORGET"));
     out.println(F("WIFI read-only: WIFI_STATUS WIFI_DIAG WIFI_AP_STATUS; AP-only 10.77.13.1/24 WPA2 and authenticated TCP/8765"));
     out.println(F("OTA authenticated TCP: OTA_STATUS OTA_DIAG OTA_BEGIN2 <size> <sha256_lowerhex> <version> <P256_signature_DER_base64>; then 8192-byte windows plus OTA_PROGRESS received=<n>; final OTA_OK; OTA_CONFIRM after reboot"));
+#endif
     return;
   }
   if (!strcmp(cmd, "STATUS")) { printStatus(); return; }
@@ -3310,8 +3394,19 @@ void runCommand(const char* cmd) {
                           !strcmp(cmd, "ARM_ALL") ? kVariantAllLive :
                           !strcmp(cmd, "ARM_OFF") ? kVariantOffline :
                           !strcmp(cmd, "ARM_LIVE") ? kVariantLive :
-                          !strcmp(cmd, "ARM_LIVE2") ? kVariantLive2 : 255;
+                          !strcmp(cmd, "ARM_LIVE2") ? kVariantLive2 :
+                          !strcmp(cmd, "ARM_ECU_STATUS") ? kVariantEcuStatus :
+                          !strcmp(cmd, "ARM_PIDMAP") ? kVariantPidMap :
+                          !strcmp(cmd, "ARM_DMRMAP") ? kVariantDmrMap :
+                          !strcmp(cmd, "ARM_DMR") ? kVariantDmrValues :
+                          !strcmp(cmd, "ARM_BOTH") ? kVariantBothValues : 255;
   if (armKind != 255) {
+    if (!kActiveMasterQualified) {
+      out.println(F("DENIED active_master_not_qualified")); return;
+    }
+    if (!tx2BenchPassed) {
+      out.println(F("DENIED tx2_pad_bench_required")); return;
+    }
     // failure is not a gate: a clean END clears the one-shot latch and a
     // new ARM_* is still required (15s, same transport) before READ_*.
     if (stage != IDLE ||
@@ -3336,6 +3431,11 @@ void runCommand(const char* cmd) {
   if (!strcmp(cmd, "READ_OFF")) { beginSession(CART_READ, kVariantOffline); return; }
   if (!strcmp(cmd, "READ_LIVE")) { beginSession(CART_READ, kVariantLive); return; }
   if (!strcmp(cmd, "READ_LIVE2")) { beginSession(CART_READ, kVariantLive2); return; }
+  if (!strcmp(cmd, "READ_ECU_STATUS")) { beginSession(CART_READ, kVariantEcuStatus); return; }
+  if (!strcmp(cmd, "READ_PIDMAP")) { beginSession(CART_READ, kVariantPidMap); return; }
+  if (!strcmp(cmd, "READ_DMRMAP")) { beginSession(CART_READ, kVariantDmrMap); return; }
+  if (!strcmp(cmd, "READ_DMR")) { beginSession(CART_READ, kVariantDmrValues); return; }
+  if (!strcmp(cmd, "READ_BOTH")) { beginSession(CART_READ, kVariantBothValues); return; }
   if (!strcmp(cmd, "OBSERVE")) { beginSession(CART_PASSIVE, 3); return; }
   if (!strcmp(cmd, "LISTEN_9600")) { beginSession(CART_PASSIVE, 2); return; }
   out.println(F("DENIED unknown_or_unsafe_command"));

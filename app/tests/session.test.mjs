@@ -228,3 +228,24 @@ test("fractional numeric witness fields and a self-matching wrong word are rejec
   for(const [from,to] of [['tx_seq=1','tx_seq=1.0'],['slot=0','slot=0.0'],['block=0','block=0.0'],['complete=1','complete=1.0'],['evidence=2','evidence=2.0'],['expected=01B0 observed=01B0','expected=FFFF observed=FFFF']]) assert.equal(verdict(rows.map((r,i)=>i?r:r.replace(from,to))).valid,false);
   assert.equal(verdict(rows,end.replace('ro_lost=0','ro_lost=0.0')).valid,false);
 });
+
+
+test("DCL discovery probes verify the exact fixed request words in v24 pad evidence", () => {
+  const words = {
+    ECU_STATUS: "0381", PIDMAP: "005E", DMRMAP: "242E", DMR: "22C6", BOTH: "271E",
+  };
+  for (const [variant, command] of Object.entries(words)) {
+    const expected = ["01B0", "FF5F", command, "00A0"];
+    const pads = expected.map((word, slot) =>
+      `TX_PAD slot=${slot} expected=${word} observed=${word} tx_us=${1000 + slot * 3000} done_us=${3000 + slot * 3000} match=1 evidence=2 epoch=5 boot_id=77 tx_seq=${slot + 1} block=0 complete=1`);
+    const session = feed([
+      "EVENT session=READ_CANDIDATE epoch=5 boot_id=77",
+      ...pads,
+      "RX t_us=16000 byte=AA",
+      "END reason=16 ro_bytes=1 ro_lost=0 uart_errors=0 evidence=2 epoch=5 boot_id=77 witness_started=4 witness_verified=4 pad_verified=4 words_started=4 DE=LOW",
+    ].join("\n"));
+    const verdict = sessionVerdict(session, { variant, requireVersioned: true });
+    assert.equal(verdict.valid, true, variant);
+    assert.equal(verdict.witnessStatus, "SESSION_BOUND", variant);
+  }
+});

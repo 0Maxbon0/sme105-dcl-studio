@@ -5,6 +5,7 @@ import { ALL_LIVE_PIDS, PIDS, pidSetForVariant, summarizeSeries } from "./pids.j
 import {
   TIMEOUTS,
   VARIANTS,
+  DCL_PROBE_VARIANTS,
   parseLine,
   reasonText,
 } from "./protocol.js";
@@ -34,6 +35,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     log: [],
     op: null,
     lastSession: null,
+    lastDclProbe: null,
     cart: null,
     trust: "none",
     message: "Disconnected",
@@ -58,12 +60,20 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     const variant = state.op?.variant || state.lastSession?.variant || "";
     const requestedMode = variant === "0E" || variant === "A4" ? 0x26
       : variant === "KOEO" || variant === "KOER" ? 0x25 : null;
+    const probeSpec = DCL_PROBE_VARIANTS[variant] || null;
+    const dclProbe = probeSpec ? {
+      variant, ...probeSpec,
+      responseBytes: state.op?.session?.rx ?? 0,
+      responseObserved: (state.op?.session?.rx ?? 0) > 0,
+      ecuOriginVerified: false,
+      bridgeCaptureStatus: verdict.status,
+    } : null;
     const codes = (snap?.codes || []).map((entry) => ({
       code: entry.code,
       mode: entry.mode,
       requestedMode,
       requestedVariant: variant,
-      source: entry.mode === 0x25 ? variant : `stored request ${variant}`,
+      source: entry.mode === 0x25 ? variant : probeSpec ? `DCL probe ${variant}` : `stored request ${variant}`,
       frame: entry.frame,
       slot: entry.slot,
       rawBytes: entry.rawBytes,
@@ -82,6 +92,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     return {
       variant,
       kind: state.op?.kind || "",
+      dclProbe,
       source: state.op?.source || "bridge",
       startedAt: state.op?.startedAt || null,
       completedAt: now(),
@@ -118,6 +129,22 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     };
   }
 
+  function latestDclCaptureLines(log) {
+    let start = -1;
+    for (let index = log.length - 1; index >= 0; --index) {
+      if (String(log[index]).startsWith("EVENT session=READ_CANDIDATE")) { start = index; break; }
+    }
+    if (start < 0) return [];
+    let first = start;
+    for (let index = start - 1; index >= 0; --index) {
+      if (String(log[index]).startsWith("EVENT read_armed ")) { first = index; break; }
+      if (String(log[index]).startsWith("END ") || String(log[index]).startsWith("EVENT session=")) break;
+    }
+    let end = log.findIndex((line, index) => index > start && String(line).startsWith("END "));
+    if (end < 0) end = log.length - 1;
+    return log.slice(first, end + 1).map(String);
+  }
+
   function finalize(override) {
     if (!state.op) return;
     if (state.cart && !state.cart.snapshot().closed) state.cart.finish();
@@ -139,6 +166,15 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       verdict = { valid: false, status: "INCOMPLETE", reasons: ["session did not start"], end: null };
     }
     state.lastSession = buildResult(verdict);
+    if (state.lastSession.dclProbe) {
+      state.lastDclProbe = {
+        ...state.lastSession.dclProbe,
+        startedAt: state.lastSession.startedAt,
+        completedAt: state.lastSession.completedAt,
+        verdict: state.lastSession.verdict,
+        rawLines: latestDclCaptureLines(state.log),
+      };
+    }
     if (noResponseFromStart(session, state.lastSession, state.op?.operatorStop, override)) {
       state.lastSession.outcome = "NOT_STARTED_ECU_NO_RESPONSE";
       verdict.outcome = state.lastSession.outcome;
@@ -187,11 +223,15 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     state.deadline = null;
     state.op = null;
     const diagnosticRead = ["codes", "koeo", "koer"].includes(state.lastSession.kind);
-    state.message = verdict.valid
-      ? diagnosticRead
-        ? `Capture integrity checks passed — ECU DTC verification ${state.lastSession.dtcVerified ? "reported" : "not reported"}.`
-        : `Valid — ${verdict.end ? reasonText(verdict.end.reason) : "complete"}`
-      : `${verdict.status}: ${verdict.reasons.join("; ")}`;
+    state.message = state.lastSession.dclProbe
+      ? verdict.valid
+        ? `Bridge capture integrity passed — ${state.lastSession.dclProbe.responseBytes} raw RO byte(s) observed; ECU ownership and command support remain unverified.`
+        : `${verdict.status}: ${verdict.reasons.join("; ")}`
+      : verdict.valid
+        ? diagnosticRead
+          ? `Capture integrity checks passed — ECU DTC verification ${state.lastSession.dtcVerified ? "reported" : "not reported"}.`
+          : `Valid — ${verdict.end ? reasonText(verdict.end.reason) : "complete"}`
+        : `${verdict.status}: ${verdict.reasons.join("; ")}`;
     if (combined?.error) state.message = combined.error;
     if (state.lastSession.outcome === "OPERATOR_CONFIRMATION_PENDING") state.message = "Live data stopped. Operator confirmation is pending.";
     if (state.lastSession.outcome === "NOT_STARTED_ECU_NO_RESPONSE") state.message = ECU_NO_RESPONSE_MESSAGE;
@@ -463,7 +503,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     if (state.transport === "ble" && state.identity.auth !== "OK") return "bridge authentication pending";
     if (state.phase !== "idle") return "busy";
     if (state.identity.helloOk !== true || state.identity.pinsOk !== true) return "bridge identity not verified";
-    if (op.kind !== "live") state.archive = null;
+    if (op.kind !== "live" && (!state.archive || state.archive.variant !== op.variant || state.archive.closed)) state.archive = null;
     op.startedAt = now();
     op.source = state.transport === "demo" ? "simulation" : "bridge";
     state.op = op;

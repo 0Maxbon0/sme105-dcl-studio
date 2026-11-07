@@ -257,6 +257,24 @@ function chartColor(state) {
   return getComputedStyle(document.body).getPropertyValue(token).trim() || (state === "fresh" ? "#4ad9e6" : "#95a2ac");
 }
 
+function chartSummary(samples, name, range) {
+  const points = chartPoints(samples, name, range, unitSystem());
+  if (!points.length) return null;
+  let min = points[0].value, max = points[0].value;
+  for (const point of points) {
+    min = Math.min(min, point.value);
+    max = Math.max(max, point.value);
+  }
+  return { min, max, n: points.length };
+}
+
+function formatTimeAgo(milliseconds) {
+  const seconds = Math.max(0, Math.round(milliseconds / 1000));
+  if (!seconds) return "now";
+  if (seconds % 60 === 0) return `${seconds / 60}m ago`;
+  return `${seconds}s ago`;
+}
+
 function drawTimeChart(canvas, samples, range = "30", color = "#42d9e8") {
   const rect = canvas.getBoundingClientRect();
   if (!rect.width) return;
@@ -275,7 +293,9 @@ function drawTimeChart(canvas, samples, range = "30", color = "#42d9e8") {
   ctx.font = '11px sans-serif'; ctx.fillStyle = textColor;
   if (!points.length) { ctx.fillText('No recorded samples for this reading', 16, height/2); return; }
   const { min, max, step } = chartBounds(points, RAW_SIGNALS.has(detailPid) || ['N','DSDRPM','VS','VSBAR'].includes(detailPid));
-  const first=points[0].time, last=points.at(-1).time, duration=Math.max(1,last-first);
+  const captureStart=points[0].time, last=points.at(-1).time;
+  const duration=range === 'full' ? Math.max(1,last-captureStart) : Number(range)*1000;
+  const first=range === 'full' ? captureStart : last-duration;
   const x=time=>left+(time-first)/duration*(right-left);
   const y=value=>bottom-(value-min)/(max-min)*(bottom-top);
   ctx.strokeStyle=getComputedStyle(document.body).getPropertyValue('--line').trim();ctx.lineWidth=1;
@@ -286,7 +306,8 @@ function drawTimeChart(canvas, samples, range = "30", color = "#42d9e8") {
   }
   for(let tick=0;tick<=2;tick++) {
     const time=first+duration*tick/2;
-    ctx.textAlign=tick===0?'left':tick===2?'right':'center';ctx.fillText(formatReplayTime(time / 1000),x(time),height-8);
+    const label=range === 'full' ? formatReplayTime(time / 1000) : formatTimeAgo(last-time);
+    ctx.textAlign=tick===0?'left':tick===2?'right':'center';ctx.fillText(label,x(time),height-8);
   }
   const gaps=points.slice(1).map((point,index)=>point.time-points[index].time).filter(gap=>gap>0).sort((a,b)=>a-b);
   const gapLimit=gaps.length?Math.max(gaps[Math.floor(gaps.length/2)]*3,1):Infinity;
@@ -462,19 +483,19 @@ function renderPinned(state, manual, idleCheck, pins) {
 }
 
 async function loadChartHistory(state, name) {
-  if (state.review?.active) { detailHistory = null; return; }
   const token = ++detailLoad;
   detailHistory = { name, samples: [], loading: true, message: 'Loading saved capture…' };
   try {
     const compatible = entry => entry.variant === dashboardSet() || entry.variant === 'ALL';
     const received = sensorSeries(state, name);
+    const reviewMetadata = state.review?.active ? state.review.metadata : null;
     const archive = state.archive && (compatible(state.archive) || (received && !received.saved && dashboardChannels(state.archive.variant).includes(name))) ? state.archive : null;
-    const metadata = archive || (await listRecordings()).find(compatible);
+    const metadata = reviewMetadata || archive || (await listRecordings()).find(compatible);
     if (!metadata) {
       if (token === detailLoad) { detailHistory.loading = false; detailHistory.message = 'Recent received samples; no saved capture available.'; }
       return;
     }
-    const blob = archive ? await archive.export('csv') : await recordingBlob(metadata.id, 'csv');
+    const blob = metadata === archive ? await archive.export('csv') : await recordingBlob(metadata.id, 'csv');
     const samples = await sensorSamplesFromCsv(blob, name);
     if (token !== detailLoad || detailPid !== name) return;
     detailHistory = { name, id: metadata.id, samples, loading: false,
@@ -492,7 +513,8 @@ function renderSensorDrawer(state) {
   if (!sensor) return;
   const { name, title, unit, pid } = sensor;
   const received = sensorSeries(state, name);
-  const saved = detailHistory?.name === name ? detailHistory : null;
+  const saved = detailHistory?.name === name
+    && (!state.review?.active || detailHistory.id === state.review.metadata?.id) ? detailHistory : null;
   const series = received || (saved?.samples.length ? { samples: saved.samples, summary: summarizeSeries(saved.samples) } : null);
   const health = sensorHealth(name, series, state, $("manual-gearbox-settings").checked, $("idle-check-settings").checked);
   if (!received && saved?.samples.length) { health.freshness = { state: 'historical', label: 'Saved reading' }; health.colorState = 'historical'; health.explanation = 'Recorded values from the saved capture.'; }
@@ -506,8 +528,14 @@ function renderSensorDrawer(state) {
       if (!saved.loading && received.samples[0].t-lastTime > Math.max(cadence*3,1)) void loadChartHistory(state,name);
     }
   }
+  if (state.review?.active && detailRange !== "full") {
+    chartSamples = chartSamples.filter(sample => sample.t <= state.review.position);
+  }
   setText($("chart-history-note"), state.review?.active ? `Selected recording ${state.review.metadata.id} · recent recorded samples through ${formatReplayTime(state.review.position)}` : saved?.message || 'Recent received samples');
   const summary = health.summary;
+  const chartName = detailPercent ? "THROTTLE_PERCENT" : name;
+  const chartStats = chartSummary(chartSamples, chartName, detailRange);
+  const chartUnit = dashboardReading(chartName, 0, { unitSystem: unitSystem() }).unit;
   const reference = readingReference(name, { manual: $("manual-gearbox-settings").checked });
   setText($("drawer-group"), [...Object.keys(LIVE_GROUP_TITLES)].find((group) => LIVE_GROUPSForUi(group).includes(name))
     ? LIVE_GROUP_TITLES[Object.keys(LIVE_GROUP_TITLES).find((group) => LIVE_GROUPSForUi(group).includes(name))]
@@ -520,9 +548,9 @@ function renderSensorDrawer(state) {
   $("drawer-value").dataset.state = health.colorState;
   setText($("drawer-unit"), detailPercent ? "%" : RAW_SIGNALS.has(name) ? "raw ECU counts" : dashboardReading(name, summary?.last ?? 0, { unitSystem: unitSystem() }).unit);
   setText($("drawer-raw"), summary ? `${summary.rawLast} (0x${Math.trunc(summary.rawLast).toString(16).toUpperCase().padStart(3,"0")})` : "No sample");
-  setText($("drawer-min"), summary ? formattedReading(displayName, summary.min, {unitSystem:unitSystem()}).text : "—");
-  setText($("drawer-max"), summary ? formattedReading(displayName, summary.max, {unitSystem:unitSystem()}).text : "—");
-  setText($("drawer-count"), summary?.n ?? 0);
+  setText($("drawer-min"), chartStats ? formatMeasurement(displayName, chartStats.min, chartUnit) : "—");
+  setText($("drawer-max"), chartStats ? formatMeasurement(displayName, chartStats.max, chartUnit) : "—");
+  setText($("drawer-count"), chartStats?.n ?? 0);
   const latest = health.samples.at(-1);
   setText($("drawer-time"), `PID 0x${pid.toString(16).toUpperCase().padStart(2, "0")}`);
   setText($("drawer-meaning"), health.explanation);

@@ -18,3 +18,21 @@ test('saved diagnostic history retains incomplete tests and codes, excludes live
   assert.match(text, /rawBytes/);
   assert.match(diagnosticTestReport(stored), /does not certify/);
 });
+
+
+test('DCL discovery results are retained and exported with source and ECU-attribution caveats', () => {
+  const probe = { id: 3, type: 'SESSION_RESULT', detail: {
+    variant: 'PIDMAP', startedAt: 4000, completedAt: 5000, codes: [],
+    dclProbe: { word: '005E', description: 'Read PID map', source: 'doncreat0r/eeciv · tables.h',
+      sourceUrl: 'https://github.com/doncreat0r/eeciv/blob/master/tables.h', responseBytes: 32 },
+    verdict: { status: 'VALID', reasons: [] },
+  } };
+  assert.deepEqual(savedDiagnosticTests([probe]), [probe]);
+  const report = diagnosticTestReport(probe);
+  assert.match(report, /005E/);
+  assert.match(report, /Read PID map/);
+  assert.match(report, /doncreat0r\/eeciv/);
+  assert.match(report, /32/);
+  assert.match(report, /ECU ownership \/ command support: unverified/);
+  assert.match(report, /raw RO transcript/);
+});
