@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "native:bundle": "esbuild app/js/native-bridge-entry.js --bundle --format=esm --platform=browser --target=es2022 --outfile=app/vendor/native-bridge.js",
-    "test": "node --test app/tests/*.test.mjs",
+    "test": "node --experimental-global-webcrypto --test app/tests/*.test.mjs",
     "android:sync": "npm run native:bundle && cap sync android",
     "android:debug": "npm run android:sync && cd android && ./gradlew assembleDebug"
   },

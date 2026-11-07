@@ -6,7 +6,7 @@ import { dashboardReading } from "./throttle-display.js";
 import { lookupCode } from "./codes-db.js";
 import { AUTOMATIC_PIDS, judgeReading, PID_TEXT, PIDS, rowsToCsv, summarizeSeries } from "./pids.js";
 import { combinedSnapshot } from "./combined.js";
-import { reasonText, stageText, VARIANTS } from "./protocol.js";
+import { COMMAND_CATALOGUE, reasonText, stageText, VARIANTS } from "./protocol.js";
 import { STR } from "./strings.js";
 import { readingReference, VEHICLE_PROFILE } from "./reference.js";
 import { LIVE_GROUP_HELP, LIVE_GROUP_TITLES, sensorsForGroup, sensorFreshness } from "./live-dashboard.js";
@@ -631,6 +631,7 @@ export function render(state) {
 
   const actions = ["read-codes-btn", "koeo-btn", "koer-btn", "live-start", "offline-btn", "bench-btn", "reboot-btn", "clear-btn", "mem-btn"];
   for (const id of actions) $(id).disabled = !linked || busy || !!state.recovering || !!state.review?.active;
+  if (COMMAND_CATALOGUE.MEM_READ.sendable === false) $("mem-btn").disabled = true;
   $("stored-code-mode").disabled = busy;
   $("live-set").disabled = busy || !!state.recovering;
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as fake from "fake-indexeddb";
+import "./test-env.mjs";
 import { createRecording, listRecordings, recordingBlob } from "../js/recording.js";
 
 globalThis.indexedDB = new fake.IDBFactory();
@@ -44,7 +45,7 @@ test("a failed atomic write stops recording and retains its queued data for expo
   const original = fake.IDBDatabase.prototype.transaction;
   fake.IDBDatabase.prototype.transaction = function(stores,mode,...args) {
     const tx = original.call(this, stores, mode, ...args);
-    if (stores === "chunks" && mode === "readwrite") queueMicrotask(() => tx.abort());
+    if ((stores === "chunks" || stores.includes?.("chunks")) && mode === "readwrite") queueMicrotask(() => tx.abort());
     return tx;
   };
   try {
@@ -87,7 +88,7 @@ test("storage failure cannot persist an ignition confirmation or a valid verdict
   const original = fake.IDBDatabase.prototype.transaction;
   fake.IDBDatabase.prototype.transaction = function(stores, mode, ...args) {
     const tx = original.call(this, stores, mode, ...args);
-    if (stores === "chunks" && mode === "readwrite") queueMicrotask(() => tx.abort());
+    if ((stores === "chunks" || stores.includes?.("chunks")) && mode === "readwrite") queueMicrotask(() => tx.abort());
     return tx;
   };
   try {

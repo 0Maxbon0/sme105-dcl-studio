@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { JSDOM } from 'jsdom';
 import * as fake from 'fake-indexeddb';
+import './test-env.mjs';
 import { createRecording, listRecordings } from '../js/recording.js';
 const until = async fn => { for(let i=0;i<200;i++){if(fn())return;await new Promise(r=>setTimeout(r,5));}throw new Error('App did not finish booting'); };
 test('actual app entry boots existing recording into offline dashboard and wires review and normal throttle card', async () => {
@@ -19,6 +20,8 @@ test('actual app entry boots existing recording into offline dashboard and wires
   try {
     const interrupted=await createRecording('ECU_STATUS');
     interrupted.line('STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW');
+    const db=await new Promise((resolve,reject)=>{const request=indexedDB.open('eeciv-recordings',1);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
+    await new Promise((resolve,reject)=>{const tx=db.transaction('captures','readwrite'),store=tx.objectStore('captures'),request=store.get(interrupted.id);request.onsuccess=()=>store.put({...request.result,writerHeartbeat:Date.now()-16000});tx.oncomplete=resolve;tx.onabort=tx.onerror=()=>reject(tx.error);});
     await import('../js/app.js');
     const $=id=>document.getElementById(id);
     const percent=()=>$('throttle-percent-value').textContent;

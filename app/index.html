@@ -186,7 +186,7 @@
         <p id="dcl-probe-description" class="help"></p>
         <button id="dcl-probe-run" type="button" class="primary" disabled>Send one candidate request</button>
         <p id="dcl-probe-summary" class="banner" role="status">No DCL discovery probe has been recorded yet.</p>
-        <button id="dcl-probe-export" type="button" disabled>Export last probe evidence</button>
+        <button id="dcl-probe-export" type="button" disabled>Export finalized probe evidence</button>
         <pre id="dcl-probe-raw" class="mono">The selected command will be sent once after bridge prechecks. All received bytes are retained in the diagnostic journal.</pre>
         <details>
           <summary>Known commands deferred or already implemented</summary>
@@ -210,7 +210,7 @@
       <p class="help" data-str="offlineHelp"></p>
       <button id="bench-btn" type="button" data-str="selfTest"></button>
       <p class="help" data-str="selfTestHelp"></p>
-      <button id="mem-btn" type="button" class="primary" data-str="readIdentity"></button>
+      <button id="mem-btn" type="button" class="primary" data-str="readIdentity" disabled></button>
       <pre id="identity-out" class="mono"></pre>
       <button id="clear-btn" type="button" class="danger" data-str="clearCodes"></button>
       <p class="help" data-str="confirmClearBody"></p>

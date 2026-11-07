@@ -100,7 +100,7 @@ constexpr uint32_t kOtaCurrentVersion = 1;
 // still be able to boot PENDING_VERIFY from an older accepted version and
 // prove their manifest before promoting ota_ver. On a VALID app with NO pending
 // ledger, a supervised physical USB flash may adopt this build baseline.
-constexpr uint32_t kUsbInstalledBuildVersion = 25;
+constexpr uint32_t kUsbInstalledBuildVersion = 26;
 // This field build permits active-master commands only after the required
 // per-boot TX2_BENCH passes and each fixed profile is explicitly armed.
 constexpr bool kActiveMasterQualified = true;
@@ -277,7 +277,7 @@ uint32_t refTxStartedUs = 0, ackLastMs = 0;
 uint8_t ack[16] = {}, ackCount = 0;
 volatile uint32_t handshakeErrors = 0;
 volatile bool transmitConsumed = false;
-volatile bool offlineConsumed = false; // separate one-shot: may follow a READ
+volatile bool offlineConsumed = false; // OFF remains consumed until this ESP32 reboots
 volatile bool observeConsumed = false; // active Echo-ID/Go-CART, not passive sniff
 uint8_t armedVariant = 255;
 bool armedFromUSB = true; // ARM/READ must originate on the same authenticated transport
@@ -2830,10 +2830,10 @@ void reportEnd() {
   out.println(F(" ecu_verified=0 dtc_verified=0 DE=LOW"));
   // CART_READ only. LISTEN/OBSERVE keep their own one-shot flags.
   // tx2BenchPassed stays valid for the rest of this boot.
-  if (isRequestVariant(variant) && faultAllowsRearm(failure)) {
+  if (variant != kVariantOffline && isRequestVariant(variant) &&
+      faultAllowsRearm(failure)) {
     failure = NO_FAULT;
     transmitConsumed = false;
-    if (variant == kVariantOffline) offlineConsumed = false;
   }
   stage = IDLE;
 }
@@ -3190,6 +3190,10 @@ void pollWiFi() {
 #endif
 }
 void runCommand(const char* cmd) {
+  if (!strcmp(cmd, "ARM_MEM") || !strcmp(cmd, "READ_MEM")) {
+    out.println(F("DENIED command_deferred_not_sendable"));
+    return;
+  }
   if (!strcmp(cmd, "OTA_DIAG")) {
     printOtaDiag();
     return;
@@ -3358,16 +3362,16 @@ void runCommand(const char* cmd) {
   if (!strcmp(cmd, "HELLO")) { out.println(F("HELLO SME105_USB_BRIDGE_V1 protocol=1 usb_baud=115200 no_auto_tx=1")); return; }
   if (!strcmp(cmd, "HELP")) {
 #ifdef SME105_BLE
-    out.println(F("COMMANDS HELLO HELP STATUS PINS BLE_STATUS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E ARM_KOEO READ_KOEO ARM_KOER READ_KOER ARM_LIVE READ_LIVE ARM_LIVE2 READ_LIVE2 ARM_LIVE3 READ_LIVE3 ARM_ALL READ_ALL ARM_CLR READ_CLR ARM_MEM READ_MEM ARM_OFF READ_OFF ARM_ECU_STATUS READ_ECU_STATUS ARM_PIDMAP READ_PIDMAP ARM_DMRMAP READ_DMRMAP ARM_DMR READ_DMR ARM_BOTH READ_BOTH DE_BENCH RMT_DUMP STOP RESET_IDLE REBOOT"));
+    out.println(F("COMMANDS HELLO HELP STATUS PINS BLE_STATUS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E ARM_KOEO READ_KOEO ARM_KOER READ_KOER ARM_LIVE READ_LIVE ARM_LIVE2 READ_LIVE2 ARM_LIVE3 READ_LIVE3 ARM_ALL READ_ALL ARM_CLR READ_CLR ARM_OFF READ_OFF ARM_ECU_STATUS READ_ECU_STATUS ARM_PIDMAP READ_PIDMAP ARM_DMRMAP READ_DMRMAP ARM_DMR READ_DMR ARM_BOTH READ_BOTH DE_BENCH RMT_DUMP STOP RESET_IDLE REBOOT"));
     out.println(F("BLE build: Nordic UART transport active. Wi-Fi transport disabled."));
     out.println(F("DCL discovery probes are fixed single-shot read candidates: 0381 005E 242E 22C6 271E; captures raw RO bytes."));
-    out.println(F("DEFERRED (DENIED): READ_PIDMAP_PARITY=004E READ_A1=01A1 READ_F4=01F4 READ_BAUD=8174 READ_DMRMAP_TX=42A6 READ_STOPFLOW=411E READ_KOEO94=2594"));
+    out.println(F("DEFERRED (DENIED): ARM_MEM/READ_MEM=42F3 / 22D3 address_map_unverified parity_93_differs_from_generic_2293; READ_PIDMAP_PARITY=004E READ_A1=01A1 READ_F4=01F4 READ_BAUD=8174 READ_DMRMAP_TX=42A6 READ_STOPFLOW=411E READ_KOEO94=2594"));
     out.println(F("ACTIVE-MASTER: exact 4/4 local TX2_BENCH pass required per boot; READ_* additionally needs matching ARM_* within 15s."));
     out.println(F("No automatic TX; OBSERVE has a separate once-per-boot latch."));
 #else
-    out.println(F("COMMANDS HELLO HELP STATUS PINS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E ARM_KOEO READ_KOEO ARM_KOER READ_KOER ARM_LIVE READ_LIVE ARM_LIVE2 READ_LIVE2 ARM_LIVE3 READ_LIVE3 ARM_ALL READ_ALL ARM_CLR READ_CLR ARM_MEM READ_MEM ARM_OFF READ_OFF ARM_ECU_STATUS READ_ECU_STATUS ARM_PIDMAP READ_PIDMAP ARM_DMRMAP READ_DMRMAP ARM_DMR READ_DMR ARM_BOTH READ_BOTH DE_BENCH RMT_DUMP STOP RESET_IDLE REBOOT"));
+    out.println(F("COMMANDS HELLO HELP STATUS PINS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E ARM_KOEO READ_KOEO ARM_KOER READ_KOER ARM_LIVE READ_LIVE ARM_LIVE2 READ_LIVE2 ARM_LIVE3 READ_LIVE3 ARM_ALL READ_ALL ARM_CLR READ_CLR ARM_OFF READ_OFF ARM_ECU_STATUS READ_ECU_STATUS ARM_PIDMAP READ_PIDMAP ARM_DMRMAP READ_DMRMAP ARM_DMR READ_DMR ARM_BOTH READ_BOTH DE_BENCH RMT_DUMP STOP RESET_IDLE REBOOT"));
     out.println(F("DCL discovery probes are fixed single-shot read candidates: 0381 005E 242E 22C6 271E; captures raw RO bytes."));
-    out.println(F("DEFERRED (DENIED): READ_PIDMAP_PARITY=004E READ_A1=01A1 READ_F4=01F4 READ_BAUD=8174 READ_DMRMAP_TX=42A6 READ_STOPFLOW=411E READ_KOEO94=2594"));
+    out.println(F("DEFERRED (DENIED): ARM_MEM/READ_MEM=42F3 / 22D3 address_map_unverified parity_93_differs_from_generic_2293; READ_PIDMAP_PARITY=004E READ_A1=01A1 READ_F4=01F4 READ_BAUD=8174 READ_DMRMAP_TX=42A6 READ_STOPFLOW=411E READ_KOEO94=2594"));
     out.println(F("ACTIVE-MASTER: exact 4/4 local TX2_BENCH pass required per boot; READ_* additionally needs matching ARM_* within 15s."));
     out.println(F("No automatic TX; OBSERVE has a separate once-per-boot latch."));
     out.println(F("WIFI USB_ONLY: WIFI_CONFIG <SSID_B64> <PASS_B64> | WIFI_AP_CONFIG <SSID_B64> <PASS_B64> | WIFI_STA_MODE WIFI_AP_MODE | WIFI_TOKEN | WIFI_FORGET"));
@@ -3383,13 +3387,12 @@ void runCommand(const char* cmd) {
   if (!strcmp(cmd, "RMT_DUMP")) { dumpGateRmt(); return; }
   if (!strcmp(cmd, "RESET_IDLE")) {
     if (stage != IDLE || slotInFlight || !stopLatched) out.println(F("DENIED busy"));
-    else {
+    else if (failure == NO_FAULT || faultAllowsRearm(failure)) {
       failure = NO_FAULT;
       armedVariant = 255;
       transmitConsumed = false;
-      offlineConsumed = false;
-      out.println(F("EVENT idle_reset read_rearm_allowed=1"));
-    }
+      out.println(F("EVENT idle_reset read_rearm_allowed=1 off_locked=1"));
+    } else out.println(F("DENIED safety_fault_latched"));
     return;
   }
   const uint8_t armKind = !strcmp(cmd, "ARM_A4") ? 0 : !strcmp(cmd, "ARM_0E") ? 1 :

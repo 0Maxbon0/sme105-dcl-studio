@@ -32,7 +32,7 @@ COMMANDS = (
     "STATUS", "PINS", "TX2_BENCH", "LISTEN", "HELLO", "OBSERVE",
     "REQUEST_A4", "REQUEST_0E", "REQUEST_KOEO", "REQUEST_KOER",
     "REQUEST_LIVE", "REQUEST_LIVE2", "REQUEST_LIVE3", "REQUEST_ALL",
-    "REQUEST_CLR", "REQUEST_MEM", "REQUEST_OFF",
+    "REQUEST_CLR", "REQUEST_OFF",
     "REQUEST_ECU_STATUS", "REQUEST_PIDMAP", "REQUEST_DMRMAP",
     "REQUEST_DMR", "REQUEST_BOTH",
     "RMT_DUMP", "DE_BENCH", "STOP", "RESET_IDLE", "REBOOT", "EXIT",
@@ -41,7 +41,7 @@ CAR_TRANSMIT = frozenset((
     "OBSERVE",
     "REQUEST_A4", "REQUEST_0E", "REQUEST_KOEO", "REQUEST_KOER",
     "REQUEST_LIVE", "REQUEST_LIVE2", "REQUEST_LIVE3", "REQUEST_ALL",
-    "REQUEST_CLR", "REQUEST_MEM", "REQUEST_OFF",
+    "REQUEST_CLR", "REQUEST_OFF",
     "REQUEST_ECU_STATUS", "REQUEST_PIDMAP", "REQUEST_DMRMAP",
     "REQUEST_DMR", "REQUEST_BOTH",
 ))
@@ -50,7 +50,7 @@ WIRE_COMMANDS = frozenset((
     "ARM_A4", "READ_A4", "ARM_0E", "READ_0E", "ARM_KOEO", "READ_KOEO",
     "ARM_KOER", "READ_KOER", "ARM_LIVE", "READ_LIVE", "ARM_LIVE2", "READ_LIVE2",
     "ARM_LIVE3", "READ_LIVE3", "ARM_ALL", "READ_ALL", "ARM_CLR", "READ_CLR",
-    "ARM_MEM", "READ_MEM", "ARM_OFF", "READ_OFF",
+    "ARM_OFF", "READ_OFF",
     "ARM_ECU_STATUS", "READ_ECU_STATUS", "ARM_PIDMAP", "READ_PIDMAP",
     "ARM_DMRMAP", "READ_DMRMAP", "ARM_DMR", "READ_DMR", "ARM_BOTH", "READ_BOTH",
     "RMT_DUMP", "DE_BENCH", "STOP", "RESET_IDLE", "REBOOT",
@@ -69,7 +69,6 @@ REQUEST_WORDS = {
     "LIVE3": ("01B0", "FF5F", "21F6", "00A0"),
     "ALL": ("01B0", "FF5F", "21F6", "00A0"),
     "CLR": ("01B0", "FF5F", "0291", "00A0"),
-    "MEM": ("01B0", "FF5F", "42F3", "00A0"),
     "OFF": ("01B0", "FF5F", "80CE", "7F20"),
     "ECU_STATUS": ("01B0", "FF5F", "0381", "00A0"),
     "PIDMAP": ("01B0", "FF5F", "005E", "00A0"),
@@ -86,7 +85,7 @@ HELLO_REPLY = b"HELLO SME105_USB_BRIDGE_V1 protocol=1 usb_baud=115200 no_auto_tx
 PINS_REPLY = (b"PINS ro16=GPIO16_UART1 de18=GPIO18_RMT2..5 "
               b"di17=GPIO17_UART2_TX+PAD_RX no_arbitrary_tx=1")
 ARM_EVENT = re.compile(
-    rb"^EVENT read_armed variant=(A4|0E|KOEO|KOER|LIVE3|LIVE2|LIVE|ALL|CLR|MEM|OFF|ECU_STATUS|PIDMAP|DMRMAP|DMR|BOTH) valid_ms=15000 no_tx_yet=1$"
+    rb"^EVENT read_armed variant=(A4|0E|KOEO|KOER|LIVE3|LIVE2|LIVE|ALL|CLR|OFF|ECU_STATUS|PIDMAP|DMRMAP|DMR|BOTH) valid_ms=15000 no_tx_yet=1$"
 )
 TX2_BENCH_TIMEOUT = 15.0
 TX2_REF = re.compile(
@@ -634,7 +633,9 @@ class BridgeClient:
         self._pending_transmit = False
         self._hello_sent = False
         self._observe_sent = False
-        self._requests_sent: set[str] = set()
+        self._offline_sent = False
+        self._in_flight = False
+        self._uncertain_tx = False
         self._verified_status = False
         self._session_ended = threading.Event()
         self._tx2_bench_attempted = False
@@ -766,6 +767,8 @@ class BridgeClient:
         except (OSError, serial.SerialException, BridgeError) as exc:
             with self._condition:
                 self._reader_error = f"serial capture failed: {exc}"
+                if self._in_flight or self._pending_transmit:
+                    self._uncertain_tx = True
                 self._condition.notify_all()
         finally:
             with self._condition:
@@ -838,13 +841,16 @@ class BridgeClient:
             return self._status
 
     def _validate_idle_for_vehicle(self, status: BridgeStatus,
-                                   variant: str | None = None) -> None:
+                                   variant: str | None = None,
+                                   *, expected_armed: str | None = None) -> None:
         if variant == "OFF":
             consumed = status.field("offline_used") != "0"
         else:
             consumed = status.field("read_used") != "0"
+        armed = status.field("armed")
         if (status.field("stage") != "0" or consumed or
                 status.field("fault") not in REARM_FAULTS or
+                armed != (expected_armed or "NONE") or
                 self._session_name is not None or self._pending_transmit):
             raise BridgeError("bridge busy, failed, or read already consumed")
         if self.fault:
@@ -905,13 +911,40 @@ class BridgeClient:
         with self._condition:
             while not self._session_ended.is_set():
                 if self._reader_error or self._integrity_error or self.evidence.fault:
+                    if self._in_flight:
+                        self._uncertain_tx = True
                     raise BridgeError(f"session evidence incomplete: {self.fault}")
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    if self._in_flight:
+                        self._uncertain_tx = True
                     raise BridgeError("END never arrived; no retry; evidence preserved")
                 self._condition.wait(remaining)
         if self.fault:
+            if self._in_flight:
+                self._uncertain_tx = True
             raise BridgeError(f"session evidence incomplete: {self.fault}")
+        if self._in_flight:
+            try:
+                end = self.last_end
+                if end is None or int(end[b"reason"]) not in (15, 16):
+                    raise BridgeError("terminal END did not prove a completed request")
+                fresh = self.status(timeout=min(2.0, timeout))
+                if (fresh.field("stage") != "0" or not fresh.de_low or
+                        fresh.field("read_used") != "0" or
+                        fresh.field("fault") not in REARM_FAULTS or
+                        fresh.field("armed") != "NONE" or
+                        (self._read_variant == "OFF" and fresh.field("offline_used") != "1") or
+                        self._session_name is not None or self._pending_transmit):
+                    raise BridgeError("fresh STATUS did not prove an idle rearmable bridge")
+            except (BridgeError, KeyError, ValueError) as exc:
+                self._uncertain_tx = True
+                raise BridgeError(f"request completion remains uncertain: {exc}") from exc
+            with self._condition:
+                self._in_flight = False
+                self._pending_transmit = False
+                self._read_variant = None
+                self._condition.notify_all()
 
     def stop(self, timeout: float = 3.0) -> None:
         if not self._verified_status:
@@ -926,6 +959,10 @@ class BridgeClient:
             self.wait_end(timeout)
 
     def execute(self, command: str, authorize: Callable[[str], bool]) -> None:
+        if command in {"REQUEST_MEM", "ARM_MEM", "READ_MEM"}:
+            raise BridgeError(
+                "REQUEST_MEM is deferred pending protocol validation: target address map unverified for SME-105 and parity byte 93 differs from generic rule (2293)"
+            )
         if command not in COMMANDS:
             raise BridgeError("unknown menu command")
         if command == "EXIT":
@@ -969,7 +1006,7 @@ class BridgeClient:
             return
         if command == "RESET_IDLE":
             self._send("RESET_IDLE")
-            self.display("RESET_IDLE dispatched; non-fatal fault cleared.")
+            self.display("RESET_IDLE dispatched; rearmable read faults may clear; OFF remains locked for this boot.")
             return
         if command == "HELLO":
             with self._condition:
@@ -981,9 +1018,13 @@ class BridgeClient:
         if command == "OBSERVE" and self._observe_sent:
             raise BridgeError("OBSERVE already attempted this host session")
         variant = command.removeprefix("REQUEST_") if command.startswith("REQUEST_") else None
-        request_key = "OFF" if variant == "OFF" else "READ"
-        if variant is not None and request_key in self._requests_sent:
-            raise BridgeError("request already attempted this host session")
+        if variant is not None:
+            if self._uncertain_tx:
+                raise BridgeError("request state is uncertain; reconnect before another vehicle command")
+            if self._in_flight:
+                raise BridgeError("request still active; wait for a witnessed END and fresh STATUS")
+            if variant == "OFF" and self._offline_sent:
+                raise BridgeError("OFF already attempted this host session")
         initial = self.status()
         if initial.field("stage") != "0" or self._session_name is not None:
             raise BridgeError("active bridge session; use STOP before a new command")
@@ -1016,25 +1057,31 @@ class BridgeClient:
             return
         checked = self.status()
         self._validate_idle_for_vehicle(checked, variant)
-        self._requests_sent.add(request_key)  # uncertain ARM may not be repeated
-        self._await_arm(variant)
-        if not authorize("READ_" + variant):
-            self.display("Cancelled after ARM; no vehicle READ sent.")
-            return
-        checked = self.status()
-        self._validate_idle_for_vehicle(checked, variant)
-        if (self._arm_variant != variant or
-                time.monotonic() >= self._arm_deadline - 1.0):
-            raise BridgeError("ARM timed out or changed; READ denied")
-        wire = "READ_" + variant
-        self._read_variant = variant
-        self._session_witness = None
-        self.last_end = None
-        self._pending_transmit = True
-        self._session_requested = True
-        self._session_ended.clear()
-        self._requests_sent.add(request_key)
-        self._send(wire)
+        self._in_flight = True
+        if variant == "OFF":
+            self._offline_sent = True
+        try:
+            self._await_arm(variant)
+            if not authorize("READ_" + variant):
+                self._uncertain_tx = True
+                self.display("Cancelled after ARM; READ was not sent. Request state is uncertain; reconnect before another vehicle command.")
+                return
+            checked = self.status()
+            self._validate_idle_for_vehicle(checked, variant, expected_armed=variant)
+            if (self._arm_variant != variant or
+                    time.monotonic() >= self._arm_deadline - 1.0):
+                raise BridgeError("ARM timed out or changed; READ denied")
+            wire = "READ_" + variant
+            self._read_variant = variant
+            self._session_witness = None
+            self.last_end = None
+            self._pending_transmit = True
+            self._session_requested = True
+            self._session_ended.clear()
+            self._send(wire)
+        except BridgeError:
+            self._uncertain_tx = True
+            raise
         self.display(f"{wire} dispatched once. Streaming raw evidence; "
                      "no automatic retry or DTC interpretation.")
 
@@ -1049,18 +1096,52 @@ class BridgeClient:
 
 def confirm_vehicle(command: str, user_input: Callable[[str], str] = input,
                     display: Callable[[str], None] = print) -> bool:
-    display("WARNING: Real V5 GPIO17 DI packet decoded as "
-            f"{V5_GPIO17_WORDS} despite requested {SOURCE_WORDS}. "
-            "The transmit mismatch is unresolved; no DTC verified.")
-    display("OBSERVE means active EchoID/GoCART. REQUEST uses source-fixed "
-            "experimental B words. Confirm the adapter and KOEO condition.")
+    operations = {
+        "KOER": ("Runs the 253E KOER self-test.", "Engine RUNNING, at operating temperature; vehicle safely stationary, transmission in neutral."),
+        "KOEO": ("Runs the 253E KOEO self-test.", "Key ON, engine OFF."),
+        "A4": ("Reads stored codes with the 26A4 candidate.", "Key ON, engine OFF."),
+        "0E": ("Reads stored codes with the 260E candidate.", "Key ON, engine OFF."),
+        "CLR": ("Sends 0291 to erase stored trouble codes.", "Key ON, engine OFF."),
+        "ECU_STATUS": ("Sends the 0381 ECU-status candidate.", "Key ON, engine OFF."),
+        "PIDMAP": ("Sends the 005E PID-map candidate.", "Key ON, engine OFF."),
+        "DMRMAP": ("Sends the 242E DMR-map candidate.", "Key ON, engine OFF."),
+        "DMR": ("Sends the 22C6 DMR-values candidate.", "Key ON, engine OFF."),
+        "BOTH": ("Sends the 271E combined PID/DMR candidate.", "Key ON, engine OFF."),
+        "LIVE": ("Starts the fixed 21F6 live-data request for set 1.", "Key ON; engine OFF or Running."),
+        "LIVE2": ("Starts the 21F6 live-data request for set 2.", "Key ON; engine OFF or Running."),
+        "LIVE3": ("Starts the 21F6 live-data request for set 3.", "Key ON; engine OFF or Running."),
+        "ALL": ("Starts the 21F6 all-live-data request.", "Key ON; engine OFF or Running."),
+        "OFF": ("Sends 80CE / 7F20 to end diagnostic mode and return the bus to the ECU; one-shot per bridge boot.", "Key ON."),
+    }
+    stage, separator, variant = command.partition("_")
+    operation_info = operations.get(variant) if separator and stage in {"REQUEST", "READ"} else None
+    if command == "DE_BENCH":
+        display("Operation: local DE_BENCH mark-only timing check. Vehicle transmission: No.")
+        display("Requirements: silent bench only. Safety: keep the adapter disconnected from the vehicle bus.")
+    elif command == "OBSERVE":
+        display("Operation: active EchoID/GoCART observation handshake. Operating state: vehicle-specific safe bench/vehicle setup required.")
+        display("Vehicle transmission: Yes. Safety: one separately approved attempt; no automatic retry; transmit mismatch remains unresolved.")
+    elif operation_info and stage == "REQUEST":
+        operation, state = operation_info
+        display(f"Operation: {operation}")
+        display(f"Operating state: {state}")
+        display("Vehicle transmission: Yes.")
+        display("Safety: park securely, select neutral, apply the parking brake, and keep clear of moving parts. The V5 GPIO17 DI mismatch remains unresolved. Each ARM and READ needs separate approval; no automatic retry. CLR erases codes; OFF ends diagnostic communication.")
+    elif operation_info and stage == "READ":
+        _, state = operation_info
+        display(f"Operation: Final authorization to transmit {command} to the ECU.")
+        display(f"Operating state: {state}")
+        display("Vehicle transmission: Yes. Approving this sends the diagnostic read request to the vehicle bus.")
+        display("Safety: park securely, select neutral, apply the parking brake, and keep clear of moving parts. The V5 GPIO17 DI mismatch remains unresolved. No automatic retry. CLR erases codes; OFF ends diagnostic communication.")
+    else:
+        display(f"Operation: {command}. Vehicle transmission: No unless the named bridge command explicitly starts a vehicle request.")
     return user_input(f"Type SEND {command} to authorize exactly one vehicle command: ").strip() == f"SEND {command}"
 
 
 def menu(display: Callable[[str], None] = print) -> None:
     display("Commands: STATUS | PINS | TX2_BENCH | LISTEN | HELLO | OBSERVE | "
             "REQUEST_A4 | REQUEST_0E | REQUEST_KOEO | REQUEST_KOER | REQUEST_LIVE | "
-            "REQUEST_LIVE2 | REQUEST_LIVE3 | REQUEST_ALL | REQUEST_CLR | REQUEST_MEM | "
+            "REQUEST_LIVE2 | REQUEST_LIVE3 | REQUEST_ALL | REQUEST_CLR | "
             "REQUEST_OFF | REQUEST_ECU_STATUS | REQUEST_PIDMAP | REQUEST_DMRMAP | "
             "REQUEST_DMR | REQUEST_BOTH | RMT_DUMP | DE_BENCH | STOP | RESET_IDLE | REBOOT | EXIT")
     display("TX2_BENCH is local GPIO17 pad/RMT preflight with DE LOW. "
@@ -1135,6 +1216,9 @@ def main(argv: list[str] | None = None,
                     break
                 if command == "EXIT":
                     break
+                if command in {"REQUEST_MEM", "ARM_MEM", "READ_MEM"}:
+                    display("DENIED: REQUEST_MEM is deferred pending protocol validation: target address map unverified for SME-105 and parity byte 93 differs from generic rule (2293)")
+                    continue
                 if command not in COMMANDS:
                     display("Unrecognized command. " + ", ".join(COMMANDS))
                     continue

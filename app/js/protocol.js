@@ -290,15 +290,15 @@ export const EXPERIMENT_CATALOGUE = Object.freeze({
     sendable: false, blockedReason: "Framing/control word; not a standalone diagnostic inquiry.",
   }),
   MEM_READ: Object.freeze({
-    id: "MEM_READ", letter: null, name: "Experimental memory read (42F3 / 22D3)", commandWord: "42F3 / 22D3",
+    id: "MEM_READ", letter: null, name: "Experimental reverse-engineering memory read candidate (42F3 / 22D3)", commandWord: "42F3 / 22D3",
     envelope: ["01B0", "FF5F", "42F3", "00A0"],
-    description: "Local experimental direct memory access sequence; 42F3 loads address offset, 22D3 queries values.",
-    source: "current bridge firmware", sourceUrl: null,
+    description: "Experimental reverse-engineering read candidate. The target address map is unverified for SME-105; 22D3 parity byte 93 differs from the generic-rule result 2293.",
+    source: "local reverse-engineering candidate", sourceUrl: null,
     parityStatus: "UNRESOLVED_MISMATCH", evidenceLevel: "REVERSE_ENGINEERING_HYPOTHESIS",
     classification: "READ_ONLY", risk: "HIGH", timeoutMs: 10000,
     requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: true, requiresMapOrQualifier: true,
     armCommand: "ARM_MEM", readCommand: "READ_MEM", variantKey: "MEM",
-    sendable: false, blockedReason: "Deferred pending protocol support: sequence and SME-105 memory address map unverified; 22D3 parity differs from generic rule (2293).",
+    sendable: false, blockedReason: "Deferred pending protocol validation: target address map unverified for SME-105 and 22D3 parity byte 93 differs from the generic-rule result 2293.",
   }),
   OFF_GO_OFFLINE: Object.freeze({
     id: "OFF_GO_OFFLINE", letter: null, name: "Go offline mode", commandWord: "80CE",
@@ -312,6 +312,9 @@ export const EXPERIMENT_CATALOGUE = Object.freeze({
     sendable: true, blockedReason: "Mode-changing: disconnects diagnostic session and returns bus to ECU.",
   }),
 });
+
+// Canonical action catalogue name for UI dispatch policy.
+export const COMMAND_CATALOGUE = EXPERIMENT_CATALOGUE;
 
 export const DCL_PROBE_VARIANTS = Object.freeze({
   ECU_STATUS: Object.freeze({
@@ -348,7 +351,7 @@ export const DCL_PROBE_VARIANTS = Object.freeze({
 });
 
 export const DCL_BLOCKED_CANDIDATES = Object.freeze([
-  { word: "42F3 / 22D3", label: "Local memory-read candidate (MEM)", source: "current bridge firmware", reason: "Deferred pending protocol support: sequence and target address map unverified; 22D3 parity (93) differs from generic rule (2293)." },
+  { word: "42F3 / 22D3", label: "Experimental reverse-engineering memory-read candidate (MEM)", source: "local reverse-engineering candidate", reason: "Deferred pending protocol validation: target address map unverified for SME-105 and 22D3 parity byte 93 differs from the generic-rule result 2293." },
   { word: "01A1", label: "Clear DCL error/flag register", source: "doncreat0r/eeciv", reason: "State-clearing command; deferred pending protocol support." },
   { word: "01F4", label: "Clear DCL errors", source: "flxkrmr/eec-iv-reader-arduino", reason: "State-clearing command; deferred pending protocol support." },
   { word: "0291", label: "Clear DTCs", source: "doncreat0r/eeciv", reason: "Already exposed as CLR; destructive state-change requiring separate approval." },

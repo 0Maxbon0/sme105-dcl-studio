@@ -26,7 +26,7 @@ def _status(fault: str, *, read_used: str = "0", offline_used: str = "0",
     line = (
         f"STATUS SME105_USB_BRIDGE_V1 stage={stage} DE=LOW auto_tx=0 gate4=1 "
         f"pad_rx=1 tx2_bench_used=1 tx2_bench_pass=1 read_used={read_used} "
-        f"offline_used={offline_used} fault={fault} fw=17"
+        f"offline_used={offline_used} armed=NONE fault={fault} fw=17"
     ).encode()
     parsed = bridge.parse_status(line)
     if parsed is None:
@@ -71,8 +71,8 @@ class JoinRearmSourceTests(unittest.TestCase):
         for name in LATCHED:
             self.assertNotIn(name, spec)
         end = _between(self.source, "void reportEnd() {", "void printStatus() {")
-        self.assertIn("isRequestVariant(variant) && faultAllowsRearm(failure)", end)
-        self.assertIn("variant == kVariantOffline) offlineConsumed = false", end)
+        self.assertIn("variant != kVariantOffline && isRequestVariant(variant) &&", end)
+        self.assertNotIn("offlineConsumed = false", end)
         self.assertIn("transmitConsumed = false", end)
         self.assertLess(end.index("faultAllowsRearm(failure)"), end.index("stage = IDLE"))
         self.assertNotIn("tx2BenchPassed =", end)
@@ -84,6 +84,34 @@ class JoinRearmSourceTests(unittest.TestCase):
         self.assertIn("DENIED tx2_pad_bench_required", begin)
         self.assertIn("armedFromUSB != commandFromUSB", begin)
         self.assertIn("kArmMs", self.source)
+
+    def test_report_end_and_reset_idle_keep_off_locked_for_boot(self) -> None:
+        end = _between(self.source, "void reportEnd() {", "void printStatus() {")
+        self.assertNotIn("offlineConsumed = false", end)
+        self.assertIn("variant != kVariantOffline", end)
+        self.assertIn("failure = NO_FAULT", end)
+        self.assertIn("transmitConsumed = false", end)
+
+        reset = _between(self.source, 'if (!strcmp(cmd, "RESET_IDLE"))',
+                         'const uint8_t armKind =')
+        self.assertNotIn("offlineConsumed = false", reset)
+        self.assertIn("failure == NO_FAULT || faultAllowsRearm(failure)", reset)
+        self.assertIn("transmitConsumed = false", reset)
+        self.assertIn("EVENT idle_reset read_rearm_allowed=1 off_locked=1", reset)
+        self.assertIn("DENIED safety_fault_latched", reset)
+        self.assertLess(reset.index("faultAllowsRearm(failure)"),
+                        reset.index("transmitConsumed = false"))
+
+    def test_reset_idle_preserves_transmit_latch_for_safety_faults(self) -> None:
+        reset = _between(self.source, 'if (!strcmp(cmd, "RESET_IDLE"))',
+                         'const uint8_t armKind =')
+        allowed = _between(reset, "else if (failure == NO_FAULT || faultAllowsRearm(failure))", "} else out.println")
+        denied = reset.split('DENIED safety_fault_latched', 1)[0].rsplit("else", 1)[-1]
+        self.assertIn("failure = NO_FAULT", allowed)
+        self.assertIn("transmitConsumed = false", allowed)
+        self.assertNotIn("transmitConsumed = false", denied)
+        for fatal in ("DE_TIMEOUT", "PAD_MISMATCH", "CART_PHASE"):
+            self.assertNotIn(f"reason == {fatal}", _between(self.source, "constexpr bool faultAllowsRearm", "\n}"))
 
     def test_reboot_only_from_idle_without_ota_or_slot(self) -> None:
         cmd = _between(self.source, 'if (!strcmp(cmd, "REBOOT"))', 'if (otaUpdating())')
@@ -101,6 +129,9 @@ class JoinRearmSourceTests(unittest.TestCase):
         help_line = _between(self.source, 'if (!strcmp(cmd, "HELP"))', "WIFI USB_ONLY")
         self.assertIn("REBOOT", help_line)
         self.assertIn('out.print(F(" fw=")); out.println(kUsbInstalledBuildVersion);', self.source)
+
+    def test_usb_installed_build_version_is_26(self) -> None:
+        self.assertIn("constexpr uint32_t kUsbInstalledBuildVersion = 26", self.source)
 
     def test_ble_build_does_not_start_wifi(self) -> None:
         init = _between(self.source, "void initializeWiFi() {", "void initializeOtaBootHealth()")

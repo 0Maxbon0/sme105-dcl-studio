@@ -34,8 +34,9 @@ This is a local pad witness, **not** independent A/B or ECU-ownership proof.
   MAX487 `/RE` remains grounded. **No extra wires** or protocol pins.
 - No automatic ECU transmission at boot, no arbitrary hexadecimal writes,
   and no generic output/actuator-control API. The allowlist includes explicitly
-  armed DTC, self-test, live-data, memory and offline profiles; `CLR` is a
-  state-changing DTC-clear request. The new DCL discovery probes are fixed,
+  armed DTC, self-test, live-data and offline profiles; memory reads are
+  deferred and denied pending SME-105 address-map and parity validation. `CLR`
+  is a state-changing DTC-clear request. The new DCL discovery probes are fixed,
   single-word read candidates and are not verified on the SME-105.
 
 ## Persistent Wi-Fi: normal station or optional direct WPA2 AP
@@ -445,7 +446,7 @@ private key offline.
 | `READ_KOEO` / `READ_KOER` | Existing explicitly confirmed `25 3E` self-test profiles; they are not passive reads. |
 | `READ_CLR` | Existing explicitly confirmed `02 91` DTC-clear profile; sends the command word once, then captures. This changes ECU diagnostic state. |
 | `READ_LIVE*` / `READ_ALL` | Existing live profiles; use `41 96` to load the PID map and `21 F6` for PID values. |
-| `READ_MEM` | Existing experimental memory-read profile (`42 F3` / `22 D3`); target map remains unverified. |
+| `ARM_MEM` / `READ_MEM` | **Deferred and denied**: `ARM_MEM` and `READ_MEM` return `DENIED command_deferred_not_sendable` before DPS transmission. The experimental candidate sequence (`42 F3` / `22 D3`) remains unverified, the parity discrepancy with generic rule `22 93` is unresolved, the target address map is unverified, and no vehicle experiment is authorized by this documentation. |
 | `READ_OFF` | Existing go-offline profile (`80 CE` with `7F 20` qualifier). |
 | `STOP` | Asserts local DE LOW and cancels current TX/timers; always recognized. |
 | `RESET_IDLE` | Clears a finished idle session's fault/arm status; **never** re-arms a consumed diagnostic or OBSERVE attempt. |
@@ -476,7 +477,8 @@ DMR and combined responses are not semantically decoded. A clean bridge
 capture proves only local capture/pad integrity; raw RO bytes may include local
 self-echo and are not automatically attributed to the ECU. See
 `docs/SME105-DCL-command-discovery-2026-11-07.md` for provenance and deferred
-state-changing commands. The alternative `01 A1`, `01 F4`, `81 74`, `42 A6`, `41 1E`, `25 94`,
+state-changing commands. The memory-read candidate `42 F3` / `22 D3` (`ARM_MEM` / `READ_MEM`),
+the alternative `01 A1`, `01 F4`, `81 74`, `42 A6`, `41 1E`, `25 94`,
 and parity-derived `00 4E` candidates are listed in HELP as deferred and return
 `DENIED command_deferred_not_sendable`; they are not transmitted. The external
 PID-map source literal `00 5E` differs from the generic local parity result

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import queue
 import tempfile
 import threading
@@ -15,7 +16,7 @@ from scripts import sme105_usb_bridge as bridge
 
 GOOD_STATUS = (
     b"STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 "
-    b"pad_rx=0 read_used=0 fault=0\n"
+    b"pad_rx=0 read_used=0 offline_used=0 armed=NONE fault=0\n"
 )
 RX_LINES = (
     b"RX t_us=120 byte=00\n"
@@ -33,6 +34,23 @@ BENCH_INITIAL_STATUS = GOOD_STATUS.replace(
 BENCH_VERIFIED_STATUS = BENCH_INITIAL_STATUS.replace(
     b"tx2_bench_used=0 tx2_bench_pass=0", b"tx2_bench_used=1 tx2_bench_pass=1"
 )
+SENDABLE_STATES = {
+    "A4": "Key ON, engine OFF.",
+    "0E": "Key ON, engine OFF.",
+    "KOEO": "Key ON, engine OFF.",
+    "KOER": "Engine RUNNING, at operating temperature; vehicle safely stationary, transmission in neutral.",
+    "LIVE": "Key ON; engine OFF or Running.",
+    "LIVE2": "Key ON; engine OFF or Running.",
+    "LIVE3": "Key ON; engine OFF or Running.",
+    "ALL": "Key ON; engine OFF or Running.",
+    "CLR": "Key ON, engine OFF.",
+    "OFF": "Key ON.",
+    "ECU_STATUS": "Key ON, engine OFF.",
+    "PIDMAP": "Key ON, engine OFF.",
+    "DMRMAP": "Key ON, engine OFF.",
+    "DMR": "Key ON, engine OFF.",
+    "BOTH": "Key ON, engine OFF.",
+}
 
 
 def bench_witness() -> bytes:
@@ -79,11 +97,24 @@ class FakePort:
         self.rts = False
         self.closed = False
         self.rx_seen = threading.Event()
+        self.read_count = 0
 
     def _emit(self, data: bytes) -> None:
         # Arbitrary short chunks exercise split ASCII frames.
         for start in range(0, len(data), 17):
             self._rx.put(data[start:start + 17])
+
+    def _set_status(self, name: bytes, value: bytes) -> None:
+        parts = self.status_line.rstrip(b"\n").split()
+        replacement = name + b"=" + value
+        found = False
+        for index, part in enumerate(parts):
+            if part.startswith(name + b"="):
+                parts[index] = replacement
+                found = True
+        if not found:
+            parts.append(replacement)
+        self.status_line = b" ".join(parts) + b"\n"
 
     def read(self, size: int = 1) -> bytes:
         try:
@@ -116,18 +147,28 @@ class FakePort:
                 self._emit(result)
         elif cmd.startswith("ARM_"):
             which = "0E" if cmd == "ARM_A4" and self.bad_arm else cmd[4:]
+            self._set_status(b"armed", which.encode())
             self._emit(
                 f"EVENT read_armed variant={which} valid_ms=15000 no_tx_yet=1\n".encode()
             )
         elif cmd.startswith("READ_"):
             variant = cmd[5:]
+            self._set_status(b"armed", b"NONE")
+            if variant == "OFF":
+                self._set_status(b"offline_used", b"1")
+            base = 120 + self.read_count * 10000
+            read_lines = b"".join(
+                f"RX t_us={base + index * 1100} byte={value:02X}\n".encode()
+                for index, value in enumerate((0, 0x6D, 0xCC))
+            )
+            self.read_count += 1
             words = bridge.REQUEST_WORDS.get(variant, ("01B0", "FF5F", "26A4", "00A0"))
             third = words[2].encode("ascii")
             fourth = words[3].encode("ascii")
             observed = b"6DCC" if self.mismatch else b"01B0"
             match = b"0" if self.mismatch else b"1"
             self._emit(b"EVENT session=READ_CANDIDATE\n")
-            self._emit(RX_LINES)
+            self._emit(read_lines)
             self._emit(b"TX_PAD slot=0 expected=01B0 observed=" + observed +
                        b" tx_us=100 done_us=2200 match=" + match + b"\n")
             self._emit(b"TX_PAD slot=1 expected=FF5F observed=FF5F "
@@ -138,8 +179,12 @@ class FakePort:
             self._emit(b"TX_PAD slot=3 expected=" + fourth +
                        b" observed=" + fourth +
                        b" tx_us=30000 done_us=32100 match=1\n")
-            self._emit(END_GOOD.replace(b"pad_verified=0 words_started=0",
-                                         b"pad_verified=4 words_started=4"))
+            result = END_GOOD.replace(b"pad_verified=0 words_started=0",
+                                      b"pad_verified=4 words_started=4")
+            if self.delayed_end:
+                self.pending_end = result
+            else:
+                self._emit(result)
         elif cmd == "OBSERVE":
             self._emit(b"EVENT session=OBSERVE\n")
             self._emit(RX_LINES)
@@ -149,6 +194,8 @@ class FakePort:
             if self.pending_end is not None:
                 self._emit(self.pending_end)
                 self.pending_end = None
+        elif cmd == "RESET_IDLE":
+            self._emit(b"EVENT idle_reset read_rearm_allowed=1 off_locked=1\n")
         else:
             raise AssertionError(f"unexpected wire command {data!r}")
         return len(data)
@@ -329,7 +376,7 @@ class BridgeTerminalTests(unittest.TestCase):
         self.assertIn("REQUEST_A4", bridge.CAR_TRANSMIT)
         self.assertIn("REQUEST_KOER", bridge.CAR_TRANSMIT)
         self.assertIn("REQUEST_CLR", bridge.CAR_TRANSMIT)
-        self.assertIn("REQUEST_MEM", bridge.CAR_TRANSMIT)
+        self.assertNotIn("REQUEST_MEM", bridge.CAR_TRANSMIT)
         self.assertIn("REQUEST_LIVE3", bridge.CAR_TRANSMIT)
         self.assertIn("REQUEST_ECU_STATUS", bridge.CAR_TRANSMIT)
         self.assertIn("REQUEST_PIDMAP", bridge.CAR_TRANSMIT)
@@ -339,7 +386,7 @@ class BridgeTerminalTests(unittest.TestCase):
 
     def test_all_probe_and_self_test_variants_execute_arm_then_read(self):
         test_variants = (
-            "REQUEST_KOER", "REQUEST_LIVE3", "REQUEST_CLR", "REQUEST_MEM",
+            "REQUEST_KOER", "REQUEST_LIVE3", "REQUEST_CLR",
             "REQUEST_ECU_STATUS", "REQUEST_PIDMAP", "REQUEST_DMRMAP",
             "REQUEST_DMR", "REQUEST_BOTH",
         )
@@ -369,11 +416,30 @@ class BridgeTerminalTests(unittest.TestCase):
         self.assertIn(b"READ_A4\n", port.writes)
         self.assertNotIn(b"READ_0E\n", port.writes)
         client.stop()
-        client.close()
         self.assertEqual(evidence.rx_bytes, 3)
         self.assertIsNone(client.fault)
-        with self.assertRaisesRegex(bridge.BridgeError, "already attempted"):
-            client.execute("REQUEST_A4", lambda _: True)
+        client.execute("REQUEST_A4", lambda _: True)
+        client.wait_end(2)
+        self.assertEqual(port.writes.count(b"ARM_A4\n"), 2)
+        self.assertEqual(port.writes.count(b"READ_A4\n"), 2)
+        client.close()
+
+    def test_two_sequential_successful_reads_use_fresh_status(self):
+        port = FakePort()
+        client, _, _ = self.start_client(port)
+        client.execute("REQUEST_A4", lambda _: True)
+        client.wait_end(2)
+        self.assertFalse(client._in_flight)
+        client.execute("REQUEST_0E", lambda _: True)
+        client.wait_end(2)
+        self.assertFalse(client._in_flight)
+        self.assertFalse(client._uncertain_tx)
+        self.assertEqual(port.writes.count(b"ARM_A4\n"), 1)
+        self.assertEqual(port.writes.count(b"READ_A4\n"), 1)
+        self.assertEqual(port.writes.count(b"ARM_0E\n"), 1)
+        self.assertEqual(port.writes.count(b"READ_0E\n"), 1)
+        self.assertGreaterEqual(port.writes.count(b"STATUS\n"), 8)
+        client.close()
 
     def test_request_second_confirmation_cancel_or_wrong_arm_never_sends_read(self):
         for port, authorize in (
@@ -389,8 +455,169 @@ class BridgeTerminalTests(unittest.TestCase):
                     client.execute("REQUEST_A4", authorize)
                 self.assertIn(b"ARM_A4\n", port.writes)
                 self.assertNotIn(b"READ_A4\n", port.writes)
+                if not port.bad_arm:
+                    self.assertTrue(client._uncertain_tx)
                 client.stop()
                 client.close()
+
+    def test_second_read_while_first_request_is_active_is_blocked(self):
+        port = FakePort(delayed_end=True)
+        client, _, _ = self.start_client(port)
+        client.execute("REQUEST_A4", lambda _: True)
+        with self.assertRaisesRegex(bridge.BridgeError, "still active"):
+            client.execute("REQUEST_0E", lambda _: self.fail("must not authorize"))
+        self.assertEqual(port.writes.count(b"READ_A4\n"), 1)
+        self.assertNotIn(b"ARM_0E\n", port.writes)
+        client.close()
+
+    def test_read_after_uncertain_arm_is_blocked(self):
+        port = FakePort(bad_arm=True)
+        client, _, _ = self.start_client(port)
+        with self.assertRaisesRegex(bridge.BridgeError, "wrong ARM"):
+            client.execute("REQUEST_A4", lambda _: True)
+        self.assertTrue(client._uncertain_tx)
+        with self.assertRaisesRegex(bridge.BridgeError, "uncertain"):
+            client.execute("REQUEST_0E", lambda _: self.fail("must not authorize"))
+        self.assertNotIn(b"READ_A4\n", port.writes)
+        self.assertNotIn(b"ARM_0E\n", port.writes)
+        client.close()
+
+    def test_read_after_missing_end_is_blocked(self):
+        port = FakePort(delayed_end=True)
+        client, _, _ = self.start_client(port)
+        client.execute("REQUEST_A4", lambda _: True)
+        with self.assertRaisesRegex(bridge.BridgeError, "END never arrived"):
+            client.wait_end(0.01)
+        with self.assertRaisesRegex(bridge.BridgeError, "uncertain"):
+            client.execute("REQUEST_0E", lambda _: self.fail("must not authorize"))
+        self.assertNotIn(b"ARM_0E\n", port.writes)
+        client.close()
+
+    def test_read_after_transport_failure_is_blocked(self):
+        class FailedReadPort(FakePort):
+            def write(self, data):
+                if data == b"READ_A4\n":
+                    self.writes.append(data)
+                    raise OSError("simulated cable failure")
+                return super().write(data)
+
+        port = FailedReadPort()
+        client, _, _ = self.start_client(port)
+        with self.assertRaisesRegex(bridge.BridgeError, "command write failed"):
+            client.execute("REQUEST_A4", lambda _: True)
+        self.assertTrue(client._uncertain_tx)
+        with self.assertRaisesRegex(bridge.BridgeError, "uncertain"):
+            client.execute("REQUEST_0E", lambda _: self.fail("must not authorize"))
+        client.close()
+
+    def test_off_is_one_shot_after_success_and_reset_idle(self):
+        for reset in (False, True):
+            with self.subTest(reset_idle=reset):
+                port = FakePort()
+                client, _, _ = self.start_client(port)
+                client.execute("REQUEST_OFF", lambda _: True)
+                client.wait_end(2)
+                if reset:
+                    client.execute("RESET_IDLE", lambda _: self.fail("no authorization needed"))
+                with self.assertRaisesRegex(bridge.BridgeError, "OFF already attempted"):
+                    client.execute("REQUEST_OFF", lambda _: self.fail("must not authorize"))
+                self.assertEqual(port.writes.count(b"READ_OFF\n"), 1)
+                client.close()
+
+    def test_read_and_off_latches_are_independent(self):
+        for first, second in (("REQUEST_A4", "REQUEST_OFF"),
+                              ("REQUEST_OFF", "REQUEST_A4")):
+            with self.subTest(first=first):
+                port = FakePort()
+                client, _, _ = self.start_client(port)
+                client.execute(first, lambda _: True)
+                client.wait_end(2)
+                client.execute(second, lambda _: True)
+                client.wait_end(2)
+                self.assertEqual(port.writes.count(b"READ_A4\n"), 1)
+                self.assertEqual(port.writes.count(b"READ_OFF\n"), 1)
+                client.close()
+
+    def test_confirmations_describe_command_state_and_transmission(self):
+        for command, state in (
+            ("REQUEST_KOER", "Engine RUNNING, at operating temperature; vehicle safely stationary, transmission in neutral"),
+            ("REQUEST_A4", "Key ON, engine OFF"),
+            ("REQUEST_LIVE", "engine OFF or Running"),
+            ("REQUEST_OFF", "one-shot per bridge boot"),
+        ):
+            with self.subTest(command=command):
+                messages = []
+                authorized = bridge.confirm_vehicle(command, lambda prompt: f"SEND {command}", messages.append)
+                self.assertTrue(authorized)
+                self.assertTrue(any(state in message for message in messages))
+                self.assertTrue(any("Vehicle transmission: Yes" in message for message in messages))
+        messages = []
+        bridge.confirm_vehicle("DE_BENCH", lambda _: "SEND DE_BENCH", messages.append)
+        self.assertTrue(any("Vehicle transmission: No" in message for message in messages))
+
+    def test_all_vehicle_confirmation_stages_match_command_and_operating_state(self):
+        for variant, state in SENDABLE_STATES.items():
+            for stage in ("REQUEST", "READ"):
+                command = f"{stage}_{variant}"
+                with self.subTest(command=command):
+                    messages = []
+                    prompts = []
+                    authorized = bridge.confirm_vehicle(
+                        command,
+                        lambda prompt: prompts.append(prompt) or f"SEND {command}",
+                        messages.append,
+                    )
+                    self.assertTrue(authorized)
+                    self.assertEqual(prompts, [f"Type SEND {command} to authorize exactly one vehicle command: "])
+                    self.assertIn(f"Operating state: {state}", messages)
+                    self.assertTrue(any("Vehicle transmission: Yes." in message for message in messages))
+                    self.assertTrue(any(f"Operation:" in message for message in messages))
+                    if stage == "REQUEST":
+                        self.assertFalse(any("Final authorization" in message for message in messages))
+                        self.assertTrue(any(message.startswith("Safety:") for message in messages))
+                    else:
+                        self.assertIn(
+                            f"Operation: Final authorization to transmit {command} to the ECU.",
+                            messages,
+                        )
+                        self.assertTrue(any(
+                            "Approving this sends the diagnostic read request to the vehicle bus." in message
+                            for message in messages
+                        ))
+                    for message in messages:
+                        if "REQUEST_" in message or "READ_" in message:
+                            self.assertIn(command, message)
+
+    def test_declining_final_read_authorization_fails_closed(self):
+        port = FakePort()
+        client, _, output = self.start_client(port)
+        client.execute("REQUEST_A4", lambda command: command == "REQUEST_A4")
+        self.assertIn(b"ARM_A4\n", port.writes)
+        self.assertNotIn(b"READ_A4\n", port.writes)
+        self.assertTrue(client._uncertain_tx)
+        self.assertTrue(any("READ was not sent" in message and "reconnect" in message for message in output))
+        client.close()
+
+    def test_mem_commands_are_deferred_without_serial_transmission(self):
+        menu_lines = []
+        bridge.menu(menu_lines.append)
+        self.assertFalse(any("REQUEST_MEM" in line for line in menu_lines))
+
+        port = FakePort()
+        client, _, _ = self.start_client(port)
+        initial_writes = list(port.writes)
+        reason = (
+            "REQUEST_MEM is deferred pending protocol validation: target address map unverified for SME-105 "
+            "and parity byte 93 differs from generic rule (2293)"
+        )
+        for command in ("REQUEST_MEM", "ARM_MEM", "READ_MEM"):
+            with self.subTest(command=command):
+                with self.assertRaisesRegex(bridge.BridgeError, "deferred pending protocol validation") as raised:
+                    client.execute(command, lambda _: self.fail("deferred MEM must not request authorization"))
+                self.assertEqual(str(raised.exception), reason)
+        self.assertEqual(port.writes, initial_writes)
+        self.assertFalse(any(write in port.writes[len(initial_writes):] for write in (b"ARM_MEM\n", b"READ_MEM\n")))
+        client.close()
 
     def test_reported_gpio17_mismatch_locks_future_transmission(self):
         port = FakePort(mismatch=True)
@@ -607,6 +834,47 @@ class BridgeTerminalTests(unittest.TestCase):
         client.stop()
         client.close()
 
+    def test_mem_commands_consistently_deferred_and_non_sendable(self):
+        self.assertNotIn("REQUEST_MEM", bridge.COMMANDS)
+        self.assertNotIn("REQUEST_MEM", bridge.CAR_TRANSMIT)
+        self.assertNotIn("ARM_MEM", bridge.WIRE_COMMANDS)
+        self.assertNotIn("READ_MEM", bridge.WIRE_COMMANDS)
+
+    def test_mem_commands_rejected_with_bridge_error_and_no_serial_writes(self):
+        port = FakePort()
+        client, _, _ = self.start_client(port)
+        for cmd in ("REQUEST_MEM", "ARM_MEM", "READ_MEM"):
+            with self.subTest(command=cmd):
+                with self.assertRaises(bridge.BridgeError) as ctx:
+                    client.execute(cmd, lambda _: True)
+                self.assertIn("deferred pending protocol validation", str(ctx.exception))
+        self.assertFalse(any(b"MEM" in w for w in port.writes))
+        client.stop()
+        client.close()
+
+    def test_main_cli_argument_parser_rejects_request_mem(self):
+        with patch("sys.stderr", io.StringIO()):
+            with self.assertRaises(SystemExit):
+                bridge.main(
+                    ["--port", "FAKE", "--command", "REQUEST_MEM"],
+                    input_fn=lambda _: "NOT_USED",
+                    display=lambda _: None,
+                )
+
+    def test_interactive_cli_explains_mem_deferral_without_transmitting(self):
+        port = FakePort()
+        output = []
+        inputs = iter(("REQUEST_MEM", "ARM_MEM", "READ_MEM", "EXIT"))
+        with patch.object(bridge.serial, "Serial", return_value=port):
+            code = bridge.main(
+                ["--port", "FAKE", "--output-dir", str(self.folder), "--startup-seconds", "0"],
+                input_fn=lambda _: next(inputs),
+                display=output.append,
+            )
+        self.assertEqual(code, 0)
+        self.assertTrue(any("REQUEST_MEM is deferred pending protocol validation" in msg for msg in output))
+        self.assertFalse(any(b"MEM" in w for w in port.writes))
+
 
 
 # Public protocol rows copied from the archived 2026-11-06 09:06:52 capture.
@@ -719,6 +987,7 @@ class V24WitnessTests(unittest.TestCase):
             def write(self, data):
                 if data == b"READ_A4\n":
                     self.writes.append(data)
+                    self._set_status(b"armed", b"NONE")
                     rows = [r.replace(b"4196", b"26A4") for r in V24_PADS]
                     self._emit(V24_START+b"\n"+RX_LINES+b"\n".join(rows)+b"\n"+V24_END.replace(b"ro_bytes=34826", b"ro_bytes=3")+b"\n")
                     return len(data)

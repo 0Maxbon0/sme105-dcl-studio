@@ -7,7 +7,7 @@ import { wireKline } from "./kline-ui.js";
 import { createKoerGuide } from "./koer-guide.js";
 import { BleTransport, bluetoothAvailable } from "./ble.js";
 import { createController } from "./controller.js";
-import { APP_VERSION, createLineBuffer, DCL_PROBE_VARIANTS, DCL_BLOCKED_CANDIDATES } from "./protocol.js";
+import { APP_VERSION, createLineBuffer, COMMAND_CATALOGUE, DCL_PROBE_VARIANTS, DCL_BLOCKED_CANDIDATES } from "./protocol.js";
 import { createMockTransport, createReplay } from "./mock-transport.js";
 import { STR } from "./strings.js";
 import { createRecording, exportExperimentArchive, listRecordings, recordingBlob, recoverInterruptedRecordings } from "./recording.js";
@@ -87,7 +87,7 @@ function renderDclExplorer(state) {
   const run = document.getElementById("dcl-probe-run");
   const exportButton = document.getElementById("dcl-probe-export");
   if (run) run.disabled = !selected || state.link !== "ready" || state.phase !== "idle" || state.transport === "demo";
-  if (exportButton) exportButton.disabled = !probe;
+  if (exportButton) exportButton.disabled = !probe || state.phase !== "idle" || !!state.op;
   const summary = document.getElementById("dcl-probe-summary");
   const raw = document.getElementById("dcl-probe-raw");
   if (!probe) {
@@ -487,6 +487,11 @@ async function restoreLastDiagnosticResult() {
   if (detail.dclProbe) controller.state.lastDclProbe = {
     ...detail.dclProbe, variant: detail.variant, startedAt: detail.startedAt,
     completedAt: detail.completedAt, verdict: detail.verdict, rawLines: [],
+    recordingId: detail.recordingId || detail.dclProbe.recordingId || null,
+    result: {
+      variant: detail.variant, verdict: detail.verdict,
+      responseBytes: detail.dclProbe.responseBytes, completedAt: detail.completedAt,
+    },
   };
   controller.state.trust = detail.verdict?.valid ? "valid" : "untrusted";
   if (detail.variant === "KOER") Object.assign(koerGuide.state, { phase: "ENDED_UNVERIFIED", sessionId: detail.startedAt, prompt: null, verifiedSuccess: false });
@@ -693,40 +698,21 @@ function wire() {
     ask(`DCL discovery · ${spec.word}`, `Park the car, apply the parking brake, select neutral, switch ignition ON and keep the engine OFF. This sends exactly one fixed candidate request (${spec.word}); there is no opcode scan and no automatic retry. The source is an experimental third-party EEC-IV implementation, not proof that SME-105 supports it. Captured RO bytes may include local self-echo and will not be attributed to the ECU automatically.`, () => startVehicleOperation(variant));
   });
   document.getElementById("dcl-probe-export").addEventListener("click", async () => {
+    if (controller.state.phase !== "idle" || controller.state.op) {
+      controller.state.message = "Finish the active probe before exporting evidence.";
+      renderApp(controller.state);
+      return;
+    }
     const probe = controller.state.lastDclProbe;
-    const variant = probe?.variant || controller.state.lastSession?.variant || "probe";
+    const variant = probe?.variant || "probe";
     const stamp = new Date(probe?.completedAt || Date.now()).toISOString().replaceAll(":", "-");
-    const recId = probe?.recordingId || controller.state.lastSession?.recordingId || controller.state.archive?.id;
+    const recId = probe?.recordingId;
     try {
-      if (recId) {
-        const archive = await exportExperimentArchive(recId);
-        const fileName = `sme105-dcl-${variant}-${stamp}.zip`;
-        await saveOrShare(archive.blob, fileName);
-        controller.state.message = `Exported probe archive ${archive.fileName || fileName} (SHA-256 ${archive.archiveSha.slice(0, 8)}...)`;
-        renderApp(controller.state);
-        return;
-      }
-      if (probe?.rawLines?.length) {
-        const report = [
-          "SME105 DCL discovery probe — raw evidence",
-          `Variant: ${probe.variant}`,
-          `Command word: ${probe.word}`,
-          `Purpose: ${probe.description}`,
-          ...(probe.parityNote ? [`Parity note: ${probe.parityNote}`] : []),
-          `Source: ${probe.source} (${probe.sourceUrl})`,
-          `Bridge capture: ${probe.verdict?.status || probe.bridgeCaptureStatus || "UNKNOWN"}`,
-          `Raw RO bytes: ${probe.responseBytes ?? "unknown"}`,
-          "ECU origin/support: unverified",
-          "",
-          ...probe.rawLines,
-        ].join("\n") + "\n";
-        const fileName = `sme105-dcl-${variant}-${stamp}.txt`;
-        await saveOrShare(new Blob([report], { type: "text/plain" }), fileName);
-        controller.state.message = `Exported probe text evidence ${fileName}`;
-        renderApp(controller.state);
-        return;
-      }
-      controller.state.message = "No probe recording data available to export.";
+      if (!probe || !recId) throw new Error("No finalized recording is associated with this probe.");
+      const archive = await exportExperimentArchive(recId);
+      const fileName = `sme105-dcl-${variant}-${stamp}.zip`;
+      await saveOrShare(archive.blob, fileName);
+      controller.state.message = `Exported probe archive ${fileName} (SHA-256 ${archive.archiveSha.slice(0, 8)}...)`;
       renderApp(controller.state);
     } catch (error) {
       controller.state.message = `DCL probe export failed: ${error.message}`;
@@ -753,9 +739,14 @@ function wire() {
   document.getElementById("clear-btn").addEventListener("click", () => ask(
     STR.confirmClearTitle, STR.confirmClearBody, () => startVehicleOperation("CLR"),
   ));
-  document.getElementById("mem-btn").addEventListener("click", () => ask(
-    STR.confirmMemTitle, STR.confirmMemBody, () => startVehicleOperation("MEM"),
-  ));
+  document.getElementById("mem-btn").addEventListener("click", () => {
+    if (COMMAND_CATALOGUE.MEM_READ.sendable === false) {
+      controller.state.message = COMMAND_CATALOGUE.MEM_READ.blockedReason;
+      renderApp(controller.state);
+      return;
+    }
+    ask(STR.confirmMemTitle, STR.confirmMemBody, () => startVehicleOperation("MEM"));
+  });
   document.getElementById("reboot-btn").addEventListener("click", () => ask(
     STR.confirmRebootTitle, STR.confirmRebootBody, () => controller.requestReboot(),
   ));

@@ -112,7 +112,7 @@ Do not automatically fall back from `260E` to `26A4`, or from `253E` to
 | `READ_KOEO`, `READ_KOER` | `01B0 FF5F 253E 00A0` | Self-test; not passive |
 | `READ_CLR` | `01B0 FF5F 0291 00A0` | DTC clear; now single-shot, then capture |
 | `READ_LIVE*`, `READ_ALL` | `4196` map-load sequence then `21F6` PID values | Existing live-data map/profile behavior |
-| `READ_MEM` | Local candidate `42F3` / `22D3` | Separate memory-read hypothesis; not in A–R table |
+| `ARM_MEM` / `READ_MEM` | Local candidate `42F3` / `22D3` | **Deferred / not-sendable**; target address map is unverified and `22D3` parity byte `93` differs from generic result `2293`. |
 | `READ_OFF` | `80CE` with `7F20` qualifier | Existing go-offline candidate |
 
 ## Deferred / not-sendable commands
@@ -129,6 +129,7 @@ the corresponding deferred host names and returns
 - `42A6`: transmit/load DMR map; the source's map payload is not validated for SME-105.
 - `411E`: stop PID-value flow; requires a verified live-mode sequence.
 - `2594`: alternate KOEO self-test; keep separate from the current `253E` test.
+- `ARM_MEM` / `READ_MEM`: memory candidate `42F3` / `22D3`; the target address map and sequence are unverified, and parity byte `93` differs from generic result `2293`. Firmware denies both before DPS transmission.
 - `FF5F` and `00A0`: envelope idle/trailer words, not standalone discovery commands.
 
 No arbitrary hex entry, all-byte sweep, or brute-force opcode scan is provided.

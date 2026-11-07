@@ -10,6 +10,8 @@
 
 **Spec:** USER_REQUEST and `docs/wiring-safety.md`, `docs/SME105-DCL-command-discovery-2026-11-07.md`, `docs/SME105-DCL-protocol-structure-analysis-2026-11-07.md`.
 
+> **Superseding MEM disposition (2026-11-07 final audit):** This is a historical implementation plan. Any older step below that asks to add `REQUEST_MEM` to `COMMANDS`, `WIRE_COMMANDS`, or `CAR_TRANSMIT`, or to expose an executable MEM profile, is superseded. Preserve `42F3` / `22D3` only as an experimental hypothesis; `REQUEST_MEM`, `ARM_MEM`, and `READ_MEM` must remain deferred and be denied before serial/DPS transmission. No vehicle MEM experiment is authorized.
+
 ## Global Constraints
 
 - Target vehicle: 1998 Ford Escort 1.6 Zetec-E, EEC-IV, SME-105 ECU (`97AB-12A650-KA`).

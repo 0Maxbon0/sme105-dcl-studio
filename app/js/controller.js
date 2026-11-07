@@ -174,7 +174,13 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
         completedAt: state.lastSession.completedAt,
         verdict: state.lastSession.verdict,
         rawLines: latestDclCaptureLines(state.log),
-        recordingId: state.lastSession.recordingId || state.archive?.id || null,
+        recordingId: state.archive?.id || null,
+        result: {
+          variant: state.lastSession.variant,
+          verdict: state.lastSession.verdict,
+          responseBytes: state.lastSession.dclProbe.responseBytes,
+          completedAt: state.lastSession.completedAt,
+        },
       };
     }
     if (noResponseFromStart(session, state.lastSession, state.op?.operatorStop, override)) {

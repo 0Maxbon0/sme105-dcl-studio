@@ -2,6 +2,9 @@
 import { rowsToCsv } from "./pids.js";
 
 const HEADER = rowsToCsv([]);
+const activeRecordings = new Map();
+const WRITER_HEARTBEAT_MS = 5000;
+const WRITER_LEASE_MS = 15000;
 let database;
 function db() {
   if (!database) database = new Promise((resolve, reject) => {
@@ -58,7 +61,12 @@ export async function createRecording(variant, onError = () => {}, unitSystem = 
   // The browser decides whether persistence can be granted. No data is deleted.
   const persistent = await navigator.storage?.persist?.().catch(() => false) || false;
   const id = new Date().toISOString() + "-" + crypto.randomUUID();
-  const metadata = { id, sessionId: id, variant, persistent, unitSystem, started: Date.now() };
+  const writerToken = crypto.randomUUID();
+  const fencingGen = 1;
+  const metadata = {
+    id, sessionId: id, variant, persistent, unitSystem, started: Date.now(),
+    writerToken, writerHeartbeat: Date.now(), fencingGen,
+  };
   await new Promise((resolve, reject) => {
     const transaction = database.transaction("captures", "readwrite");
     transaction.objectStore("captures").add(metadata);
@@ -66,7 +74,9 @@ export async function createRecording(variant, onError = () => {}, unitSystem = 
     transaction.onabort = () => reject(transaction.error);
   });
   let raw = [], csv = [], pendingBytes = 0, seq = 0, failure = null;
-  let flushing = false, closed = false, finishTask = null;
+  let flushing = false, closed = false, finalizing = false, finishPromise = null, fenced = false;
+  let fenceError = null;
+  let inFlightHeartbeat = null, heartbeatStopped = false;
   let sampleCount = 0, duration = 0;
   const queue = [];
   let idle = Promise.resolve();
@@ -83,20 +93,75 @@ export async function createRecording(variant, onError = () => {}, unitSystem = 
   }
   function flush() {
     enqueue();
-    if (flushing || failure || !queue.length) return idle;
+    if (flushing || failure || fenced || !queue.length) return idle;
     flushing = true;
     idle = (async () => {
-      while (queue.length && !failure) {
+      while (queue.length && !failure && !fenced) {
         const chunk = queue[0];
         await new Promise(resolve => {
-          const transaction = database.transaction("chunks", "readwrite");
-          transaction.objectStore("chunks").add(chunk);
+          const transaction = database.transaction(["captures", "chunks"], "readwrite");
+          const captures = transaction.objectStore("captures");
+          const request = captures.get(id);
+          request.onsuccess = () => {
+            const capture = request.result;
+            if (!capture || capture.ended || capture.writerToken !== writerToken ||
+                capture.fencingGen !== fencingGen) {
+              fenced = true;
+              fenceError = new Error("Recording writer was fenced; capture is no longer writable");
+              transaction.abort();
+              return;
+            }
+            transaction.objectStore("chunks").add(chunk);
+          };
           transaction.oncomplete = () => { queue.shift(); resolve(); };
-          transaction.onabort = () => { fail(transaction.error); resolve(); };
+          transaction.onabort = transaction.onerror = () => {
+            if (fenced) fail(fenceError);
+            else fail(transaction.error || new Error("Recording chunk write failed"));
+            resolve();
+          };
         });
       }
     })().catch(fail).finally(() => { flushing = false; });
     return idle;
+  }
+  function heartbeat() {
+    if (fenced || heartbeatStopped || (closed && !finalizing)) return Promise.resolve();
+    let settleHeartbeat;
+    const heartbeatPromise = new Promise(resolve => { settleHeartbeat = resolve; });
+    inFlightHeartbeat = inFlightHeartbeat
+      ? inFlightHeartbeat.then(() => heartbeatPromise, () => heartbeatPromise)
+      : heartbeatPromise;
+
+    try {
+      const transaction = database.transaction("captures", "readwrite");
+      const store = transaction.objectStore("captures");
+      const request = store.get(id);
+      request.onsuccess = () => {
+        if (heartbeatStopped) return;
+        const capture = request.result;
+        if (!capture || capture.ended || capture.writerToken !== writerToken ||
+            capture.fencingGen !== fencingGen) {
+          fenced = true;
+          fenceError = new Error("Recording writer was fenced; capture is no longer writable");
+          heartbeatStopped = true;
+          clearInterval(heartbeatTimer);
+          fail(fenceError);
+          return;
+        }
+        store.put({ ...capture, writerHeartbeat: Date.now() });
+      };
+      transaction.oncomplete = () => settleHeartbeat();
+      transaction.onabort = transaction.onerror = () => {
+        if (!fenced && !heartbeatStopped && (!closed || finalizing)) {
+          fail(transaction.error || new Error("Recording heartbeat failed"));
+        }
+        settleHeartbeat();
+      };
+    } catch (err) {
+      if (!fenced && !heartbeatStopped && (!closed || finalizing)) fail(err);
+      settleHeartbeat();
+    }
+    return heartbeatPromise;
   }
   function checkBacklog(bytes) {
     pendingBytes += bytes;
@@ -104,31 +169,79 @@ export async function createRecording(variant, onError = () => {}, unitSystem = 
       fail(new Error("Recording storage is too slow; capture stopped to preserve queued data"));
   }
   const timer = setInterval(flush, 1000);
-  return {
+  const heartbeatTimer = setInterval(heartbeat, WRITER_HEARTBEAT_MS);
+  const recording = {
     ...metadata,
     get error() { return failure?.message || ""; },
     line(line) {
-      if (closed) return;
+      if (closed || fenced) return;
       const verbatimLine = String(line);
       raw.push(verbatimLine + "\n"); checkBacklog(verbatimLine.length + 1);
     },
     sample(sample) {
-      if (closed) return;
+      if (closed || fenced) return;
       sampleCount++; duration = Math.max(duration, sample.t || 0);
       const line = rowsToCsv([sample], { unitSystem }).slice(HEADER.length);
       csv.push(line); checkBacklog(line.length);
     },
     finish(verdict, outcomeDetails = {}) {
-      if (finishTask) return finishTask;
-      closed = true; clearInterval(timer);
-      finishTask = (async () => {
-        await flush();
-        // Preserve a final validity record beside the original received evidence.
-        const transaction = database.transaction("captures", "readwrite");
-        transaction.objectStore("captures").put({ ...metadata, sampleCount, duration, verdict: failure ? { ...verdict, valid: false, status: "INCOMPLETE", reasons: [...(verdict.reasons || []), failure.message] } : verdict, ...outcomeDetails, ...(failure ? { outcome: "STORAGE_FAILURE" } : {}), error: failure?.message || "", ended: Date.now() });
-        await new Promise((resolve, reject) => { transaction.oncomplete = resolve; transaction.onabort = transaction.onerror = () => reject(transaction.error || new Error("Recording metadata write failed")); });
+      if (finishPromise) return finishPromise;
+      finalizing = true;
+      closed = true;
+      clearInterval(timer);
+      finishPromise = (async () => {
+        try {
+          await flush();
+          // Stop new heartbeat triggers once final chunk flushing is complete.
+          heartbeatStopped = true;
+          clearInterval(heartbeatTimer);
+
+          // Wait for any heartbeat currently in flight to settle before final metadata commit.
+          if (inFlightHeartbeat) {
+            await inFlightHeartbeat;
+          }
+
+          if (fenced) throw fenceError || new Error("Recording writer was fenced; capture is no longer writable");
+          // Preserve a final validity record beside the original received evidence.
+          const transaction = database.transaction("captures", "readwrite");
+          const store = transaction.objectStore("captures");
+          const request = store.get(id);
+          request.onsuccess = () => {
+            const capture = request.result;
+            if (!capture || capture.ended || capture.writerToken !== writerToken ||
+                capture.fencingGen !== fencingGen) {
+              fenced = true;
+              fenceError = new Error("Recording writer was fenced; capture cannot be finalized");
+              transaction.abort();
+              return;
+            }
+            const finalVerdict = failure
+              ? { ...verdict, valid: false, status: "INCOMPLETE", reasons: [...(verdict.reasons || []), failure.message] }
+              : verdict;
+            store.put({
+              ...capture, ...metadata, sampleCount, duration, verdict: finalVerdict,
+              ...outcomeDetails, ...(failure ? { outcome: "STORAGE_FAILURE" } : {}),
+              error: failure?.message || "", ended: Date.now(), writerToken: null,
+              writerHeartbeat: null, fencingGen,
+            });
+          };
+          await new Promise((resolve, reject) => {
+            transaction.oncomplete = resolve;
+            transaction.onabort = transaction.onerror = () => reject(
+              fenceError || transaction.error || new Error("Recording metadata write failed"),
+            );
+          });
+        } finally {
+          heartbeatStopped = true;
+          clearInterval(heartbeatTimer);
+          finalizing = false;
+        }
       })();
-      return finishTask;
+      finishPromise.then(
+        () => { if (activeRecordings.get(id) === activeEntry) activeRecordings.delete(id); },
+        () => { if (activeRecordings.get(id) === activeEntry) activeRecordings.delete(id); },
+      );
+      return finishPromise;
     },
     async export(kind) {
       await flush();
@@ -138,6 +251,9 @@ export async function createRecording(variant, onError = () => {}, unitSystem = 
     },
     get closed() { return closed; },
   };
+  const activeEntry = { recording, get finishPromise() { return finishPromise; } };
+  activeRecordings.set(id, activeEntry);
+  return recording;
 }
 
 // Resolve once in a single transaction; raw chunks and the integrity verdict never change.
@@ -172,10 +288,16 @@ export async function recoverInterruptedRecordings() {
       const cursor = request.result;
       if (!cursor) return;
       const capture = cursor.value;
-      if (!capture.ended) {
+      const heartbeat = Number(capture.writerHeartbeat);
+      const leaseFresh = Number.isFinite(heartbeat) && Date.now() - heartbeat < WRITER_LEASE_MS;
+      if (!capture.ended && !leaseFresh) {
         const updated = {
           ...capture,
+          fencingGen: (Number(capture.fencingGen) || 0) + 1,
+          writerToken: null,
+          writerHeartbeat: null,
           ended: Date.now(),
+          recovered: true,
           verdict: {
             valid: false,
             status: "INCOMPLETE",
@@ -208,6 +330,10 @@ async function getJSZip() {
 
 /** Build an independent export archive for a single durable recording with verified SHA256SUMS. */
 export async function exportExperimentArchive(id) {
+  const active = activeRecordings.get(id);
+  if (active?.finishPromise) await active.finishPromise;
+  else if (active) throw new Error("Cannot export active or unfinalized recording " + id);
+
   const database = await db();
   const capture = await new Promise((resolve, reject) => {
     const tx = database.transaction("captures", "readonly");
@@ -216,9 +342,12 @@ export async function exportExperimentArchive(id) {
     req.onerror = () => reject(req.error);
   });
   if (!capture) throw new Error(`Recording ${id} not found`);
+  if (!capture.ended) throw new Error("Cannot export active or unfinalized recording " + id);
+  if (!capture.verdict) throw new Error("Cannot export recording without finalized verdict " + id);
 
   const rawBlob = await recordingBlob(id, "raw");
-  const rawText = await rawBlob.text();
+  const rawBytes = new Uint8Array(await rawBlob.arrayBuffer());
+  const rawText = new TextDecoder().decode(rawBytes);
 
   const lines = rawText.split("\n");
   const padLines = [];
@@ -242,7 +371,7 @@ export async function exportExperimentArchive(id) {
     if (line.startsWith("RX ")) {
       const match = /^RX t_us=(\d+) byte=([0-9A-Fa-f]{2})/.exec(line);
       if (match) {
-        const tUs = match[1];
+        const tUs = parseInt(match[1], 10) >>> 0;
         const hex = match[2].toUpperCase();
         roBytesList.push(parseInt(hex, 16));
         roTimestampsList.push(`${roIndex++},${tUs},${hex}`);
@@ -256,8 +385,9 @@ export async function exportExperimentArchive(id) {
         for (let i = 0; i < dataHex.length; i += 2) {
           const byteVal = parseInt(dataHex.slice(i, i + 2), 16);
           const dt = dts[i / 2] || 0;
+          const tUs = (baseUs + dt) >>> 0;
           roBytesList.push(byteVal);
-          roTimestampsList.push(`${roIndex++},${baseUs + dt},${dataHex.slice(i, i + 2).toUpperCase()}`);
+          roTimestampsList.push(`${roIndex++},${tUs},${dataHex.slice(i, i + 2).toUpperCase()}`);
         }
       }
     }
@@ -271,7 +401,7 @@ export async function exportExperimentArchive(id) {
 
   const files = new Map();
   files.set("metadata.json", new TextEncoder().encode(metadataText));
-  files.set("raw.txt", new TextEncoder().encode(rawText));
+  files.set("raw.txt", rawBytes);
   files.set("events.jsonl", new TextEncoder().encode(eventsText));
   files.set("ro.bin", roBin);
   files.set("ro-timestamps.csv", new TextEncoder().encode(roTimestampsText));
