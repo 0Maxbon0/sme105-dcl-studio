@@ -7,7 +7,7 @@ import { wireKline } from "./kline-ui.js";
 import { createKoerGuide } from "./koer-guide.js";
 import { BleTransport, bluetoothAvailable } from "./ble.js";
 import { createController, candidateRequiresOperatorConfirmation, candidateRequiredStateText } from "./controller.js";
-import { APP_VERSION, createLineBuffer, COMMAND_CATALOGUE, DCL_PROBE_VARIANTS, DCL_BLOCKED_CANDIDATES, EXPERIMENT_CATALOGUE, firmwareCompatibility } from "./protocol.js";
+import { APP_VERSION, createLineBuffer, COMMAND_CATALOGUE, DCL_PROBE_VARIANTS, DCL_BLOCKED_CANDIDATES, EXPERIMENT_CATALOGUE, MEM_EXPERIMENTS, firmwareCompatibility } from "./protocol.js";
 import { createMockTransport, createReplay } from "./mock-transport.js";
 import { STR } from "./strings.js";
 import { createRecording, exportExperimentArchive, exportDiscoveryPassArchive, exportAllExperimentsArchive, listRecordings, recordingBlob, recoverInterruptedRecordings } from "./recording.js";
@@ -165,6 +165,10 @@ function demoKey() {
 function simulationSelected() {
   return controller.state.transport === "demo" ||
     (controller.state.link !== "ready" && demoEnabled());
+}
+
+function isMemCandidate(candidate) {
+  return MEM_EXPERIMENTS.some(experiment => experiment.id === candidate?.variantKey || experiment.id === candidate?.id);
 }
 
 async function refreshKoerJournal() {
@@ -517,6 +521,7 @@ async function simulateCandidate(candidate, metadata = {}) {
 async function runSingleDclCandidate(candidateId) {
   const candidate = Object.values(EXPERIMENT_CATALOGUE).find(item => item.id === candidateId);
   if (!candidate?.sendable) return;
+  if (isMemCandidate(candidate)) return runMemMatrix(candidate.variantKey);
   const demo = simulationSelected();
   const connected = controller.state.link === "ready";
   const compatibility = firmwareCompatibility(candidate, demo ? null : controller.state.status);
@@ -558,8 +563,16 @@ async function runSingleDclCandidate(candidateId) {
 
 async function runSelectedCandidateBatch(candidateIds) {
   if (controller.state.candidateBatch?.status === "running") return;
-  const candidates = candidateIds.map(id => Object.values(EXPERIMENT_CATALOGUE).find(item => item.id === id)).filter(item => item?.sendable && item.variantKey);
-  if (!candidates.length) return;
+  const selected = candidateIds.map(id => Object.values(EXPERIMENT_CATALOGUE).find(item => item.id === id)).filter(item => item?.sendable && item.variantKey);
+  const memCandidates = selected.filter(isMemCandidate);
+  const candidates = selected.filter(item => !isMemCandidate(item));
+  if (memCandidates.length) {
+    controller.state.message = "MEM experiments are specialized reverse-engineering profiles and cannot be run in generic batches. Run individually or use the MEM Comparison workflow.";
+  }
+  if (!candidates.length) {
+    if (memCandidates.length) renderApp(controller.state);
+    return;
+  }
   const demo = simulationSelected();
   const connected = controller.state.link === "ready";
   if (!connected && !demo) {

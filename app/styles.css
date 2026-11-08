@@ -350,14 +350,11 @@ details.dcl-command-tech-meta summary { font-size: .78rem; cursor: pointer; colo
   .recording-panel.dcl-discovery-panel .recording-export-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dcl-run-bar { grid-template-columns: minmax(160px, .75fr) minmax(0, 1.25fr); }
   .dcl-batch-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .dcl-batch-actions #dcl-experiment-export { grid-column: 1 / -1; }
 }
 @media (min-width: 760px) {
   .lab-workflows { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .lab-workflows > .lab-area-heading { grid-column: 1 / -1; }
   .lab-workflows > .lab-workflow-card:last-child { grid-column: 1 / -1; }
-  .dcl-batch-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .dcl-batch-actions #dcl-experiment-export { grid-column: auto; }
   .dcl-detail-row { grid-template-columns: minmax(110px, .35fr) minmax(0, 1fr); }
 }
 @media (min-width: 1000px) {

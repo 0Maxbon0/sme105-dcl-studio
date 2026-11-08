@@ -248,6 +248,9 @@ function getVehicleConditions(item) {
   };
 }
 
+const isMemCandidate = item => MEM_EXPERIMENTS.some(e => e.id === item?.variantKey || e.id === item?.id);
+const isBatchableCandidate = item => !item?.runnerKey && !!item?.variantKey && !isMemCandidate(item);
+
 function selectedCommand(state, item) {
   const title = $("dcl-command-detail-title");
   const body = $("dcl-command-detail-body");
@@ -271,8 +274,14 @@ function selectedCommand(state, item) {
   `;
   body.append(condCard);
 
-  const isBatchable = !item.runnerKey && !!item.variantKey;
-  if (dclMultiSelectActive && isBatchable) {
+  const isMem = isMemCandidate(item);
+  if (dclMultiSelectActive && isMem) {
+    const note = document.createElement("p");
+    note.className = "help dcl-mem-batch-note";
+    note.textContent = "MEM experiments are specialized reverse-engineering profiles and cannot be run in generic batches. Run individually or use the MEM Comparison workflow.";
+    body.append(note);
+  }
+  if (dclMultiSelectActive && isBatchableCandidate(item)) {
     const selection = document.createElement("label");
     selection.className = "check dcl-candidate-select";
     const checkbox = document.createElement("input");
@@ -331,7 +340,6 @@ function canRunDclCandidate(item, state = dclState) {
 
 function updateCandidateBatchControls() {
   const runAction = $("dcl-run-action");
-  const runSelected = $("dcl-run-selected");
   const batchOrder = $("dcl-batch-order");
   const toggle = $("dcl-toggle-multiselect");
   if (toggle) {
@@ -342,9 +350,9 @@ function updateCandidateBatchControls() {
   let actionText = "Run candidate";
   let actionDisabled = true;
   if (dclMultiSelectActive) {
-    const selected = [...selectedDclCandidates].map(id => Object.values(EXPERIMENT_CATALOGUE).find(item => item.id === id)).filter(Boolean);
-    const canRunBatch = selected.length > 0 && selected.every(item => !item.runnerKey && !!item.variantKey && canRunDclCandidate(item));
-    actionText = `Run selected (${selectedDclCandidates.size})`;
+    const selected = [...selectedDclCandidates].map(id => Object.values(EXPERIMENT_CATALOGUE).find(item => item.id === id)).filter(isBatchableCandidate);
+    const canRunBatch = selected.length > 0 && selected.every(item => canRunDclCandidate(item));
+    actionText = `Run selected (${selected.length})`;
     actionDisabled = !canRunBatch;
     if (batchOrder) {
       batchOrder.hidden = false;
@@ -366,16 +374,13 @@ function updateCandidateBatchControls() {
     runAction.textContent = actionText;
     runAction.disabled = actionDisabled;
   }
-  if (runSelected) {
-    runSelected.textContent = actionText;
-    runSelected.disabled = actionDisabled;
-  }
 }
 
 function dispatchSelectedDclCandidates() {
-  const button = $("dcl-run-selected");
-  if (!dclMultiSelectActive || button?.disabled || !selectedDclCandidates.size) return;
-  document.dispatchEvent(new document.defaultView.CustomEvent("dcl:run-selected", { detail: { candidateIds: [...selectedDclCandidates] } }));
+  const button = $("dcl-run-action");
+  const candidateIds = [...selectedDclCandidates];
+  if (!dclMultiSelectActive || button?.disabled || !candidateIds.length) return;
+  document.dispatchEvent(new document.defaultView.CustomEvent("dcl:run-selected", { detail: { candidateIds } }));
 }
 
 function dispatchDclRunAction() {
@@ -709,7 +714,7 @@ export function renderDclCommandExplorer(state) {
       button.append(codeWrap, textWrap);
       button.addEventListener("click", () => {
         dclSelectedId = item.id;
-        if (dclMultiSelectActive && !item.runnerKey && item.variantKey) {
+        if (dclMultiSelectActive && isBatchableCandidate(item)) {
           if (selectedDclCandidates.has(item.id)) selectedDclCandidates.delete(item.id);
           else selectedDclCandidates.add(item.id);
         }
@@ -722,12 +727,15 @@ export function renderDclCommandExplorer(state) {
   }
   [...list.children].forEach((button, index) => {
     const item = filtered[index];
-    const isSelected = dclMultiSelectActive ? selectedDclCandidates.has(item?.id) : item?.id === dclSelectedId;
+    const isSelected = dclMultiSelectActive
+      ? (isMemCandidate(item) ? item?.id === dclSelectedId : selectedDclCandidates.has(item?.id))
+      : item?.id === dclSelectedId;
     button.setAttribute("aria-pressed", String(isSelected));
     button.classList.toggle("is-selected", isSelected);
     const selectionState = button.querySelector(".dcl-card-selection");
     if (selectionState) selectionState.textContent = !dclMultiSelectActive ? ""
-      : !item?.runnerKey && item?.variantKey ? (selectedDclCandidates.has(item.id) ? "Selected" : "Select for batch")
+      : isMemCandidate(item) ? "MEM experiment · Run individually"
+      : isBatchableCandidate(item) ? (selectedDclCandidates.has(item.id) ? "Selected" : "Select for batch")
       : "Guided only";
   });
   const selected = filtered.find(item => item.id === dclSelectedId);
@@ -753,7 +761,6 @@ export function wireDclCommandExplorer() {
     renderDclCommandExplorer(dclState);
   });
   $("dcl-run-action")?.addEventListener("click", dispatchDclRunAction);
-  $("dcl-run-selected")?.addEventListener("click", dispatchDclRunAction);
   $("mem-run-all")?.addEventListener("click", () => document.dispatchEvent(new document.defaultView.CustomEvent("dcl:run-mem-all")));
   $("mem-stop")?.addEventListener("click", () => document.dispatchEvent(new document.defaultView.CustomEvent("dcl:stop-mem")));
   $("dcl-experiment-export")?.addEventListener("click", () => document.dispatchEvent(new document.defaultView.CustomEvent("dcl:export-experiments")));

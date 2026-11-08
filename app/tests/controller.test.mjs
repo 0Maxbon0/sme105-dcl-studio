@@ -319,3 +319,40 @@ test("vehicle preflight retains the matching operation recording archive", () =>
   assert.equal(controller.requestVehicle("DMR").ok, true);
   assert.equal(controller.state.archive, archive);
 });
+
+test("one live MEM experiment creates one archive and appends one comparison result", async () => {
+  const { controller, sent } = harness();
+  identify(controller, { pass: "1" });
+  let archiveCreations = 0;
+  let archiveFinishes = 0;
+  const outcome = controller.runMemExperiment("MEM", {
+    async createArchive(variant, candidate, metadata) {
+      archiveCreations += 1;
+      assert.equal(variant, "MEM");
+      assert.equal(candidate.variantKey, "MEM");
+      assert.equal(metadata.experimentId, "MEM");
+      return {
+        id: "capture-mem-1", variant, closed: false,
+        line() {},
+        finish() { archiveFinishes += 1; this.closed = true; return Promise.resolve(); },
+      };
+    },
+  });
+  await Promise.resolve();
+  assert.equal(sent.at(-1), "STATUS", "The specialized runner starts with bridge preflight");
+  controller.handleLine("STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fw=27 pad_evidence=2 out_overflow=0 transport_lost=0 usb_skipped=0 fault=0");
+  assert.equal(sent.at(-1), "ARM_MEM");
+  controller.handleLine("EVENT read_armed variant=MEM valid_ms=15000 no_tx_yet=1");
+  assert.equal(sent.at(-1), "READ_MEM");
+  controller.handleLine("EVENT session=READ_CANDIDATE epoch=3 boot_id=77");
+  controller.handleLine("END reason=16 ro_bytes=0 ro_lost=0 uart_errors=0 evidence=2 epoch=3 boot_id=77 witness_started=4 witness_verified=4 pad_verified=4 words_started=4 DE=LOW");
+
+  const result = await outcome;
+  assert.equal(result.ok, true);
+  assert.equal(archiveCreations, 1, "One physical run creates one recording archive");
+  assert.equal(archiveFinishes, 1, "One physical run finalizes one archive");
+  assert.equal(controller.state.memMatrix.results.length, 1);
+  assert.equal(controller.state.memMatrix.results[0].experimentId, "MEM");
+  assert.equal(controller.state.memMatrix.results[0].recordingId, "capture-mem-1");
+  assert.deepEqual(sent.filter(command => command === "ARM_MEM" || command === "READ_MEM"), ["ARM_MEM", "READ_MEM"]);
+});

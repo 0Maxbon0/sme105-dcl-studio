@@ -135,6 +135,12 @@ test("Single selection updates the contextual run action and dispatches the sele
     wireDclCommandExplorer();
     renderDclCommandExplorer(state);
 
+    assert.equal(document.getElementById("dcl-run-selected"), null, "The duplicate batch Run button must not exist");
+    const candidateRunButtons = document.querySelectorAll("#view-lab .dcl-runner-panel .dcl-run-bar button.primary");
+    assert.equal(candidateRunButtons.length, 1, "The candidate runner must have exactly one primary Run button");
+    assert.equal(candidateRunButtons[0].id, "dcl-run-action");
+    assert.equal(candidateRunButtons[0].hidden, false, "The canonical candidate Run button remains visible");
+
     const toggle = document.getElementById("dcl-toggle-multiselect");
     assert.equal(toggle.getAttribute("aria-pressed"), "false");
     assert.equal(toggle.textContent, "Select multiple");
@@ -158,10 +164,10 @@ test("Single selection updates the contextual run action and dispatches the sele
     state.link = "ready";
     renderDclCommandExplorer(state);
 
-    let dispatched = null;
-    document.addEventListener("dcl:run-candidate", event => { dispatched = event.detail.candidateId; }, { once: true });
+    const dispatched = [];
+    document.addEventListener("dcl:run-candidate", event => { dispatched.push(event.detail.candidateId); });
     runAction.click();
-    assert.equal(dispatched, candidate.id);
+    assert.deepEqual(dispatched, [candidate.id], "Single selection dispatches exactly one candidate through the canonical action");
 
     const category = document.getElementById("dcl-command-category");
     search.value = "";
@@ -240,22 +246,15 @@ test("Multi-select mode shows the execution order and dispatches the selected ba
     document.querySelector("#dcl-command-list .dcl-command-card").click();
 
     const runAction = document.getElementById("dcl-run-action");
-    const runSelected = document.getElementById("dcl-run-selected");
     assert.equal(runAction.textContent, "Run selected (2)");
     assert.equal(runAction.disabled, false);
-    assert.equal(runSelected.textContent, runAction.textContent, "Legacy batch control mirrors the unified run action");
-    assert.equal(runSelected.disabled, runAction.disabled);
     assert.match(document.getElementById("dcl-batch-order").textContent, /Order: 1\. 004E \(PIDMAP_ALT\) → 2\. 005E \(PIDMAP\)/);
     assert.equal(document.querySelector("#dcl-command-list .dcl-command-card").getAttribute("aria-pressed"), "true");
 
-    let dispatched = null;
-    document.addEventListener("dcl:run-selected", event => { dispatched = event.detail.candidateIds; }, { once: true });
+    const dispatched = [];
+    document.addEventListener("dcl:run-selected", event => { dispatched.push(event.detail.candidateIds); });
     runAction.click();
-    assert.deepEqual(dispatched, ["PIDMAP_ALT", "PIDMAP"]);
-    let legacyDispatched = null;
-    document.addEventListener("dcl:run-selected", event => { legacyDispatched = event.detail.candidateIds; }, { once: true });
-    runSelected.click();
-    assert.deepEqual(legacyDispatched, dispatched, "The legacy batch control dispatches the same selected run action");
+    assert.deepEqual(dispatched, [["PIDMAP_ALT", "PIDMAP"]], "Canonical action dispatches the exact ordered batch once");
 
     toggle.click();
     assert.equal(toggle.textContent, "Select multiple");
@@ -263,6 +262,38 @@ test("Multi-select mode shows the execution order and dispatches the selected ba
     assert.equal(document.getElementById("dcl-batch-order").hidden, true);
     const primaryPidMap = Object.values(EXPERIMENT_CATALOGUE).find(item => item.id === "PIDMAP");
     assert.equal(document.getElementById("dcl-run-action").textContent, `Run ${primaryPidMap.name} (${primaryPidMap.commandWord})`);
+  } finally {
+    dom.window.close();
+    globalThis.window = oldWindow;
+    globalThis.document = oldDocument;
+  }
+});
+
+test("MEM candidates can be inspected but are excluded from generic multi-select batches", async () => {
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+  const dom = new JSDOM(html, { url: "https://dcl-studio.test/" });
+  const oldWindow = globalThis.window, oldDocument = globalThis.document;
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  try {
+    const state = { link: "ready", phase: "idle", transport: "ble", status: { fields: { fw: "27" } } };
+    wireDclCommandExplorer();
+    renderDclCommandExplorer(state);
+    document.getElementById("dcl-toggle-multiselect").click();
+    const search = document.getElementById("dcl-command-search");
+
+    for (const candidateId of ["MEMORY_READ", "MEM_OFF0", "MEM_SINGLE", "MEM_PARITY"]) {
+      search.value = candidateId;
+      search.dispatchEvent(new window.Event("input"));
+      const card = document.querySelector("#dcl-command-list .dcl-command-card");
+      assert.ok(card, `${candidateId} must remain available for inspection`);
+      card.click();
+      assert.match(card.textContent, /MEM experiment · Run individually/);
+      assert.match(document.getElementById("dcl-command-detail-body").textContent, /cannot be run in generic batches.*Run individually or use the MEM Comparison workflow/);
+      assert.equal(document.querySelector("#dcl-command-detail-body input[type=checkbox]"), null, `${candidateId} must not show Include in batch`);
+      assert.equal(document.getElementById("dcl-run-action").textContent, "Run selected (0)");
+      assert.equal(document.getElementById("dcl-run-action").disabled, true);
+    }
   } finally {
     dom.window.close();
     globalThis.window = oldWindow;
