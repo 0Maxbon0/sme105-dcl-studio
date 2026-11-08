@@ -6,10 +6,13 @@ import {
   DCL_PROBE_VARIANTS,
   DCL_BLOCKED_CANDIDATES,
   EXPERIMENT_CATALOGUE,
+  PROTOCOL_FRAMING_REFERENCE,
   VARIANTS,
+  dclVParityByte,
   chunkBytes,
   createLineBuffer,
   encodeCommand,
+  firmwareCompatibility,
   parseLine,
   reasonText,
   statusSafe,
@@ -81,27 +84,107 @@ test("malformed RX cannot enter the decoder as a valid byte", () => {
   assert.equal(parseLine("RX t_us=4294967295 byte=FF").byte, 255);
 });
 
+test("generic DCL VPARITY calculates command bytes and exposes source-literal mismatches", () => {
+  assert.equal(dclVParityByte(0x00, 0x0e), 0x4e);
+  assert.equal(dclVParityByte(0x22, 0x03), 0x93);
+  assert.equal(dclVParityByte(0x03, 0x01), 0x81);
+  assert.equal(dclVParityByte(0x42, 0x03), 0xf3);
+});
 
-test("DCL discovery exposes only fixed, source-pinned read candidates", () => {
-  assert.match(DCL_PROBE_VARIANTS.PIDMAP.parityNote, /unresolved source-table mismatch.*generic VPARITY.*004E/i);
+
+test("DCL catalogue variants expose fixed command words and their sendability", () => {
+  assert.match(DCL_PROBE_VARIANTS.PIDMAP.parityNote, /published 005E.*generic VPARITY.*004E/i);
   assert.deepEqual(Object.fromEntries(Object.entries(DCL_PROBE_VARIANTS).map(([key, value]) => [key, value.word])), {
-    ECU_STATUS: "0381", PIDMAP: "005E", DMRMAP: "242E", DMR: "22C6", BOTH: "271E",
+    ECU_STATUS: "0381", PIDMAP: "005E", PIDMAP_ALT: "004E", DMRMAP: "242E", DMR: "22C6", BOTH: "271E",
+    KOEO_ALT: "2594", CLEAR_A1: "01A1", CLEAR_F4: "01F4", DMRMAP_TX: "42A6",
+    CHANGE_BAUD: "8174", STOP_PID_FLOW: "411E", MEM: "42F3 / 22D3",
+    MEM_OFF0: "42F3 / 22D3", MEM_SINGLE: "42F3", MEM_PARITY: "42F3 / 2293", PID_VALUES: "21F6",
   });
   for (const key of Object.keys(DCL_PROBE_VARIANTS)) {
-    assert.equal(VARIANTS[key].kind, "probe", key);
+    assert.equal(VARIANTS[key].kind, key.startsWith("MEM") ? "memory" : "probe", key);
     assert.ok(VARIANTS[key].timeoutMs > 0, key);
-    assert.match(DCL_PROBE_VARIANTS[key].sourceUrl, /^https:\/\/github\.com\//, key);
+    if (DCL_PROBE_VARIANTS[key].sourceUrl) assert.match(DCL_PROBE_VARIANTS[key].sourceUrl, /^https:\/\/github\.com\//, key);
     assert.match(DCL_PROBE_VARIANTS[key].evidence, /not validated on 97AB-12A650-KA/, key);
+    assert.equal(typeof DCL_PROBE_VARIANTS[key].sendable, "boolean", key);
   }
-  for (const word of ["004E", "01A1", "01F4", "8174", "42A6", "411E", "2594", "0291"]) {
+  for (const word of ["01B0", "FF5F", "00A0"]) {
     assert.ok(DCL_BLOCKED_CANDIDATES.some(item => item.word === word), word);
   }
-  assert.equal(DCL_BLOCKED_CANDIDATES.some(item => item.word === "22C6" || item.word === "271E"), false);
+  assert.equal(DCL_BLOCKED_CANDIDATES.some(item => item.word === "procedure"), false);
+  assert.equal(DCL_BLOCKED_CANDIDATES.some(item => item.word === "22C6" || item.word === "271E" || item.word === "42F3 / 22D3"), false);
   assert.equal(DCL_BLOCKED_CANDIDATES.some(item => item.word === "81FF"), false);
 });
 
-test("authoritative experiment catalogue covers all A-R entries, parity states and blocking reasons", () => {
-  const letters = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "Q", "R"];
+test("protocol framing reference separates envelope control words from executable catalogue", () => {
+  assert.equal(Object.keys(EXPERIMENT_CATALOGUE).length, 26);
+  assert.equal(Object.values(EXPERIMENT_CATALOGUE).every(entry => entry.sendable), true);
+  assert.equal(PROTOCOL_FRAMING_REFERENCE.length, 3);
+  assert.deepEqual(PROTOCOL_FRAMING_REFERENCE.map(entry => entry.word), ["01B0", "FF5F", "00A0"]);
+  assert.deepEqual(PROTOCOL_FRAMING_REFERENCE.map(entry => entry.role), ["ENVELOPE_START", "IDLE_SYNC", "ENVELOPE_END"]);
+  for (const entry of PROTOCOL_FRAMING_REFERENCE) {
+    assert.equal(entry.sendable, false, entry.word);
+    assert.equal(entry.classification, "CONTROL", entry.word);
+    assert.ok(entry.blockedReason, entry.word);
+    assert.equal(Object.values(EXPERIMENT_CATALOGUE).some(item => item.id === entry.id), false, entry.id);
+    assert.equal(Object.values(EXPERIMENT_CATALOGUE).some(item => item.commandWord === entry.word), false, entry.word);
+  }
+  assert.deepEqual(DCL_BLOCKED_CANDIDATES.map(item => item.word), ["01B0", "FF5F", "00A0"]);
+});
+
+test("firmware compatibility rejects unverified or malformed versions for physical operations", () => {
+  const byId = id => Object.values(EXPERIMENT_CATALOGUE).find(entry => entry.id === id);
+  const require21 = byId("STORED_0E");
+  const require24 = byId("ECU_STATUS");
+  const require27 = byId("MEMORY_READ");
+  assert.equal(require21.requiredFirmwareVersion, 21);
+  assert.equal(require24.requiredFirmwareVersion, 24);
+  assert.equal(require27.requiredFirmwareVersion, 27);
+
+  const matrix = [
+    [21, true, false, false],
+    [24, true, true, false],
+    [26, true, true, false],
+    [27, true, true, true],
+  ];
+  for (const [version, ok21, ok24, ok27] of matrix) {
+    for (const [candidate, expected] of [[require21, ok21], [require24, ok24], [require27, ok27]]) {
+      const result = firmwareCompatibility(candidate, String(version));
+      assert.equal(result.required, candidate.requiredFirmwareVersion, `${candidate.id} v${version}`);
+      assert.equal(result.connected, version, `${candidate.id} v${version}`);
+      assert.equal(result.supported, expected, `${candidate.id} v${version}`);
+      assert.equal(result.message, expected ? "" : `Requires Firmware v${candidate.requiredFirmwareVersion}+ (Connected bridge: v${version}). Please flash firmware v${candidate.requiredFirmwareVersion} to execute.`);
+    }
+  }
+
+  const unverified = [
+    null,
+    undefined,
+    {},
+    { fields: {} },
+    { raw: "STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1" },
+    "",
+    "   ",
+    "fw=unknown",
+    "fw=abc",
+    { fields: { fw: "not-a-number" } },
+  ];
+  for (const status of unverified) {
+    const result = firmwareCompatibility(require27, status);
+    assert.equal(result.connected, null, String(status));
+    assert.equal(result.supported, false, String(status));
+    assert.equal(result.message, "Bridge firmware version unverified. Connect an authenticated bridge in safe IDLE to verify compatibility.", String(status));
+  }
+});
+
+test("firmware compatibility parses numeric and status-form versions", () => {
+  const candidate = EXPERIMENT_CATALOGUE.MEM_READ;
+  assert.equal(firmwareCompatibility(candidate, 27).connected, 27);
+  assert.equal(firmwareCompatibility(candidate, { fields: { fw: "27" } }).connected, 27);
+  assert.equal(firmwareCompatibility(candidate, { raw: "STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW fw=27" }).connected, 27);
+});
+
+test("authoritative experiment catalogue covers all A-Q entries, parity states and blocking reasons", () => {
+  const letters = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "Q"];
   for (const letter of letters) {
     const entry = Object.values(EXPERIMENT_CATALOGUE).find(e => e.letter === letter);
     assert.ok(entry, `Entry for letter ${letter} must exist in catalogue`);
@@ -110,10 +193,12 @@ test("authoritative experiment catalogue covers all A-R entries, parity states a
     assert.ok(entry.description, `Entry ${letter} must have description`);
     assert.ok(entry.source, `Entry ${letter} must have source provenance`);
     assert.ok(["GENERIC_MATCH", "UNRESOLVED_MISMATCH", "NOT_APPLICABLE"].includes(entry.parityStatus), `Entry ${letter} parityStatus`);
-    assert.ok(["READ_ONLY", "STATE_CHANGING", "MODE_CHANGING", "CONTROL"].includes(entry.classification), `Entry ${letter} classification`);
+    assert.ok(["READ_ONLY", "STATE_CHANGING", "SELF_TEST", "CONFIG_CHANGE", "SEQUENCE_DEPENDENT", "FACTORY_PROCEDURE", "CONTROL"].includes(entry.classification), `Entry ${letter} classification`);
     assert.ok(["LOW", "MEDIUM", "HIGH", "CRITICAL"].includes(entry.risk), `Entry ${letter} risk`);
     assert.equal(typeof entry.sendable, "boolean", `Entry ${letter} sendable`);
   }
+  // The former letter R idle-sync word is framing reference data, not a command.
+  assert.equal(PROTOCOL_FRAMING_REFERENCE.find(entry => entry.word === "FF5F")?.name, "Idle synchronization control word");
 
   // Mandatory 005E literal vs 004E parity mismatch separation:
   const fLiteral = EXPERIMENT_CATALOGUE.F_READ_PIDMAP;
@@ -122,27 +207,31 @@ test("authoritative experiment catalogue covers all A-R entries, parity states a
 
   const fParity = EXPERIMENT_CATALOGUE.F_PIDMAP_PARITY_HYPOTHESIS;
   assert.equal(fParity.commandWord, "004E");
-  assert.equal(fParity.sendable, false);
-  assert.match(fParity.blockedReason, /never automatically fall back/i);
+  assert.equal(fParity.sendable, true);
+  assert.equal(fParity.variantKey, "PIDMAP_ALT");
+  assert.equal(fParity.armCommand, "ARM_PIDMAP_ALT");
+  assert.equal(fParity.readCommand, "READ_PIDMAP_ALT");
 
-  // DMR K and L stay blocked:
+  // DMR K and L have fixed raw-capture profiles; semantics remain unverified:
   const kEntry = EXPERIMENT_CATALOGUE.K_READ_DMR_VALUES;
   assert.equal(kEntry.commandWord, "22C6");
-  assert.equal(kEntry.sendable, false);
-  assert.match(kEntry.blockedReason, /qualifier iteration/i);
+  assert.equal(kEntry.sendable, true);
+  assert.equal(kEntry.variantKey, "DMR");
 
   const lEntry = EXPERIMENT_CATALOGUE.L_READ_COMBINED;
   assert.equal(lEntry.commandWord, "271E");
-  assert.equal(lEntry.sendable, false);
-  assert.match(lEntry.blockedReason, /verified.*map structure/i);
+  assert.equal(lEntry.sendable, true);
 
-  // MEM sequence corrected to 42F3 / 22D3 and blocked:
+  // MEM sequence remains experimental while the named bridge profile is available:
   const memEntry = EXPERIMENT_CATALOGUE.MEM_READ;
   assert.equal(memEntry.commandWord, "42F3 / 22D3");
-  assert.equal(memEntry.sendable, false);
-  assert.match(memEntry.blockedReason, /22D3.*2293/i);
+  assert.equal(memEntry.sendable, true);
+  assert.equal(memEntry.evidenceLevel, "EXPERIMENTAL");
+  assert.equal(memEntry.variantKey, "MEM");
+  assert.equal(memEntry.armCommand, "ARM_MEM");
+  assert.equal(memEntry.readCommand, "READ_MEM");
 
-  // All five fixed DCL probes remain reachable for operator-led raw capture.
+  // All catalogue variants expose the firmware's exact fixed arm/read names.
   for (const variant of Object.values(DCL_PROBE_VARIANTS)) {
     assert.equal(variant.sendable, true, variant.word);
     assert.equal(variant.blockedReason, null, variant.word);

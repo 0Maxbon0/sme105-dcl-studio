@@ -200,7 +200,7 @@ class CartJoinParserReplay(unittest.TestCase):
 
     def test_live_sends_no_pid_words_if_ecu_never_enters_41h(self) -> None:
         # Recorded ECU stays at 10 ms frames: the PID map must never go out.
-        result = self.run_parser(rx_bytes(NORMAL_STREAM), join=True, repeat=True, variant=6)
+        result = self.run_parser(rx_bytes(NORMAL_STREAM), join=True, repeat=True, variant=2)
         self.assertEqual(result["fault"], 0)
         self.assertEqual(result["pids"], 0)
         self.assertGreaterEqual(result["blocks"], 10)
@@ -215,7 +215,7 @@ class CartJoinParserReplay(unittest.TestCase):
                 for dt, b in ((0, 0x00), (1042, 0x00), (2498, 0x00), (3540, parity(0, frame))):
                     rx.append((t + dt, b))
                 t += period
-        result = self.run_parser(rx, join=True, repeat=True, variant=6)
+        result = self.run_parser(rx, join=True, repeat=True, variant=2)
         self.assertEqual(result["fault"], 0)
         self.assertEqual(result["pids"], 15)
         self.assertEqual(result["pidok"], 15)
@@ -228,7 +228,7 @@ class CartJoinParserReplay(unittest.TestCase):
                 for dt, b in ((0, 0x00), (1042, 0x00), (2498, 0x00), (3540, parity(0, frame))):
                     rx.append((t + dt, b))
                 t += period
-        result = self.run_parser(rx, join=True, repeat=True, variant=7)
+        result = self.run_parser(rx, join=True, repeat=True, variant=6)
         self.assertEqual(result["fault"], 0)
         self.assertEqual(result["pids"], 15)
 

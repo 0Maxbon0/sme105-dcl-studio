@@ -33,11 +33,10 @@ This is a local pad witness, **not** independent A/B or ECU-ownership proof.
 - ESP32 **GPIO18** → MAX487 DE, with the installed external 10k pulldown;
   MAX487 `/RE` remains grounded. **No extra wires** or protocol pins.
 - No automatic ECU transmission at boot, no arbitrary hexadecimal writes,
-  and no generic output/actuator-control API. The allowlist includes explicitly
-  armed DTC, self-test, live-data and offline profiles; memory reads are
-  deferred and denied pending SME-105 address-map and parity validation. `CLR`
-  is a state-changing DTC-clear request. The new DCL discovery probes are fixed,
-  single-word read candidates and are not verified on the SME-105.
+  and no generic output/actuator-control API. The allowlist includes named,
+  explicitly armed DTC, self-test, live-data, memory, map, flow-control and
+  offline profiles. All newly added commands remain unverified candidates for
+  this SME-105; several can change ECU state or communication mode.
 
 ## Persistent Wi-Fi: normal station or optional direct WPA2 AP
 
@@ -434,24 +433,55 @@ private key offline.
 | `TX2_BENCH` | **Required once after every reboot before any `READ_*`**. Runs two 2400 reference frames and four 9600 UART2 words, checking all GPIO17 UART2 RX bytes and independent input-only RMT first word. GPIO18 DE stays LOW; no ECU request. `PASS_LOCAL_PAD` does **not** prove MAX487 A/B or ECU acceptance. Explicitly available over authenticated TCP or USB. |
 | `LISTEN_9600` | **No bus TX**: 10s UART1 RO capture at 9600 8N1, no 2400 handshake. Needs an already present CART stream. |
 | `OBSERVE` | **Active 2400 handshake** (fixed Echo ID + Go CART only), then 10s raw 9600 RO capture. **At most once per ESP32 boot**; not a passive bus operation. |
-| `ARM_A4` | Prepare one *candidate* stored-code sequence, no bus TX; expires after 15s. |
-| `READ_A4` | Only following a valid A4 arm: fixed four-word candidate `01B0 FF5F 26A4 00A0` in ID0..3 synchronized slots, at most once/boot. |
-| `ARM_0E` | Prepare alternate *candidate* with `26 0E` as the third word, no bus TX; expires in 15s. |
-| `READ_0E` | Only following 0E arm: candidate `01B0 FF5F 260E 00A0`. |
-| `ARM_ECU_STATUS` / `READ_ECU_STATUS` | Fixed single-shot candidate `01B0 FF5F 0381 00A0`; captures raw RO bytes for 10s. |
-| `ARM_PIDMAP` / `READ_PIDMAP` | Fixed single-shot candidate `01B0 FF5F 005E 00A0`; captures raw RO bytes for 10s. Published literal has parity discrepancy (formula gives `004E`). |
-| `ARM_DMRMAP` / `READ_DMRMAP` | Fixed single-shot candidate `01B0 FF5F 242E 00A0`; captures raw RO bytes for 10s. |
-| `ARM_DMR` / `READ_DMR` | Fixed single-shot candidate `01B0 FF5F 22C6 00A0`; captures raw RO bytes for 10s. |
-| `ARM_BOTH` / `READ_BOTH` | Fixed single-shot candidate `01B0 FF5F 271E 00A0`; captures raw RO bytes for 10s. |
-| `READ_KOEO` / `READ_KOER` | Existing explicitly confirmed `25 3E` self-test profiles; they are not passive reads. |
-| `READ_CLR` | Existing explicitly confirmed `02 91` DTC-clear profile; sends the command word once, then captures. This changes ECU diagnostic state. |
-| `READ_LIVE*` / `READ_ALL` | Existing live profiles; use `41 96` to load the PID map and `21 F6` for PID values. |
-| `ARM_MEM` / `READ_MEM` | **Deferred and denied**: `ARM_MEM` and `READ_MEM` return `DENIED command_deferred_not_sendable` before DPS transmission. The experimental candidate sequence (`42 F3` / `22 D3`) remains unverified, the parity discrepancy with generic rule `22 93` is unresolved, the target address map is unverified, and no vehicle experiment is authorized by this documentation. |
-| `READ_OFF` | Existing go-offline profile (`80 CE` with `7F 20` qualifier). |
 | `STOP` | Asserts local DE LOW and cancels current TX/timers; always recognized. |
 | `RESET_IDLE` | Clears a finished idle session's fault/arm status; **never** re-arms a consumed diagnostic or OBSERVE attempt. |
 
-Active-master electrical qualification gate (`kActiveMasterQualified = true`, v25 field build):
+### Fixed ARM/READ command profiles
+
+In `CART_READ`, IDs 3–4 are unused; passive LISTEN/OBSERVE use separate
+`CART_PASSIVE` session-kind values. All listed candidates require
+the 4/4 bench gate, a matching ARM within 15 seconds, and the GPIO17 pad
+witness. Names identify experimental wire profiles, not confirmed ECU support.
+
+| ID | ARM / READ | Fixed command and behavior |
+|---:|---|---|
+| 0 | `ARM_A4` / `READ_A4` | `01B0 FF5F 26A4 00A0`; single request. |
+| 1 | `ARM_0E` / `READ_0E` | `01B0 FF5F 260E 00A0`; single request. |
+| 2 | `ARM_LIVE` / `READ_LIVE` | Repeating live profile; first block uses `4196`, later blocks `21F6`, with fixed PID words in map frames. |
+| 5 | `ARM_OFF` / `READ_OFF` | `01B0 FF5F 80CE 7F20`; one-shot go-offline candidate. |
+| 6 | `ARM_LIVE2` / `READ_LIVE2` | Repeating live profile; fixed PID words in map frames. |
+| 7 | `ARM_KOEO` / `READ_KOEO` | Repeating `01B0 FF5F 253E 00A0` self-test candidate; key-on/engine-off. |
+| 8 | `ARM_KOER` / `READ_KOER` | Repeating `01B0 FF5F 253E 00A0` self-test candidate; engine running. |
+| 9 | `ARM_CLR` / `READ_CLR` | `01B0 FF5F 0291 00A0`; single-shot, state-changing DTC clear. |
+| 10 | `ARM_MEM` / `READ_MEM` | `42F3` request, then `22D3` continuation with offsets 1–15; hard 10s limit. |
+| 11 | `ARM_LIVE3` / `READ_LIVE3` | Repeating live profile; fixed PID words in map frames. |
+| 12 | `ARM_ALL` / `READ_ALL` | Repeating combined live profile; fixed PID words in map frames. |
+| 13 | `ARM_ECU_STATUS` / `READ_ECU_STATUS` | `01B0 FF5F 0381 00A0`; single-shot, 10s raw RO capture. |
+| 14 | `ARM_PIDMAP` / `READ_PIDMAP` | `01B0 FF5F 005E 00A0`; single-shot, 10s raw RO capture; published parity discrepancy unresolved. |
+| 15 | `ARM_DMRMAP` / `READ_DMRMAP` | `01B0 FF5F 242E 00A0`; single-shot, 10s raw RO capture. |
+| 16 | `ARM_DMR` / `READ_DMR` | `01B0 FF5F 22C6 00A0`; single-shot, 10s raw RO capture. |
+| 17 | `ARM_BOTH` / `READ_BOTH` | `01B0 FF5F 271E 00A0`; single-shot, 10s raw RO capture. |
+| 18 | `ARM_PIDMAP_ALT` / `READ_PIDMAP_ALT` | `01B0 FF5F 004E 00A0`; single-shot parity-derived alternative, 10s raw capture. |
+| 19 | `ARM_KOEO_ALT` / `READ_KOEO_ALT` | Repeating `01B0 FF5F 2594 00A0` KOEO candidate; separate from `253E`. |
+| 20 | `ARM_CLEAR_A1` / `READ_CLEAR_A1` | `01B0 FF5F 01A1 00A0`; single-shot, state-changing clear candidate. |
+| 21 | `ARM_CLEAR_F4` / `READ_CLEAR_F4` | `01B0 FF5F 01F4 00A0`; single-shot, state-changing clear candidate. |
+| 22 | `ARM_CHANGE_BAUD` / `READ_CHANGE_BAUD` | `01B0 FF5F 8174 00A0`; single-shot mode-change candidate. |
+| 23 | `ARM_DMRMAP_TX` / `READ_DMRMAP_TX` | `01B0 FF5F 42A6 00A0`; single-shot map-transmit candidate. |
+| 24 | `ARM_STOP_PID_FLOW` / `READ_STOP_PID_FLOW` | `01B0 FF5F 411E 00A0`; single-shot flow-control candidate. |
+| 25 | `ARM_PIDMAP_TX` / `READ_PIDMAP_TX` | `01B0 FF5F 4196 00A0`; single-shot, 5s raw RO capture. |
+| 26 | `ARM_PID_VALUES` / `READ_PID_VALUES` | `01B0 FF5F 21F6 00A0`; single-shot, 10s raw RO capture. |
+| 27 | `ARM_MEM_OFF0` / `READ_MEM_OFF0` | `42F3`, then `22D3`; offsets 0–15 in IW2/frame schedule, hard 10s limit. |
+| 28 | `ARM_MEM_SINGLE` / `READ_MEM_SINGLE` | `01B0 FF5F 42F3 00A0` only; no continuation, 10s raw capture. |
+| 29 | `ARM_MEM_PARITY` / `READ_MEM_PARITY` | `42F3`, then generic-parity continuation `2293` and offsets 1–15; hard 10s limit. |
+
+All four MEM profiles use the normal bounded CART session and raw `RX`/`RXB`
+capture. `MEM` tests the published `22D3` continuation and offsets 1–15;
+`MEM_OFF0` adds offset 0 to the IW2 schedule; `MEM_SINGLE` captures after
+`42F3` without a continuation; `MEM_PARITY` tests generic `2293` in place of
+the published `22D3`. The ECU address map, offset-zero meaning, and parity
+acceptance remain experimental hypotheses.
+
+Active-master electrical qualification gate (`kActiveMasterQualified = true`, v27 field build):
 Vehicle transmissions are enabled only after the exact 4/4 local `TX2_BENCH` passes in
 the current boot. Each `READ_*` still requires a matching `ARM_*` within 15 seconds.
 `OBSERVE` requires the same successful local bench and remains limited to one attempt
@@ -460,8 +490,11 @@ or ECU acceptance.
 
 Each `READ_*` is explicitly armed and sends only its named fixed profile; there
 is no arbitrary-byte path, opcode sweep, automatic retry or A4/0E fallback.
-The new discovery profiles send one command word and then listen; they do not
-load a map or start a repeating PID stream. A clean/allowed `END` can release
+Discovery profiles send one command word and then listen. MEM continuation
+profiles use only fixed request/continuation words and offsets, with a hard
+10-second timeout. They do not accept host-provided addresses or hexadecimal
+payloads. Self-test and live profiles repeat only their named
+protocol sequence. A clean/allowed `END` can release
 the read latch for a later separately armed request. Pad, phase, DE, overflow
 and RX-silence faults remain latched until reboot. `RESET_IDLE` never clears a
 consumed request. `OBSERVE` has a separate latch and is rejected after its
@@ -469,21 +502,15 @@ single active 2400 handshake attempt until reboot. `LISTEN_9600` is repeatable
 because it never transmits. In-car handshake and each diagnostic operation
 must be separately authorized by the operator.
 
-The DCL discovery command bytes come from an experimental third-party EEC-IV
-command map, not a Ford service specification and not an SME-105 compatibility
-claim. `READ_ECU_STATUS`, `READ_PIDMAP`, `READ_DMRMAP`, `READ_DMR` (`22C6`), and
-`READ_BOTH` (`271E`) are fixed, single-shot **candidates** for raw capture. The
-DMR and combined responses are not semantically decoded. A clean bridge
-capture proves only local capture/pad integrity; raw RO bytes may include local
-self-echo and are not automatically attributed to the ECU. See
-`docs/SME105-DCL-command-discovery-2026-11-07.md` for provenance and deferred
-state-changing commands. The memory-read candidate `42 F3` / `22 D3` (`ARM_MEM` / `READ_MEM`),
-the alternative `01 A1`, `01 F4`, `81 74`, `42 A6`, `41 1E`, `25 94`,
-and parity-derived `00 4E` candidates are listed in HELP as deferred and return
-`DENIED command_deferred_not_sendable`; they are not transmitted. The external
-PID-map source literal `00 5E` differs from the generic local parity result
-`00 4E`; firmware preserves `00 5E` as the source candidate, and pad evidence
-proves emission only, not ECU acceptance.
+The candidate words come from experimental third-party EEC-IV maps, not a Ford
+service specification and not an SME-105 compatibility claim. Discovery
+responses are not semantically decoded; raw RO may include local self-echo.
+State-changing and mode-changing candidates are exposed only as their named,
+fixed profiles and remain unverified. The local pad witness proves the exact
+four transmitted words, not ECU acceptance or safe vehicle behavior. See
+`docs/SME105-DCL-command-discovery-2026-11-07.md` for provenance and unresolved
+protocol questions. The published PID-map literal `005E` and parity-derived
+candidate `004E` remain separate hypotheses.
 
 To qualify **only the local TX2 pad** from the office without a USB serial
 connection, use the explicit authenticated command from the laptop:
@@ -508,7 +535,7 @@ Example responses (numeric values below are *examples*):
 ```text
 BOOT SME105_USB_BRIDGE_V1 no_auto_tx=1 DE=LOW source_commands_unverified=1
 HELLO SME105_USB_BRIDGE_V1 protocol=1 usb_baud=115200 no_auto_tx=1
-STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 pad_rx=0 read_used=0 observe_used=0 armed=NONE fault=0
+STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 pad_rx=1 tx2_bench_used=0 tx2_bench_pass=0 read_used=0 observe_used=0 transport_lost=0 out_overflow=0 usb_skipped=0 offline_used=0 armed=NONE fault=0 live_all=1 rx_batch=1 pad_evidence=2 kline_hw=0 kline_tx=0 kline_rx_backend=NONE fw=27
 PINS ro16=GPIO16_UART1 de18=GPIO18_RMT2..5 di17=GPIO17_UART2_TX+PAD_RX no_arbitrary_tx=1
 EVENT read_armed variant=A4 valid_ms=15000 no_tx_yet=1
 EVENT session=READ_CANDIDATE

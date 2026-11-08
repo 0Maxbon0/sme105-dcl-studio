@@ -25,12 +25,12 @@ function harness() {
   };
 }
 
-function identify(controller, { pass = "0", de = "LOW", stage = "0", auto = "0", gate = "1" } = {}) {
+function identify(controller, { pass = "0", de = "LOW", stage = "0", auto = "0", gate = "1", fw = "27" } = {}) {
   controller.onConnected("SME105-DCL");
   controller.handleLine("AUTH OK transport=BLE");
   controller.handleLine(EXPECTED_HELLO);
   controller.handleLine(EXPECTED_PINS);
-  controller.handleLine(`STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=${stage} DE=${de} auto_tx=${auto} gate4=${gate} tx2_bench_pass=${pass} tx2_bench_used=${pass} fault=0`);
+  controller.handleLine(`STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=${stage} DE=${de} auto_tx=${auto} gate4=${gate} tx2_bench_pass=${pass} tx2_bench_used=${pass} fault=0 fw=${fw}`);
 }
 
 test("BLE authorization is cleared on reconnect and required for vehicle operations", () => {
@@ -40,7 +40,7 @@ test("BLE authorization is cleared on reconnect and required for vehicle operati
   controller.onConnected("SME105-DCL");
   controller.handleLine(EXPECTED_HELLO);
   controller.handleLine(EXPECTED_PINS);
-  controller.handleLine("STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0");
+  controller.handleLine("STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0 fw=27");
   assert.equal(controller.requestVehicle("LIVE").ok, false);
   assert.equal(sent.some(command => command.startsWith("ARM_")), false);
   controller.handleLine("AUTH OK transport=BLE");
@@ -62,7 +62,7 @@ test("completed requests can arm sequentially while the bridge reports read_used
 
   for (const variant of ["LIVE", "0E"]) {
     assert.equal(controller.requestVehicle(variant).ok, true, variant);
-    controller.handleLine("STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0 out_overflow=0 transport_lost=0 usb_skipped=0");
+    controller.handleLine("STATUS SME105_USB_BRIDGE_V1 read_used=0 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 fault=0 out_overflow=0 transport_lost=0 usb_skipped=0 fw=27 pad_evidence=2");
     controller.handleLine(`EVENT read_armed variant=${variant} valid_ms=15000 no_tx_yet=1`);
     controller.handleLine("EVENT session=READ_CANDIDATE");
     controller.handleLine("END reason=16 ro_bytes=0 ro_lost=0 uart_errors=0 pad_verified=4 words_started=4 DE=LOW");

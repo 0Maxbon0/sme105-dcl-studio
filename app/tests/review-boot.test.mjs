@@ -37,10 +37,10 @@ test('actual app entry boots existing recording into offline dashboard and wires
     assert.equal($('saved-recordings').value,rec.id);
     assert.equal($('review-mode').hidden,false);
     assert.equal($('live-start').disabled,true);
-    assert.deepEqual([...$('dcl-probe-select').options].map(option => option.value), ['ECU_STATUS','PIDMAP','DMRMAP','DMR','BOTH']);
+    assert.deepEqual([...$('dcl-probe-select').options].map(option => option.value), ['ECU_STATUS','PIDMAP','PIDMAP_ALT','DMRMAP','DMR','BOTH','KOEO_ALT','CLEAR_A1','CLEAR_F4','DMRMAP_TX','CHANGE_BAUD','STOP_PID_FLOW','MEM','MEM_OFF0','MEM_SINGLE','MEM_PARITY','PID_VALUES']);
     assert.equal($('dcl-probe-run').disabled,true); // No live bridge: discovery must stay inert.
-    assert.match($('dcl-probe-blocked').textContent,/01A1/);
-    assert.match($('dcl-probe-blocked').textContent,/Cylinder Balance Test/);
+    assert.doesNotMatch($('dcl-probe-blocked').textContent,/01A1/);
+    assert.match($('dcl-probe-blocked').textContent,/FF5F/);
     $('review-position').value=5; $('review-position').dispatchEvent(new window.Event('input'));
     await until(()=>percent()==='100');
     assert.match($('live-banner').textContent,/INCOMPLETE/);

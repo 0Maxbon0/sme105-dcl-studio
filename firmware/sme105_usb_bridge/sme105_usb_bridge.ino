@@ -49,10 +49,10 @@ extern "C" bool verifyRollbackLater(void) { return true; }
 
 // Ford EEC-IV experimental 97AB SME-105 USB field bridge.
 // There is NO arbitrary bus write API and NO automatic vehicle transmission.
-// Only named, source-pinned command profiles are available. Some existing
-// profiles are state-changing (CLR, KOEO/KOER, OFF); no generic output-control
-// or arbitrary-opcode interface is provided. All new discovery probes are
-// fixed, single-word read candidates and remain unverified on this ECU.
+// Only named, source-pinned command profiles are available. Profiles may be
+// state-changing or diagnostic self-tests; no generic output-control or
+// arbitrary-opcode interface is provided. Added candidates remain unverified
+// on this ECU and use the existing pad witness and bounded session machinery.
 namespace {
 constexpr int kRO = 16, kDI = 17, kDE = 18;
 constexpr uint8_t kEchoId[] = {0, 0, 0, 0, 0, 1, 0x82, 0, 0, 0, 0x83};
@@ -60,6 +60,7 @@ constexpr uint8_t kGoCart[] = {0, 0, 0, 0, 0, 1, 0x04, 0, 0, 0, 0x05};
 constexpr uint32_t kCaptureMs = 10000, kQuietMs = 150, kAckMs = 400;
 constexpr uint32_t kKoeoCaptureMs = 60000, kKoerCaptureMs = 240000, kOfflineCaptureMs = 8000;
 constexpr uint32_t kClearCaptureMs = 4000, kMemCaptureMs = 10000;
+constexpr uint32_t kPidMapTxCaptureMs = 5000;
 // Live data runs until STOP, link loss/fault, or this three-hour limit.
 constexpr uint32_t kLiveCaptureMs = 3UL * 60UL * 60UL * 1000UL;
 // Join an already-running CART stream: frame period = 7.5ms + 2.5ms per
@@ -100,7 +101,7 @@ constexpr uint32_t kOtaCurrentVersion = 1;
 // still be able to boot PENDING_VERIFY from an older accepted version and
 // prove their manifest before promoting ota_ver. On a VALID app with NO pending
 // ledger, a supervised physical USB flash may adopt this build baseline.
-constexpr uint32_t kUsbInstalledBuildVersion = 26;
+constexpr uint32_t kUsbInstalledBuildVersion = 27;
 // This field build permits active-master commands only after the required
 // per-boot TX2_BENCH passes and each fixed profile is explicitly armed.
 constexpr bool kActiveMasterQualified = true;
@@ -129,33 +130,57 @@ struct CmdWord { uint8_t first; uint8_t second; };
 // 5 = DIAGMODE 80H go offline (LHBH1 13-26, qualifier 07FH = ~80H),
 // 6 = live data: DIAGMODE 41H (load PID map) then 21H (transmit PID values),
 //     frame length 6 as used by the flxkrmr and doncreat0r readers.
-constexpr uint8_t kVariantKoeo = 4, kVariantOffline = 5, kVariantLive = 6, kVariantLive2 = 7;
+constexpr uint8_t kVariantKoeo = 7, kVariantOffline = 5, kVariantLive = 2, kVariantLive2 = 6;
+constexpr uint8_t kVariantA4 = 0, kVariant0E = 1;
 constexpr uint8_t kVariantKoer = 8, kVariantClear = 9, kVariantMem = 10, kVariantLive3 = 11;
 constexpr uint8_t kVariantAllLive = 12;
 constexpr uint8_t kVariantEcuStatus = 13, kVariantPidMap = 14, kVariantDmrMap = 15;
 constexpr uint8_t kVariantDmrValues = 16, kVariantBothValues = 17;
+constexpr uint8_t kVariantPidMapAlt = 18, kVariantKoeoAlt = 19;
+constexpr uint8_t kVariantClearA1 = 20, kVariantClearF4 = 21;
+constexpr uint8_t kVariantChangeBaud = 22, kVariantDmrMapTx = 23;
+constexpr uint8_t kVariantStopPidFlow = 24, kVariantPidMapTx = 25, kVariantPidValues = 26;
+constexpr uint8_t kVariantMemOff0 = 27, kVariantMemSingle = 28;
+constexpr uint8_t kVariantMemGenericParity = 29;
+constexpr bool isMemVariant(uint8_t v) {
+  return v == kVariantMem || v == kVariantMemOff0 || v == kVariantMemSingle ||
+         v == kVariantMemGenericParity;
+}
+constexpr bool isMemMapVariant(uint8_t v) {
+  return v == kVariantMem || v == kVariantMemOff0 || v == kVariantMemGenericParity;
+}
 constexpr bool isDiscoveryReadVariant(uint8_t v) {
   return v == kVariantEcuStatus || v == kVariantPidMap || v == kVariantDmrMap ||
-         v == kVariantDmrValues || v == kVariantBothValues;
+         v == kVariantDmrValues || v == kVariantBothValues || v == kVariantPidMapAlt ||
+         v == kVariantPidMapTx || v == kVariantPidValues;
 }
 constexpr bool isLiveVariant(uint8_t v) {
   return v == kVariantLive || v == kVariantLive2 || v == kVariantLive3 || v == kVariantAllLive;
 }
-constexpr bool isSelfTest(uint8_t v) { return v == kVariantKoeo || v == kVariantKoer; }
+constexpr bool isSelfTest(uint8_t v) {
+  return v == kVariantKoeo || v == kVariantKoer || v == kVariantKoeoAlt;
+}
 constexpr bool isRepeating(uint8_t v) {
-  // CLR (02 91) is deliberately single-shot: the source scanner issues one
-  // command word and then listens. Do not repeat a state-clearing request.
-  return isSelfTest(v) || isLiveVariant(v) || v == kVariantMem;
+  // CLR (02 91), CLEAR_A1 (01 A1) and CLEAR_F4 (01 F4) are deliberately
+  // single-shot; do not repeat a state-clearing request.
+  return isSelfTest(v) || isLiveVariant(v) ||
+         (isMemMapVariant(v) && v != kVariantMemSingle);
+}
+constexpr bool isSingleShotCandidate(uint8_t v) {
+  return v == kVariantClear || v == kVariantClearA1 || v == kVariantClearF4 ||
+         v == kVariantChangeBaud || v == kVariantDmrMapTx || v == kVariantStopPidFlow ||
+         v == kVariantPidMapTx || v == kVariantPidValues || v == kVariantMemSingle;
 }
 constexpr bool isRequestVariant(uint8_t v) {
-  return v <= 1 || isRepeating(v) || v == kVariantOffline ||
-         v == kVariantClear || isDiscoveryReadVariant(v);
+  return v <= kVariant0E || isRepeating(v) ||
+         v == kVariantOffline || isSingleShotCandidate(v) || isDiscoveryReadVariant(v);
 }
 // CART_READ kinds that may attach to a stream already running at 9600.
 // OBSERVE (3) and go-offline (5) are excluded: OBSERVE keeps BAD_IDLE,
 // and OFF joins from beginSession without a quiet window.
 constexpr bool joinsRunningCart(uint8_t v) {
-  return v <= 1 || isRepeating(v) || v == kVariantClear || isDiscoveryReadVariant(v);
+  return v <= kVariant0E || isRepeating(v) ||
+         isSingleShotCandidate(v) || isDiscoveryReadVariant(v);
 }
 // Outcomes that never proved a bad TX path. Pad, DE, phase and overflow
 // faults stay latched until reboot. Handshake failures are included because
@@ -168,10 +193,13 @@ constexpr bool faultAllowsRearm(Fault reason) {
 constexpr CmdWord IRAM_ATTR word(uint8_t variant, uint8_t slot) {
   return slot == 0 ? CmdWord{0x01,0xB0} :
          slot == 1 ? CmdWord{0xFF,0x5F} :
-         slot == 2 ? (variant == 0 ? CmdWord{0x26,0xA4} :
-                      variant == 1 ? CmdWord{0x26,0x0E} :
+         slot == 2 ? (variant == kVariantA4 ? CmdWord{0x26,0xA4} :
+                      variant == kVariant0E ? CmdWord{0x26,0x0E} :
+                      variant == kVariantKoeoAlt ? CmdWord{0x25,0x94} :
                       isSelfTest(variant) ? CmdWord{0x25,0x3E} :
                       variant == kVariantClear ? CmdWord{0x02,0x91} :
+                      variant == kVariantClearA1 ? CmdWord{0x01,0xA1} :
+                      variant == kVariantClearF4 ? CmdWord{0x01,0xF4} :
                       variant == kVariantOffline ? CmdWord{0x80,0xCE} :
                       isLiveVariant(variant) ? CmdWord{0x21,0xF6} :
                       variant == kVariantEcuStatus ? CmdWord{0x03,0x81} :
@@ -179,8 +207,24 @@ constexpr CmdWord IRAM_ATTR word(uint8_t variant, uint8_t slot) {
                       variant == kVariantDmrMap ? CmdWord{0x24,0x2E} :
                       variant == kVariantDmrValues ? CmdWord{0x22,0xC6} :
                       variant == kVariantBothValues ? CmdWord{0x27,0x1E} :
+                      variant == kVariantPidMapAlt ? CmdWord{0x00,0x4E} :
+                      variant == kVariantChangeBaud ? CmdWord{0x81,0x74} :
+                      variant == kVariantDmrMapTx ? CmdWord{0x42,0xA6} :
+                      variant == kVariantStopPidFlow ? CmdWord{0x41,0x1E} :
+                      isMemVariant(variant) ? CmdWord{0x42,0xF3} :
+                      variant == kVariantPidMapTx ? CmdWord{0x41,0x96} :
+                      variant == kVariantPidValues ? CmdWord{0x21,0xF6} :
                       CmdWord{0x26,0xA4}) :
          variant == kVariantOffline ? CmdWord{0x7F,0x20} : CmdWord{0x00,0xA0};
+}
+constexpr bool hasEnvelope(uint8_t variant, uint8_t command0, uint8_t command1) {
+  return word(variant, 0).first == 0x01 && word(variant, 0).second == 0xB0 &&
+         word(variant, 1).first == 0xFF && word(variant, 1).second == 0x5F &&
+         word(variant, 2).first == command0 && word(variant, 2).second == command1 &&
+         word(variant, 3).first == 0x00 && word(variant, 3).second == 0xA0;
+}
+constexpr CmdWord memContinuationWord(uint8_t variant) {
+  return variant == kVariantMemGenericParity ? CmdWord{0x22,0x93} : CmdWord{0x22,0xD3};
 }
 constexpr uint8_t parity(uint8_t first, uint8_t id) {
   return static_cast<uint8_t>((((first >> 4) ^ (first & 15) ^ id ^ 10) << 4) | id);
@@ -195,6 +239,79 @@ static_assert(isDiscoveryReadVariant(kVariantDmrValues) && isRequestVariant(kVar
               isDiscoveryReadVariant(kVariantBothValues) && isRequestVariant(kVariantBothValues) &&
               !isRepeating(kVariantBothValues) && joinsRunningCart(kVariantBothValues),
               "DMR and combined discovery probes must be fixed single-shot reads");
+static_assert(isDiscoveryReadVariant(kVariantPidMapAlt) && isRequestVariant(kVariantPidMapAlt) &&
+              !isRepeating(kVariantPidMapAlt) && joinsRunningCart(kVariantPidMapAlt),
+              "parity-derived PID map candidate must be a fixed single-shot discovery read");
+static_assert(isSelfTest(kVariantKoeoAlt) && isRepeating(kVariantKoeoAlt) &&
+              isRequestVariant(kVariantKoeoAlt) && joinsRunningCart(kVariantKoeoAlt),
+              "alternative KOEO candidate must use the bounded repeating self-test path");
+static_assert(!isRepeating(kVariantClearA1) && !isRepeating(kVariantClearF4) &&
+              isRequestVariant(kVariantClearA1) && isRequestVariant(kVariantClearF4) &&
+              joinsRunningCart(kVariantClearA1) && joinsRunningCart(kVariantClearF4),
+              "DCL clear candidates must be one-shot request profiles");
+static_assert(!isRepeating(kVariantChangeBaud) && !isRepeating(kVariantDmrMapTx) &&
+              !isRepeating(kVariantStopPidFlow) && isRequestVariant(kVariantChangeBaud) &&
+              isRequestVariant(kVariantDmrMapTx) && isRequestVariant(kVariantStopPidFlow) &&
+              joinsRunningCart(kVariantChangeBaud) && joinsRunningCart(kVariantDmrMapTx) &&
+              joinsRunningCart(kVariantStopPidFlow),
+              "baud, DMR-map and flow-control candidates must be one-shot CART requests");
+static_assert(isRequestVariant(kVariantPidMapTx) && isRequestVariant(kVariantPidValues) &&
+              !isRepeating(kVariantPidMapTx) && !isRepeating(kVariantPidValues) &&
+              joinsRunningCart(kVariantPidMapTx) && joinsRunningCart(kVariantPidValues) &&
+              isRequestVariant(kVariantMemSingle) && !isRepeating(kVariantMemSingle) &&
+              joinsRunningCart(kVariantMemSingle),
+              "standalone PID and single-block MEM candidates must be one-shot CART requests");
+static_assert(isRepeating(kVariantMem) && isRepeating(kVariantMemOff0) &&
+              isRepeating(kVariantMemGenericParity) && isRequestVariant(kVariantMemOff0) &&
+              isRequestVariant(kVariantMemGenericParity) && joinsRunningCart(kVariantMemOff0) &&
+              joinsRunningCart(kVariantMemGenericParity),
+              "MEM continuation experiments must use the bounded repeating CART path");
+static_assert(hasEnvelope(kVariantPidMapAlt, 0x00, 0x4E) &&
+              hasEnvelope(kVariantA4, 0x26, 0xA4) &&
+              hasEnvelope(kVariant0E, 0x26, 0x0E) &&
+              hasEnvelope(kVariantLive, 0x21, 0xF6) &&
+              hasEnvelope(kVariantLive2, 0x21, 0xF6) &&
+              hasEnvelope(kVariantLive3, 0x21, 0xF6) &&
+              hasEnvelope(kVariantAllLive, 0x21, 0xF6) &&
+              hasEnvelope(kVariantKoeo, 0x25, 0x3E) &&
+              hasEnvelope(kVariantKoer, 0x25, 0x3E) &&
+              hasEnvelope(kVariantClear, 0x02, 0x91) &&
+              hasEnvelope(kVariantEcuStatus, 0x03, 0x81) &&
+              hasEnvelope(kVariantPidMap, 0x00, 0x5E) &&
+              hasEnvelope(kVariantDmrMap, 0x24, 0x2E) &&
+              hasEnvelope(kVariantDmrValues, 0x22, 0xC6) &&
+              hasEnvelope(kVariantBothValues, 0x27, 0x1E) &&
+              hasEnvelope(kVariantKoeoAlt, 0x25, 0x94) &&
+              hasEnvelope(kVariantClearA1, 0x01, 0xA1) &&
+              hasEnvelope(kVariantClearF4, 0x01, 0xF4) &&
+              hasEnvelope(kVariantChangeBaud, 0x81, 0x74) &&
+              hasEnvelope(kVariantDmrMapTx, 0x42, 0xA6) &&
+              hasEnvelope(kVariantStopPidFlow, 0x41, 0x1E) &&
+              hasEnvelope(kVariantPidMapTx, 0x41, 0x96) &&
+              hasEnvelope(kVariantPidValues, 0x21, 0xF6) &&
+              hasEnvelope(kVariantMem, 0x42, 0xF3) &&
+              hasEnvelope(kVariantMemOff0, 0x42, 0xF3) &&
+              hasEnvelope(kVariantMemSingle, 0x42, 0xF3) &&
+              hasEnvelope(kVariantMemGenericParity, 0x42, 0xF3),
+              "new fixed candidate envelopes must retain their exact wire words");
+static_assert(kVariantA4 == 0 && kVariant0E == 1 && kVariantLive == 2 &&
+              kVariantOffline == 5 && kVariantLive2 == 6 && kVariantKoeo == 7 &&
+              kVariantKoer == 8 && kVariantClear == 9 && kVariantMem == 10 &&
+              kVariantLive3 == 11 && kVariantAllLive == 12 &&
+              kVariantEcuStatus == 13 && kVariantPidMap == 14 && kVariantDmrMap == 15 &&
+              kVariantDmrValues == 16 && kVariantBothValues == 17 &&
+              kVariantPidMapAlt == 18 && kVariantKoeoAlt == 19 &&
+              kVariantClearA1 == 20 && kVariantClearF4 == 21 &&
+              kVariantChangeBaud == 22 && kVariantDmrMapTx == 23 &&
+              kVariantStopPidFlow == 24 && kVariantPidMapTx == 25 &&
+              kVariantPidValues == 26 && kVariantMemOff0 == 27 &&
+              kVariantMemSingle == 28 && kVariantMemGenericParity == 29,
+              "fixed profile IDs must remain stable");
+static_assert(memContinuationWord(kVariantMem).first == 0x22 &&
+              memContinuationWord(kVariantMem).second == 0xD3 &&
+              memContinuationWord(kVariantMemGenericParity).first == 0x22 &&
+              memContinuationWord(kVariantMemGenericParity).second == 0x93,
+              "MEM continuation candidates must preserve literal and generic parity words");
 static_assert(parity(1,0)==0xB0 && parity(0xFF,15)==0x5F &&
               parity(0x26,4)==0xA4 && parity(0x26,14)==0x0E &&
               parity(0x25,14)==0x3E && parity(0x80,14)==0xCE &&
@@ -236,7 +353,14 @@ const __FlashStringHelper* variantName(uint8_t v) {
          v == kVariantAllLive ? F("ALL") :
          v == kVariantMem ? F("MEM") : v == kVariantEcuStatus ? F("ECU_STATUS") :
          v == kVariantPidMap ? F("PIDMAP") : v == kVariantDmrMap ? F("DMRMAP") :
-         v == kVariantDmrValues ? F("DMR") : v == kVariantBothValues ? F("BOTH") : F("OFF");
+         v == kVariantDmrValues ? F("DMR") : v == kVariantBothValues ? F("BOTH") :
+         v == kVariantPidMapAlt ? F("PIDMAP_ALT") : v == kVariantKoeoAlt ? F("KOEO_ALT") :
+         v == kVariantClearA1 ? F("CLEAR_A1") : v == kVariantClearF4 ? F("CLEAR_F4") :
+         v == kVariantChangeBaud ? F("CHANGE_BAUD") : v == kVariantDmrMapTx ? F("DMRMAP_TX") :
+         v == kVariantStopPidFlow ? F("STOP_PID_FLOW") :
+         v == kVariantPidMapTx ? F("PIDMAP_TX") : v == kVariantPidValues ? F("PID_VALUES") :
+         v == kVariantMemOff0 ? F("MEM_OFF0") : v == kVariantMemSingle ? F("MEM_SINGLE") :
+         v == kVariantMemGenericParity ? F("MEM_PARITY") : F("OFF");
 }
 
 HardwareSerial referenceBus(2);
@@ -1637,9 +1761,10 @@ bool IRAM_ATTR headerValid(uint8_t id, uint8_t expectedPhase) {
 // Live data: the first TX block loads mode 41H, every later block 21H.
 CmdWord IRAM_ATTR dpsWord(uint8_t index) {
   if (isLiveVariant(variant) && index == 2 && dpsBlocks == 0) return CmdWord{0x41, 0x96};
-  // 42H loads the address list. 22H (qualifier 000 in slot 3) returns those bytes.
-  if (variant == kVariantMem && index == 2)
-    return dpsBlocks < 2 ? CmdWord{0x42, 0xF3} : CmdWord{0x22, 0xD3};
+  // 42H loads the address list once; each following block uses the selected
+  // fixed 22H continuation candidate. MEM_SINGLE never repeats its first block.
+  if (isMemVariant(variant) && index == 2)
+    return dpsBlocks == 0 ? CmdWord{0x42, 0xF3} : memContinuationWord(variant);
   return word(variant, index);
 }
 uint8_t IRAM_ATTR livePid(uint8_t frame, uint8_t column = 0) {
@@ -1653,13 +1778,17 @@ bool IRAM_ATTR liveMapFrame(uint8_t frame) {
 }
 bool IRAM_ATTR memMapFrame(uint8_t frame) {
   // Offset 0 means "send nothing" in Ford's map, so addresses start at 1.
-  return variant == kVariantMem && dpsBlocks == 1 && frame >= 1 && frame <= 15 &&
+  return isMemMapVariant(variant) && dpsBlocks == 1 && frame <= 15 &&
+         (frame >= 1 || variant == kVariantMemOff0) &&
          nearUs(framePeriodUs, 15000, 1200);
 }
-CmdWord IRAM_ATTR offsetWord(uint8_t offset) {
-  const uint8_t par = static_cast<uint8_t>(((offset >> 4) ^ (offset & 15) ^ 0x0A) << 4);
-  return CmdWord{offset, par};
+constexpr CmdWord IRAM_ATTR offsetWord(uint8_t offset) {
+  return CmdWord{offset, static_cast<uint8_t>(((offset >> 4) ^ (offset & 15) ^ 0x0A) << 4)};
 }
+static_assert(offsetWord(0).first == 0x00 && offsetWord(0).second == 0xA0 &&
+              offsetWord(1).first == 0x01 && offsetWord(1).second == 0xB0 &&
+              offsetWord(15).first == 0x0F && offsetWord(15).second == 0x50,
+              "MEM offset words must retain generic address parity, including offset zero");
 // Schedule one PID map word in IW2 of `frame` (single shot, own DE gate).
 void IRAM_ATTR armExtra(uint8_t frame, uint32_t target, uint8_t column = 0) {
   const uint32_t now = static_cast<uint32_t>(esp_timer_get_time());
@@ -1670,7 +1799,7 @@ void IRAM_ATTR armExtra(uint8_t frame, uint32_t target, uint8_t column = 0) {
     faultISR(CART_TIMER);
     return;
   }
-  extraWord = variant == kVariantMem ? offsetWord(frame) : pidWord(livePid(frame, column));
+  extraWord = isMemMapVariant(variant) ? offsetWord(frame) : pidWord(livePid(frame, column));
   extraTargetUs = target;
   extraFrame = frame;
   extraColumn = column;
@@ -1808,7 +1937,9 @@ void IRAM_ATTR uart2ISR(void*) {
         ++wordsVerified;
         if (wordsVerified == 4 && !repeatDps) captureOnly = true;
         // Frames 1..3 of the map block: PID word follows in IW2.
-        if (index >= 1 && (liveMapFrame(index) || memMapFrame(index))) armExtra(index, txStartUs[index] + 2500);
+        if ((index >= 1 && (liveMapFrame(index) || memMapFrame(index))) ||
+            (index == 0 && variant == kVariantMemOff0 && memMapFrame(index)))
+          armExtra(index, txStartUs[index] + 2500);
       }
     }
   }
@@ -2507,7 +2638,7 @@ void beginSession(Stage target, uint8_t kind) {
     out.println(F("DENIED busy_or_unready")); return;
   }
   if (target == CART_READ) {
-    const bool validVariant = (kind <= 1) || (kind >= kVariantKoeo && kind <= kVariantBothValues);
+    const bool validVariant = isRequestVariant(kind);
     if (!validVariant) {
       out.println(F("DENIED invalid_variant")); return;
     }
@@ -2741,10 +2872,12 @@ void pollActive() {
       out.println(F("EVENT baseline=16 synced=1 authority=unverified"));
     }
     const uint32_t limit = stage != CART_READ ? kCaptureMs :
-        variant == kVariantKoeo ? kKoeoCaptureMs :
+        (variant == kVariantKoeo || variant == kVariantKoeoAlt) ? kKoeoCaptureMs :
         variant == kVariantKoer ? kKoerCaptureMs :
-        variant == kVariantClear ? kClearCaptureMs :
-        variant == kVariantMem ? kMemCaptureMs :
+        (variant == kVariantClear || variant == kVariantClearA1 ||
+         variant == kVariantClearF4) ? kClearCaptureMs :
+        isMemVariant(variant) ? kMemCaptureMs :
+        variant == kVariantPidMapTx ? kPidMapTxCaptureMs :
         isLiveVariant(variant) ? kLiveCaptureMs :
         variant == kVariantOffline ? kOfflineCaptureMs : kCaptureMs;
     const uint32_t elapsed = millis() - captureStartedMs;
@@ -2788,7 +2921,8 @@ void pollActive() {
     }
     if (elapsed >= limit) {
       // A repeated DPS ends only at a block boundary, never mid-request.
-      if (stage == CART_READ && repeatDps && !captureOnly && elapsed < limit + 3000) {
+      if (stage == CART_READ && repeatDps && !isMemVariant(variant) &&
+          !captureOnly && elapsed < limit + 3000) {
         stopAtBlock = true;
         return;
       }
@@ -3190,10 +3324,6 @@ void pollWiFi() {
 #endif
 }
 void runCommand(const char* cmd) {
-  if (!strcmp(cmd, "ARM_MEM") || !strcmp(cmd, "READ_MEM")) {
-    out.println(F("DENIED command_deferred_not_sendable"));
-    return;
-  }
   if (!strcmp(cmd, "OTA_DIAG")) {
     printOtaDiag();
     return;
@@ -3245,12 +3375,6 @@ void runCommand(const char* cmd) {
     beginSignedOta(cmd);
     return;
   }
-  if (!strcmp(cmd, "READ_PIDMAP_PARITY") || !strcmp(cmd, "READ_A1") || !strcmp(cmd, "READ_F4") ||
-      !strcmp(cmd, "READ_BAUD") || !strcmp(cmd, "READ_DMRMAP_TX") ||
-      !strcmp(cmd, "READ_STOPFLOW") || !strcmp(cmd, "READ_KOEO94")) {
-    out.println(F("DENIED command_deferred_not_sendable"));
-    return;
-  }
   if (otaFirstBootPending &&
       (!strcmp(cmd, "OBSERVE") || !strcmp(cmd, "READ_A4") ||
        !strcmp(cmd, "READ_0E") || !strcmp(cmd, "LISTEN_9600") ||
@@ -3264,6 +3388,18 @@ void runCommand(const char* cmd) {
        !strcmp(cmd, "READ_DMRMAP") || !strcmp(cmd, "ARM_DMRMAP") ||
        !strcmp(cmd, "READ_DMR") || !strcmp(cmd, "ARM_DMR") ||
        !strcmp(cmd, "READ_BOTH") || !strcmp(cmd, "ARM_BOTH") ||
+       !strcmp(cmd, "READ_PIDMAP_ALT") || !strcmp(cmd, "ARM_PIDMAP_ALT") ||
+       !strcmp(cmd, "READ_KOEO_ALT") || !strcmp(cmd, "ARM_KOEO_ALT") ||
+       !strcmp(cmd, "READ_CLEAR_A1") || !strcmp(cmd, "ARM_CLEAR_A1") ||
+       !strcmp(cmd, "READ_CLEAR_F4") || !strcmp(cmd, "ARM_CLEAR_F4") ||
+       !strcmp(cmd, "READ_CHANGE_BAUD") || !strcmp(cmd, "ARM_CHANGE_BAUD") ||
+       !strcmp(cmd, "READ_DMRMAP_TX") || !strcmp(cmd, "ARM_DMRMAP_TX") ||
+       !strcmp(cmd, "READ_STOP_PID_FLOW") || !strcmp(cmd, "ARM_STOP_PID_FLOW") ||
+       !strcmp(cmd, "READ_PIDMAP_TX") || !strcmp(cmd, "ARM_PIDMAP_TX") ||
+       !strcmp(cmd, "READ_PID_VALUES") || !strcmp(cmd, "ARM_PID_VALUES") ||
+       !strcmp(cmd, "READ_MEM_OFF0") || !strcmp(cmd, "ARM_MEM_OFF0") ||
+       !strcmp(cmd, "READ_MEM_SINGLE") || !strcmp(cmd, "ARM_MEM_SINGLE") ||
+       !strcmp(cmd, "READ_MEM_PARITY") || !strcmp(cmd, "ARM_MEM_PARITY") ||
        !strcmp(cmd, "TX2_BENCH") || !strcmp(cmd, "DE_BENCH") ||
        !strcmp(cmd, "ARM_A4") || !strcmp(cmd, "ARM_0E") ||
        !strcmp(cmd, "ARM_KOEO") || !strcmp(cmd, "ARM_KOER") ||
@@ -3362,16 +3498,20 @@ void runCommand(const char* cmd) {
   if (!strcmp(cmd, "HELLO")) { out.println(F("HELLO SME105_USB_BRIDGE_V1 protocol=1 usb_baud=115200 no_auto_tx=1")); return; }
   if (!strcmp(cmd, "HELP")) {
 #ifdef SME105_BLE
-    out.println(F("COMMANDS HELLO HELP STATUS PINS BLE_STATUS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E ARM_KOEO READ_KOEO ARM_KOER READ_KOER ARM_LIVE READ_LIVE ARM_LIVE2 READ_LIVE2 ARM_LIVE3 READ_LIVE3 ARM_ALL READ_ALL ARM_CLR READ_CLR ARM_OFF READ_OFF ARM_ECU_STATUS READ_ECU_STATUS ARM_PIDMAP READ_PIDMAP ARM_DMRMAP READ_DMRMAP ARM_DMR READ_DMR ARM_BOTH READ_BOTH DE_BENCH RMT_DUMP STOP RESET_IDLE REBOOT"));
+    out.println(F("COMMANDS HELLO HELP STATUS PINS BLE_STATUS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E ARM_KOEO READ_KOEO ARM_KOEO_ALT READ_KOEO_ALT ARM_KOER READ_KOER ARM_LIVE READ_LIVE ARM_LIVE2 READ_LIVE2 ARM_LIVE3 READ_LIVE3 ARM_ALL READ_ALL ARM_CLR READ_CLR ARM_CLEAR_A1 READ_CLEAR_A1 ARM_CLEAR_F4 READ_CLEAR_F4 ARM_OFF READ_OFF ARM_ECU_STATUS READ_ECU_STATUS ARM_PIDMAP READ_PIDMAP ARM_PIDMAP_ALT READ_PIDMAP_ALT ARM_DMRMAP READ_DMRMAP ARM_DMR READ_DMR ARM_BOTH READ_BOTH ARM_CHANGE_BAUD READ_CHANGE_BAUD ARM_DMRMAP_TX READ_DMRMAP_TX ARM_STOP_PID_FLOW READ_STOP_PID_FLOW ARM_PIDMAP_TX READ_PIDMAP_TX ARM_PID_VALUES READ_PID_VALUES ARM_MEM READ_MEM ARM_MEM_OFF0 READ_MEM_OFF0 ARM_MEM_SINGLE READ_MEM_SINGLE ARM_MEM_PARITY READ_MEM_PARITY DE_BENCH RMT_DUMP STOP RESET_IDLE REBOOT"));
     out.println(F("BLE build: Nordic UART transport active. Wi-Fi transport disabled."));
-    out.println(F("DCL discovery probes are fixed single-shot read candidates: 0381 005E 242E 22C6 271E; captures raw RO bytes."));
-    out.println(F("DEFERRED (DENIED): ARM_MEM/READ_MEM=42F3 / 22D3 address_map_unverified parity_93_differs_from_generic_2293; READ_PIDMAP_PARITY=004E READ_A1=01A1 READ_F4=01F4 READ_BAUD=8174 READ_DMRMAP_TX=42A6 READ_STOPFLOW=411E READ_KOEO94=2594"));
+    out.println(F("DCL single-shot reads capture raw RO for 10s: ECU_STATUS=0381 PIDMAP=005E PIDMAP_ALT=004E DMRMAP=242E DMR=22C6 BOTH=271E."));
+    out.println(F("Fixed candidates: PIDMAP_TX=4196 5s raw; PID_VALUES=21F6 10s raw; KOEO_ALT=2594; CLEAR_A1=01A1 CLEAR_F4=01F4; CHANGE_BAUD=8174 DMRMAP_TX=42A6 STOP_PID_FLOW=411E."));
+    out.println(F("MEM profiles: 42F3 then 22D3 + offsets 1..15; MEM_OFF0 adds offset 0; MEM_SINGLE sends only 42F3; MEM_PARITY uses 2293. Hard limit 10s."));
+    out.println(F("Candidate semantics are unverified on SME-105. Clear/mode/map/flow profiles can change ECU state; MEM address map and 22D3 vs 2293 parity remain hypotheses."));
     out.println(F("ACTIVE-MASTER: exact 4/4 local TX2_BENCH pass required per boot; READ_* additionally needs matching ARM_* within 15s."));
     out.println(F("No automatic TX; OBSERVE has a separate once-per-boot latch."));
 #else
-    out.println(F("COMMANDS HELLO HELP STATUS PINS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E ARM_KOEO READ_KOEO ARM_KOER READ_KOER ARM_LIVE READ_LIVE ARM_LIVE2 READ_LIVE2 ARM_LIVE3 READ_LIVE3 ARM_ALL READ_ALL ARM_CLR READ_CLR ARM_OFF READ_OFF ARM_ECU_STATUS READ_ECU_STATUS ARM_PIDMAP READ_PIDMAP ARM_DMRMAP READ_DMRMAP ARM_DMR READ_DMR ARM_BOTH READ_BOTH DE_BENCH RMT_DUMP STOP RESET_IDLE REBOOT"));
-    out.println(F("DCL discovery probes are fixed single-shot read candidates: 0381 005E 242E 22C6 271E; captures raw RO bytes."));
-    out.println(F("DEFERRED (DENIED): ARM_MEM/READ_MEM=42F3 / 22D3 address_map_unverified parity_93_differs_from_generic_2293; READ_PIDMAP_PARITY=004E READ_A1=01A1 READ_F4=01F4 READ_BAUD=8174 READ_DMRMAP_TX=42A6 READ_STOPFLOW=411E READ_KOEO94=2594"));
+    out.println(F("COMMANDS HELLO HELP STATUS PINS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E ARM_KOEO READ_KOEO ARM_KOEO_ALT READ_KOEO_ALT ARM_KOER READ_KOER ARM_LIVE READ_LIVE ARM_LIVE2 READ_LIVE2 ARM_LIVE3 READ_LIVE3 ARM_ALL READ_ALL ARM_CLR READ_CLR ARM_CLEAR_A1 READ_CLEAR_A1 ARM_CLEAR_F4 READ_CLEAR_F4 ARM_OFF READ_OFF ARM_ECU_STATUS READ_ECU_STATUS ARM_PIDMAP READ_PIDMAP ARM_PIDMAP_ALT READ_PIDMAP_ALT ARM_DMRMAP READ_DMRMAP ARM_DMR READ_DMR ARM_BOTH READ_BOTH ARM_CHANGE_BAUD READ_CHANGE_BAUD ARM_DMRMAP_TX READ_DMRMAP_TX ARM_STOP_PID_FLOW READ_STOP_PID_FLOW ARM_PIDMAP_TX READ_PIDMAP_TX ARM_PID_VALUES READ_PID_VALUES ARM_MEM READ_MEM ARM_MEM_OFF0 READ_MEM_OFF0 ARM_MEM_SINGLE READ_MEM_SINGLE ARM_MEM_PARITY READ_MEM_PARITY DE_BENCH RMT_DUMP STOP RESET_IDLE REBOOT"));
+    out.println(F("DCL single-shot reads capture raw RO for 10s: ECU_STATUS=0381 PIDMAP=005E PIDMAP_ALT=004E DMRMAP=242E DMR=22C6 BOTH=271E."));
+    out.println(F("Fixed candidates: PIDMAP_TX=4196 5s raw; PID_VALUES=21F6 10s raw; KOEO_ALT=2594; CLEAR_A1=01A1 CLEAR_F4=01F4; CHANGE_BAUD=8174 DMRMAP_TX=42A6 STOP_PID_FLOW=411E."));
+    out.println(F("MEM profiles: 42F3 then 22D3 + offsets 1..15; MEM_OFF0 adds offset 0; MEM_SINGLE sends only 42F3; MEM_PARITY uses 2293. Hard limit 10s."));
+    out.println(F("Candidate semantics are unverified on SME-105. Clear/mode/map/flow profiles can change ECU state; MEM address map and 22D3 vs 2293 parity remain hypotheses."));
     out.println(F("ACTIVE-MASTER: exact 4/4 local TX2_BENCH pass required per boot; READ_* additionally needs matching ARM_* within 15s."));
     out.println(F("No automatic TX; OBSERVE has a separate once-per-boot latch."));
     out.println(F("WIFI USB_ONLY: WIFI_CONFIG <SSID_B64> <PASS_B64> | WIFI_AP_CONFIG <SSID_B64> <PASS_B64> | WIFI_STA_MODE WIFI_AP_MODE | WIFI_TOKEN | WIFI_FORGET"));
@@ -3395,11 +3535,23 @@ void runCommand(const char* cmd) {
     } else out.println(F("DENIED safety_fault_latched"));
     return;
   }
-  const uint8_t armKind = !strcmp(cmd, "ARM_A4") ? 0 : !strcmp(cmd, "ARM_0E") ? 1 :
+  const uint8_t armKind = !strcmp(cmd, "ARM_A4") ? kVariantA4 :
+                          !strcmp(cmd, "ARM_0E") ? kVariant0E :
                           !strcmp(cmd, "ARM_KOEO") ? kVariantKoeo :
+                          !strcmp(cmd, "ARM_KOEO_ALT") ? kVariantKoeoAlt :
                           !strcmp(cmd, "ARM_KOER") ? kVariantKoer :
                           !strcmp(cmd, "ARM_CLR") ? kVariantClear :
                           !strcmp(cmd, "ARM_MEM") ? kVariantMem :
+                          !strcmp(cmd, "ARM_CLEAR_A1") ? kVariantClearA1 :
+                          !strcmp(cmd, "ARM_CLEAR_F4") ? kVariantClearF4 :
+                          !strcmp(cmd, "ARM_CHANGE_BAUD") ? kVariantChangeBaud :
+                          !strcmp(cmd, "ARM_DMRMAP_TX") ? kVariantDmrMapTx :
+                          !strcmp(cmd, "ARM_STOP_PID_FLOW") ? kVariantStopPidFlow :
+                          !strcmp(cmd, "ARM_PIDMAP_TX") ? kVariantPidMapTx :
+                          !strcmp(cmd, "ARM_PID_VALUES") ? kVariantPidValues :
+                          !strcmp(cmd, "ARM_MEM_OFF0") ? kVariantMemOff0 :
+                          !strcmp(cmd, "ARM_MEM_SINGLE") ? kVariantMemSingle :
+                          !strcmp(cmd, "ARM_MEM_PARITY") ? kVariantMemGenericParity :
                           !strcmp(cmd, "ARM_LIVE3") ? kVariantLive3 :
                           !strcmp(cmd, "ARM_ALL") ? kVariantAllLive :
                           !strcmp(cmd, "ARM_OFF") ? kVariantOffline :
@@ -3407,6 +3559,7 @@ void runCommand(const char* cmd) {
                           !strcmp(cmd, "ARM_LIVE2") ? kVariantLive2 :
                           !strcmp(cmd, "ARM_ECU_STATUS") ? kVariantEcuStatus :
                           !strcmp(cmd, "ARM_PIDMAP") ? kVariantPidMap :
+                          !strcmp(cmd, "ARM_PIDMAP_ALT") ? kVariantPidMapAlt :
                           !strcmp(cmd, "ARM_DMRMAP") ? kVariantDmrMap :
                           !strcmp(cmd, "ARM_DMR") ? kVariantDmrValues :
                           !strcmp(cmd, "ARM_BOTH") ? kVariantBothValues : 255;
@@ -3430,12 +3583,21 @@ void runCommand(const char* cmd) {
     out.println(F(" valid_ms=15000 no_tx_yet=1"));
     return;
   }
-  if (!strcmp(cmd, "READ_A4")) { beginSession(CART_READ, 0); return; }
-  if (!strcmp(cmd, "READ_0E")) { beginSession(CART_READ, 1); return; }
+  if (!strcmp(cmd, "READ_A4")) { beginSession(CART_READ, kVariantA4); return; }
+  if (!strcmp(cmd, "READ_0E")) { beginSession(CART_READ, kVariant0E); return; }
   if (!strcmp(cmd, "READ_KOEO")) { beginSession(CART_READ, kVariantKoeo); return; }
+  if (!strcmp(cmd, "READ_KOEO_ALT")) { beginSession(CART_READ, kVariantKoeoAlt); return; }
   if (!strcmp(cmd, "READ_KOER")) { beginSession(CART_READ, kVariantKoer); return; }
   if (!strcmp(cmd, "READ_CLR")) { beginSession(CART_READ, kVariantClear); return; }
   if (!strcmp(cmd, "READ_MEM")) { beginSession(CART_READ, kVariantMem); return; }
+  if (!strcmp(cmd, "READ_MEM_OFF0")) { beginSession(CART_READ, kVariantMemOff0); return; }
+  if (!strcmp(cmd, "READ_MEM_SINGLE")) { beginSession(CART_READ, kVariantMemSingle); return; }
+  if (!strcmp(cmd, "READ_MEM_PARITY")) { beginSession(CART_READ, kVariantMemGenericParity); return; }
+  if (!strcmp(cmd, "READ_CLEAR_A1")) { beginSession(CART_READ, kVariantClearA1); return; }
+  if (!strcmp(cmd, "READ_CLEAR_F4")) { beginSession(CART_READ, kVariantClearF4); return; }
+  if (!strcmp(cmd, "READ_CHANGE_BAUD")) { beginSession(CART_READ, kVariantChangeBaud); return; }
+  if (!strcmp(cmd, "READ_DMRMAP_TX")) { beginSession(CART_READ, kVariantDmrMapTx); return; }
+  if (!strcmp(cmd, "READ_STOP_PID_FLOW")) { beginSession(CART_READ, kVariantStopPidFlow); return; }
   if (!strcmp(cmd, "READ_LIVE3")) { beginSession(CART_READ, kVariantLive3); return; }
   if (!strcmp(cmd, "READ_ALL")) { beginSession(CART_READ, kVariantAllLive); return; }
   if (!strcmp(cmd, "READ_OFF")) { beginSession(CART_READ, kVariantOffline); return; }
@@ -3443,9 +3605,12 @@ void runCommand(const char* cmd) {
   if (!strcmp(cmd, "READ_LIVE2")) { beginSession(CART_READ, kVariantLive2); return; }
   if (!strcmp(cmd, "READ_ECU_STATUS")) { beginSession(CART_READ, kVariantEcuStatus); return; }
   if (!strcmp(cmd, "READ_PIDMAP")) { beginSession(CART_READ, kVariantPidMap); return; }
+  if (!strcmp(cmd, "READ_PIDMAP_ALT")) { beginSession(CART_READ, kVariantPidMapAlt); return; }
   if (!strcmp(cmd, "READ_DMRMAP")) { beginSession(CART_READ, kVariantDmrMap); return; }
   if (!strcmp(cmd, "READ_DMR")) { beginSession(CART_READ, kVariantDmrValues); return; }
   if (!strcmp(cmd, "READ_BOTH")) { beginSession(CART_READ, kVariantBothValues); return; }
+  if (!strcmp(cmd, "READ_PIDMAP_TX")) { beginSession(CART_READ, kVariantPidMapTx); return; }
+  if (!strcmp(cmd, "READ_PID_VALUES")) { beginSession(CART_READ, kVariantPidValues); return; }
   if (!strcmp(cmd, "OBSERVE")) { beginSession(CART_PASSIVE, 3); return; }
   if (!strcmp(cmd, "LISTEN_9600")) { beginSession(CART_PASSIVE, 2); return; }
   out.println(F("DENIED unknown_or_unsafe_command"));

@@ -41,7 +41,7 @@ class JoinRearmSourceTests(unittest.TestCase):
 
     def test_quiet_busy_joins_read_variants_and_observe_stays_bad_idle(self) -> None:
         spec = _between(self.source, "constexpr bool joinsRunningCart", "\n}")
-        self.assertIn("v <= 1", spec)
+        self.assertIn("v <= kVariant0E", spec)
         self.assertIn("isRepeating(v)", spec)
         repeating = _between(self.source, "constexpr bool isRepeating", "\n}")
         self.assertIn("isSelfTest(v)", repeating)
@@ -130,8 +130,8 @@ class JoinRearmSourceTests(unittest.TestCase):
         self.assertIn("REBOOT", help_line)
         self.assertIn('out.print(F(" fw=")); out.println(kUsbInstalledBuildVersion);', self.source)
 
-    def test_usb_installed_build_version_is_26(self) -> None:
-        self.assertIn("constexpr uint32_t kUsbInstalledBuildVersion = 26", self.source)
+    def test_usb_installed_build_version_is_27(self) -> None:
+        self.assertIn("constexpr uint32_t kUsbInstalledBuildVersion = 27", self.source)
 
     def test_ble_build_does_not_start_wifi(self) -> None:
         init = _between(self.source, "void initializeWiFi() {", "void initializeOtaBootHealth()")

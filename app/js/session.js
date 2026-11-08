@@ -118,7 +118,9 @@ export function sessionVerdict(session, flags = {}) {
   const mode = {
     "0E": "260E", A4: "26A4", KOEO: "253E", KOER: "253E", CLR: "0291",
     MEM: "42F3", OFF: "80CE", LIVE: "4196", LIVE2: "4196", LIVE3: "4196", ALL: "4196",
-    ECU_STATUS: "0381", PIDMAP: "005E", DMRMAP: "242E", DMR: "22C6", BOTH: "271E",
+    ECU_STATUS: "0381", PIDMAP: "005E", PIDMAP_ALT: "004E", DMRMAP: "242E", DMR: "22C6", BOTH: "271E",
+    KOEO_ALT: "2594", CLEAR_A1: "01A1", CLEAR_F4: "01F4", DMRMAP_TX: "42A6",
+    CHANGE_BAUD: "8174", STOP_PID_FLOW: "411E",
   }[flags.variant];
   const expectedWords = mode ? ["01B0", "FF5F", mode, flags.variant === "OFF" ? "7F20" : "00A0"] : null;
   const counters = uint(fields.witness_started) && uint(fields.witness_verified) &&

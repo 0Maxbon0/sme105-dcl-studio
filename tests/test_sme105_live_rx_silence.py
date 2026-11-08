@@ -104,7 +104,8 @@ int main() {
                           sketch.index("constexpr bool isSelfTest")]
         limits = "\n".join(line for line in sketch.splitlines() if line.startswith(
             ("constexpr uint32_t kCaptureMs", "constexpr uint32_t kKoeoCaptureMs",
-             "constexpr uint32_t kClearCaptureMs", "constexpr uint32_t kLiveCaptureMs")))
+             "constexpr uint32_t kClearCaptureMs", "constexpr uint32_t kPidMapTxCaptureMs",
+             "constexpr uint32_t kLiveCaptureMs")))
         cpp = r'''
 #include <cstdint>
 #include <cassert>
@@ -117,7 +118,7 @@ PadEvidence padEvidence;
 constexpr int HIGH = 1, kRO = 16;
 ''' + enums + variants + limits + r'''
 volatile Stage stage = CART_READ;
-volatile uint8_t variant = 6;
+volatile uint8_t variant = 2;
 volatile uint32_t lastRxAtUs = 0;
 uint32_t clockUs = 0, clockMs = 0, captureStartedMs = 0;
 bool injectIsr = false;
@@ -153,7 +154,7 @@ void closeNative() { nativeOpen = false; }
 void closeReference() { referenceOpen = false; }
 int digitalRead(int) { return HIGH; }
 ''' + stop + rearm + task + r'''
-void reset(uint8_t v = 6) {
+void reset(uint8_t v = 2) {
   variant = v; stage = CART_READ; failure = NO_FAULT; captureStartedMs = 0;
   repeatDps = true; captureOnly = stopAtBlock = stopLatched = false;
   deHigh = slotTimerOn = deTimerOn = nativeOpen = referenceOpen = true;
@@ -170,7 +171,7 @@ void checkSilenceShutdown() {
   assert(out.text.find("EVENT live_rx_stop_state next_frame=6") != std::string::npos);
 }
 int main() {
-  for (uint8_t v : {6, 7, 11, 12}) {
+  for (uint8_t v : {2, 6, 11, 12}) {
     reset(v);
     // Field race: ISR publishes 66221618 after clock sampled 66221616.
     // The v22 expression re-reads the volatile timestamp and produces -2.
@@ -223,7 +224,7 @@ int main() {
     pollActive(); assert(stopAtBlock && failure == NO_FAULT);
     clockMs += 3000; pollActive(); assert(failure == CAPTURE_TIMEOUT && !deHigh);
   }
-  for (uint8_t v : {0, 1, 2, 3, 4, 5, 8, 9, 10}) {
+  for (uint8_t v : {0, 1, 3, 4, 5, 7, 8, 9, 10, 13, 25, 26, 28}) {
     reset(v); clockMs = 6000; clockUs = 6000000; lastRxAtUs = 0;
     pollActive(); assert(failure != RX_SILENCE);
   }

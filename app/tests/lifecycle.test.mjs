@@ -12,7 +12,7 @@ import { createIgnitionReview } from '../js/ignition-review.js';
 globalThis.indexedDB = new fake.IDBFactory();
 globalThis.IDBKeyRange = fake.IDBKeyRange;
 Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { storage: { estimate: async () => ({ quota: 10 * 1024 ** 3, usage: 0 }) } } });
-const status = (extra = '') => `STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 read_used=0 fault=0 live_all=1 out_overflow=0 transport_lost=0 usb_skipped=0 ${extra}`;
+const status = (extra = '') => `STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 tx2_bench_pass=1 read_used=0 fault=0 live_all=1 out_overflow=0 transport_lost=0 usb_skipped=0 fw=27 pad_evidence=2 ${extra}`;
 function harness() {
   let now = 1000;
   const sent = [];

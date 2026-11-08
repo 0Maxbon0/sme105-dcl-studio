@@ -36,13 +36,16 @@ semantic meaning are independently established.
 
 ## Request envelope used by this bridge
 
-The new fixed read candidates use the existing four-word CART request envelope:
+The fixed request candidates use the existing four-word CART request envelope:
 
 `01B0 FF5F <candidate-word> 00A0`
 
-The command word's vertical parity is checked at compile time. The firmware
-sends one command word, captures raw RO data for the bounded 10-second window,
-and does not automatically retry or scan other opcodes. The capture is not
+The firmware pad-verifies every transmitted byte pair. Single-shot candidates
+send one command word and capture raw RO data for a fixed bounded window:
+10 seconds by default, 5 seconds for standalone `4196` PID-map transmission,
+and 4 seconds for clear candidates. The KOEO self-test and MEM continuation
+profiles use their own bounded repeating schedules. No profile automatically
+retries another opcode or accepts arbitrary host-provided bytes. Capture is not
 interpreted as ECU acceptance: RO may include local self-echo.
 
 ## A–R command map from `doncreat0r/eeciv/tables.h`
@@ -53,17 +56,17 @@ interpreted as ECU acceptance: RO may include local self-echo.
 | B | `260E` | Read stored trouble codes | Existing `READ_0E` candidate |
 | C | `0291` | Clear trouble codes | Existing `READ_CLR`; state-changing, not part of discovery |
 | D | `253E` | Run KOEO/KOER self-test | Existing `READ_KOEO` / `READ_KOER`; controlled test, not passive read |
-| E | `4196` | Transmit/load PID map | Already used by LIVE profiles; not a standalone discovery read |
+| E | `4196` | Transmit/load PID map | Used by LIVE profiles and enabled as standalone `READ_PIDMAP_TX` |
 | F | `005E` | Read PID map | **Enabled** as `READ_PIDMAP` single-shot candidate; published literal has an unresolved parity mismatch, not a verified exception |
-| G | `21F6` | Read PID values | Already used by LIVE profiles |
-| H | `01A1` | Clear DCL error/flag register | **Deferred**; state-clearing |
-| I | `42A6` | Transmit/load DMR map | **Deferred**; map-load payload and target compatibility unverified |
+| G | `21F6` | Read PID values | Used by LIVE profiles and enabled as standalone `READ_PID_VALUES` |
+| H | `01A1` | Clear DCL error/flag register | Enabled as `READ_CLEAR_A1`; fixed one-shot, state-changing candidate |
+| I | `42A6` | Transmit/load DMR map | Enabled as `READ_DMRMAP_TX`; fixed one-shot candidate, payload/target compatibility unverified |
 | J | `242E` | Read DMR map | **Enabled** as `READ_DMRMAP` single-shot candidate |
 | K | `22C6` | Read DMR values | **Enabled** as `READ_DMR` single-shot candidate |
 | L | `271E` | Read PID and DMR values | **Enabled** as `READ_BOTH` single-shot candidate |
-| M | `8174` | Switch baud rate | **Deferred**; risks communication desynchronization and has no verified recovery sequence |
+| M | `8174` | Switch baud rate | Enabled as `READ_CHANGE_BAUD`; fixed one-shot mode-changing candidate, recovery is unverified |
 | N/O/P | — | No command listed in this source table | No candidate inferred |
-| Q | `411E` | Zero/stop PID-value flow | **Deferred**; sequence-dependent state control |
+| Q | `411E` | Zero/stop PID-value flow | Enabled as `READ_STOP_PID_FLOW`; fixed one-shot flow-control candidate |
 | R | `FF5F` | Idle block | Already word 2 of our fixed envelope; not a standalone query |
 
 The source does not clearly expand the acronym **DMR**. The application
@@ -86,51 +89,76 @@ captures raw response bytes and does not claim a successful semantic decode.
 calculation produces `004E`, while `doncreat0r/eeciv/tables.h` stores the PID-map
 read literal as `005E`. This is an unresolved source-table mismatch, **not a
 verified protocol exception**. The firmware preserves `005E` as the published
-candidate, but a GPIO pad witness can prove only emission, not ECU acceptance.
-See the follow-up audit below; do not silently substitute or automatically try
-`004E`.
+candidate and exposes `004E` as a separate command; it does not silently
+substitute or automatically try it. A GPIO pad witness proves only emission,
+not ECU acceptance. See the follow-up audit below.
 
 ## Conflicting commands from `flxkrmr/eec-iv-reader-arduino`
 
 | Word | Source label | Current disposition |
 |---|---|---|
 | `26A4` | Stored-code read | Existing `READ_A4` candidate; separate from `260E` |
-| `2594` | KOEO request | Deferred controlled self-test candidate; not interchangeable with `253E` without a separate test |
-| `01F4` | Clear DCL errors/flags | Deferred state-clearing command |
+| `2594` | KOEO request | Enabled controlled self-test candidate; not interchangeable with `253E` without a separate test |
+| `01F4` | Clear DCL errors/flags | Enabled one-shot state-clearing candidate |
 | `4196` | Load PID map | Already used by LIVE profiles |
 | `21F6` | Read PID values | Already used by LIVE profiles |
 
 Do not automatically fall back from `260E` to `26A4`, or from `253E` to
 `2594`, after a no-response result. Each variant is an independent experiment.
 
-## Existing local bridge profiles
+## Firmware request profiles and command map
 
-| Host profile | Fixed DCL words / behavior | Notes |
-|---|---|---|
-| `READ_A4` | `01B0 FF5F 26A4 00A0` | Stored-code candidate |
-| `READ_0E` | `01B0 FF5F 260E 00A0` | Stored-code candidate |
-| `READ_KOEO`, `READ_KOER` | `01B0 FF5F 253E 00A0` | Self-test; not passive |
-| `READ_CLR` | `01B0 FF5F 0291 00A0` | DTC clear; now single-shot, then capture |
-| `READ_LIVE*`, `READ_ALL` | `4196` map-load sequence then `21F6` PID values | Existing live-data map/profile behavior |
-| `ARM_MEM` / `READ_MEM` | Local candidate `42F3` / `22D3` | **Deferred / not-sendable**; target address map is unverified and `22D3` parity byte `93` differs from generic result `2293`. |
-| `READ_OFF` | `80CE` with `7F20` qualifier | Existing go-offline candidate |
+Variant IDs 3–4 are unused by `CART_READ`; passive LISTEN and OBSERVE reuse
+session-kind values in their separate `CART_PASSIVE` path. Every candidate
+below has a fixed ARM/READ pair and exact command word. Each ARM expires after
+15 seconds, and each vehicle transmission requires a 4/4 `TX2_BENCH` pass in
+the current boot plus GPIO17 pad-witness validation.
 
-## Deferred / not-sendable commands
+| ID | ARM / READ | Exact fixed words and behavior |
+|---:|---|---|
+| 0 | `ARM_A4` / `READ_A4` | `01B0 FF5F 26A4 00A0`; single stored-code candidate. |
+| 1 | `ARM_0E` / `READ_0E` | `01B0 FF5F 260E 00A0`; single alternate stored-code candidate. |
+| 2 | `ARM_LIVE` / `READ_LIVE` | Repeating live profile; first block uses `4196`, later blocks `21F6`, with fixed PID words in map frames. |
+| 5 | `ARM_OFF` / `READ_OFF` | `01B0 FF5F 80CE 7F20`; fixed go-offline candidate. |
+| 6 | `ARM_LIVE2` / `READ_LIVE2` | Repeating live profile with its fixed PID map. |
+| 7 | `ARM_KOEO` / `READ_KOEO` | Repeating `01B0 FF5F 253E 00A0` KOEO self-test candidate. |
+| 8 | `ARM_KOER` / `READ_KOER` | Repeating `01B0 FF5F 253E 00A0` KOER self-test candidate. |
+| 9 | `ARM_CLR` / `READ_CLR` | `01B0 FF5F 0291 00A0`; single-shot state-changing DTC-clear candidate. |
+| 10 | `ARM_MEM` / `READ_MEM` | `42F3`, then `22D3`; offsets 1–15; hard 10-second timeout. |
+| 11 | `ARM_LIVE3` / `READ_LIVE3` | Repeating live profile with its fixed PID map. |
+| 12 | `ARM_ALL` / `READ_ALL` | Repeating combined live profile with its fixed PID map. |
+| 13 | `ARM_ECU_STATUS` / `READ_ECU_STATUS` | `01B0 FF5F 0381 00A0`; one request, 10-second raw RO capture. |
+| 14 | `ARM_PIDMAP` / `READ_PIDMAP` | `01B0 FF5F 005E 00A0`; one request, 10-second raw capture; source parity discrepancy unresolved. |
+| 15 | `ARM_DMRMAP` / `READ_DMRMAP` | `01B0 FF5F 242E 00A0`; one request, 10-second raw RO capture. |
+| 16 | `ARM_DMR` / `READ_DMR` | `01B0 FF5F 22C6 00A0`; one request, 10-second raw RO capture. |
+| 17 | `ARM_BOTH` / `READ_BOTH` | `01B0 FF5F 271E 00A0`; one request, 10-second raw RO capture. |
+| 18 | `ARM_PIDMAP_ALT` / `READ_PIDMAP_ALT` | `01B0 FF5F 004E 00A0`; parity-derived alternative, one request, 10-second capture. |
+| 19 | `ARM_KOEO_ALT` / `READ_KOEO_ALT` | Repeating `01B0 FF5F 2594 00A0` KOEO candidate, kept separate from `253E`. |
+| 20 | `ARM_CLEAR_A1` / `READ_CLEAR_A1` | `01B0 FF5F 01A1 00A0`; single-shot, state-changing clear candidate. |
+| 21 | `ARM_CLEAR_F4` / `READ_CLEAR_F4` | `01B0 FF5F 01F4 00A0`; single-shot, state-changing clear candidate. |
+| 22 | `ARM_CHANGE_BAUD` / `READ_CHANGE_BAUD` | `01B0 FF5F 8174 00A0`; single-shot mode-change candidate. |
+| 23 | `ARM_DMRMAP_TX` / `READ_DMRMAP_TX` | `01B0 FF5F 42A6 00A0`; single-shot map-transmit candidate. |
+| 24 | `ARM_STOP_PID_FLOW` / `READ_STOP_PID_FLOW` | `01B0 FF5F 411E 00A0`; single-shot flow-control candidate. |
+| 25 | `ARM_PIDMAP_TX` / `READ_PIDMAP_TX` | `01B0 FF5F 4196 00A0`; one request, 5-second raw RO capture. |
+| 26 | `ARM_PID_VALUES` / `READ_PID_VALUES` | `01B0 FF5F 21F6 00A0`; one request, 10-second raw RO capture. |
+| 27 | `ARM_MEM_OFF0` / `READ_MEM_OFF0` | `42F3`, then `22D3`; offsets 0–15 in the IW2/frame schedule; hard 10-second timeout. |
+| 28 | `ARM_MEM_SINGLE` / `READ_MEM_SINGLE` | `01B0 FF5F 42F3 00A0` only; no continuation, then 10-second raw capture. |
+| 29 | `ARM_MEM_PARITY` / `READ_MEM_PARITY` | `42F3`, then generic-parity `2293`; offsets 1–15; hard 10-second timeout. |
 
-These are recorded so the research does not lose them, but they are not
-exposed as active send buttons in the discovery UI. The firmware HELP lists
-the corresponding deferred host names and returns
-`DENIED command_deferred_not_sendable` if one is submitted:
+The four MEM variants isolate the sequence hypotheses. `MEM` sends one
+`42F3` initialization block, then the published literal `22D3` continuation
+and offset words 1–15. `MEM_OFF0` adds offset 0 to the same IW2/frame schedule
+to test whether it is a RAM address or reserved. `MEM_SINGLE` sends only the
+four-word `42F3` envelope and listens for 10 seconds. `MEM_PARITY` substitutes
+generic `2293` for the published `22D3` continuation while retaining offsets
+1–15. The target address map and ECU parity acceptance remain unverified.
+All MEM variants stop at 10 seconds without the normal repeating-profile
+block-boundary extension. Raw UART capture remains loss-aware through `RX`
+and `RXB`; no host address or continuation payload is accepted.
 
-- `004E`: parity-derived alternative to the published `005E`; no external source identifies it as a PID-map command, so it remains explicitly denied.
-- `01A1`, `01F4`: clear DCL error/flag state.
-- `0291`: clear DTCs; already available as the explicit `CLR` action, not a read.
-- `8174`: change baud rate; no validated return-to-9600/recovery sequence.
-- `42A6`: transmit/load DMR map; the source's map payload is not validated for SME-105.
-- `411E`: stop PID-value flow; requires a verified live-mode sequence.
-- `2594`: alternate KOEO self-test; keep separate from the current `253E` test.
-- `ARM_MEM` / `READ_MEM`: memory candidate `42F3` / `22D3`; the target address map and sequence are unverified, and parity byte `93` differs from generic result `2293`. Firmware denies both before DPS transmission.
-- `FF5F` and `00A0`: envelope idle/trailer words, not standalone discovery commands.
+`4196` and `21F6` are also exposed separately as `PIDMAP_TX` and `PID_VALUES`.
+The former sends once and captures raw RO for 5 seconds; the latter sends once
+and captures for 10 seconds. Their availability adds no claim of ECU support.
 
 No arbitrary hex entry, all-byte sweep, or brute-force opcode scan is provided.
 Unknown commands can change ECU diagnostic state, clear information, change
@@ -139,18 +167,19 @@ can only clear DTCs is not valid.
 
 ## Application and firmware behavior
 
-The Android/PWA app offers the five fixed read candidates: `0381`, `005E`,
-`242E`, `22C6`, `271E`. It records the selected command, source and target
-uncertainty, bridge capture verdict, raw RO byte count, and raw transcript in
-the append-only diagnostic journal. It shows raw response evidence without
-assigning a sensor name or claiming ECU ownership. The full diagnostic ZIP
-retains the raw DCL records.
+The Android/PWA app maintains a separate UI allowlist from this firmware
+command profile table. UI exposure should not be inferred from firmware
+availability. The app records selected commands, source and target uncertainty,
+bridge capture verdict, raw RO byte count, and raw transcript in the append-only
+diagnostic journal. It shows raw response evidence without assigning a sensor
+name or claiming ECU ownership. The full diagnostic ZIP retains raw DCL records.
 
 The firmware accepts only the named `ARM_*` / `READ_*` variants and checks the
-exact four TX words through the existing local GPIO17 pad witness. New probes
-are single-shot; no repeated DCL request is issued. The existing DTC-clear
-profile was corrected to be single-shot as well; its 4-second window is for
-capturing the response, not repeating `0291`.
+exact four request words through the existing local GPIO17 pad witness. Each
+profile is bounded by its class: discovery and one-shot candidates transmit
+once, standalone `PIDMAP_TX` captures for 5 seconds, clear requests capture for
+4 seconds, and KOEO/MEM use their fixed bounded continuation behavior. No raw
+bytes are accepted from the host.
 
 ## Test and deployment boundary
 

@@ -8,6 +8,13 @@ export const NUS_TX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
 export const DEVICE_NAME_PREFIX = "SME105";
 export const MAX_WRITE_BYTES = 180;
 
+/** Generic Ford DCL VPARITY byte calculation for a data byte and low-nibble ID. */
+export function dclVParityByte(firstByte, id) {
+  const data = Number(firstByte) & 0xff;
+  const nibble = Number(id) & 0x0f;
+  return (((((data >> 4) ^ (data & 0x0f) ^ nibble ^ 0x0a) & 0x0f) << 4) | nibble) & 0xff;
+}
+
 export const EXPECTED_HELLO =
   "HELLO SME105_USB_BRIDGE_V1 protocol=1 usb_baud=115200 no_auto_tx=1";
 export const EXPECTED_PINS =
@@ -68,9 +75,9 @@ export const TIMEOUTS = {
   DCL_PROBE: 20000,
 };
 
-export const EXPERIMENT_CATALOGUE = Object.freeze({
+const EXPERIMENT_CATALOGUE_SOURCE = {
   A_ECU_STATUS: Object.freeze({
-    id: "A_ECU_STATUS", letter: "A", name: "ECU status", commandWord: "0381",
+    id: "ECU_STATUS", letter: "A", name: "ECU status", commandWord: "0381",
     envelope: ["01B0", "FF5F", "0381", "00A0"],
     description: "Queries general ECU operating status byte; external scanner table labels it 'Get status'.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
@@ -81,7 +88,7 @@ export const EXPERIMENT_CATALOGUE = Object.freeze({
     sendable: true, blockedReason: null,
   }),
   B_STORED_0E: Object.freeze({
-    id: "B_STORED_0E", letter: "B", name: "Read stored DTCs (0E)", commandWord: "260E",
+    id: "STORED_0E", letter: "B", name: "Read stored DTCs (0E)", commandWord: "260E",
     envelope: ["01B0", "FF5F", "260E", "00A0"],
     description: "Read stored continuous trouble codes profile with 14-slot response window.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
@@ -92,7 +99,7 @@ export const EXPERIMENT_CATALOGUE = Object.freeze({
     sendable: true, blockedReason: null,
   }),
   B_STORED_A4: Object.freeze({
-    id: "B_STORED_A4", letter: "B", name: "Read stored DTCs (A4)", commandWord: "26A4",
+    id: "STORED_A4", letter: "B", name: "Read stored DTCs (A4)", commandWord: "26A4",
     envelope: ["01B0", "FF5F", "26A4", "00A0"],
     description: "Alternative stored trouble code profile from flxkrmr reader with 4-slot window.",
     source: "flxkrmr/eec-iv-reader-arduino", sourceUrl: "https://github.com/flxkrmr/eec-iv-reader-arduino",
@@ -103,7 +110,7 @@ export const EXPERIMENT_CATALOGUE = Object.freeze({
     sendable: true, blockedReason: null,
   }),
   C_CLEAR_DTC: Object.freeze({
-    id: "C_CLEAR_DTC", letter: "C", name: "Clear DTCs", commandWord: "0291",
+    id: "CLEAR_DTC", letter: "C", name: "Clear DTCs", commandWord: "0291",
     envelope: ["01B0", "FF5F", "0291", "00A0"],
     description: "Destructive command that clears continuous memory fault codes. Single-shot transmission then 4s capture.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
@@ -111,54 +118,54 @@ export const EXPERIMENT_CATALOGUE = Object.freeze({
     classification: "STATE_CHANGING", risk: "MEDIUM", timeoutMs: 12000,
     requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: false, requiresMapOrQualifier: false,
     armCommand: "ARM_CLR", readCommand: "READ_CLR", variantKey: "CLR",
-    sendable: true, blockedReason: "State-changing: requires separate operator approval modal.",
+    sendable: true, blockedReason: null,
   }),
   D_KOEO_253E: Object.freeze({
-    id: "D_KOEO_253E", letter: "D", name: "KOEO on-demand self-test", commandWord: "253E",
+    id: "KOEO_253E", letter: "D", name: "KOEO on-demand self-test", commandWord: "253E",
     envelope: ["01B0", "FF5F", "253E", "00A0"],
     description: "Key On Engine Off diagnostic self-test. Actuates relays and monitors sensors; repeating DPS request.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
     parityStatus: "GENERIC_MATCH", evidenceLevel: "HISTORICAL_ECU_EVIDENCE",
-    classification: "STATE_CHANGING", risk: "MEDIUM", timeoutMs: 60000,
+    classification: "SELF_TEST", risk: "MEDIUM", timeoutMs: 60000,
     requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: true, requiresMapOrQualifier: false,
     armCommand: "ARM_KOEO", readCommand: "READ_KOEO", variantKey: "KOEO",
-    sendable: true, blockedReason: "Controlled self-test: requires operator key-on/engine-off precondition.",
+    sendable: true, blockedReason: null,
   }),
   D_KOER_253E: Object.freeze({
-    id: "D_KOER_253E", letter: "D", name: "KOER running self-test", commandWord: "253E",
+    id: "KOER_253E", letter: "D", name: "KOER running self-test", commandWord: "253E",
     envelope: ["01B0", "FF5F", "253E", "00A0"],
     description: "Key On Engine Running diagnostic self-test with dynamic operator prompts and goose pulse.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
     parityStatus: "GENERIC_MATCH", evidenceLevel: "HISTORICAL_ECU_EVIDENCE",
-    classification: "STATE_CHANGING", risk: "HIGH", timeoutMs: 240000,
+    classification: "SELF_TEST", risk: "HIGH", timeoutMs: 240000,
     requiredEcuState: "KEY_ON_ENGINE_RUNNING", repeats: true, requiresMapOrQualifier: false,
     armCommand: "ARM_KOER", readCommand: "READ_KOER", variantKey: "KOER",
-    sendable: true, blockedReason: "Controlled self-test: engine running with operator steering/brake/throttle interactions.",
+    sendable: true, blockedReason: null,
   }),
   D_KOEO_2594: Object.freeze({
-    id: "D_KOEO_2594", letter: "D", name: "Alternate KOEO request", commandWord: "2594",
+    id: "KOEO_ALT", letter: "D", name: "Alternate KOEO request", commandWord: "2594",
     envelope: ["01B0", "FF5F", "2594", "00A0"],
     description: "Alternate KOEO request from flxkrmr with 4-slot receive window.",
     source: "flxkrmr/eec-iv-reader-arduino", sourceUrl: "https://github.com/flxkrmr/eec-iv-reader-arduino",
     parityStatus: "GENERIC_MATCH", evidenceLevel: "UNVERIFIED_CANDIDATE",
-    classification: "STATE_CHANGING", risk: "MEDIUM", timeoutMs: 60000,
+    classification: "SELF_TEST", risk: "MEDIUM", timeoutMs: 60000,
     requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: true, requiresMapOrQualifier: false,
-    armCommand: null, readCommand: null, variantKey: null,
-    sendable: false, blockedReason: "Deferred: hold for separate self-test profile evaluation; 253E is established.",
+    armCommand: "ARM_KOEO_ALT", readCommand: "READ_KOEO_ALT", variantKey: "KOEO_ALT",
+    sendable: true, blockedReason: null,
   }),
   E_LOAD_PIDMAP: Object.freeze({
-    id: "E_LOAD_PIDMAP", letter: "E", name: "Transmit/load PID map", commandWord: "4196",
+    id: "PIDMAP_TX", letter: "E", name: "Transmit/load PID map", commandWord: "4196",
     envelope: ["01B0", "FF5F", "4196", "00A0"],
     description: "Initial request block that loads the diagnostic PID map sequence before reading live values.",
     source: "doncreat0r/eeciv + flxkrmr", sourceUrl: "https://github.com/doncreat0r/eeciv",
     parityStatus: "GENERIC_MATCH", evidenceLevel: "HISTORICAL_ECU_EVIDENCE",
     classification: "STATE_CHANGING", risk: "LOW", timeoutMs: 10000,
     requiredEcuState: "ANY_POWERED", repeats: false, requiresMapOrQualifier: true,
-    armCommand: null, readCommand: null, variantKey: null,
-    sendable: false, blockedReason: "Part of multi-block live data sequence; not an independent read query.",
+    armCommand: "ARM_LIVE", readCommand: "READ_LIVE", variantKey: "LIVE",
+    sendable: true, blockedReason: null,
   }),
   F_READ_PIDMAP: Object.freeze({
-    id: "F_READ_PIDMAP", letter: "F", name: "Read PID map (005E literal)", commandWord: "005E",
+    id: "PIDMAP", letter: "F", name: "Read PID map (005E literal)", commandWord: "005E",
     envelope: ["01B0", "FF5F", "005E", "00A0"],
     description: "Reads the active PID map from ECU. Published literal 005E has parity mismatch vs generic formula (004E). Dedicated 'f' handler in reference code is commented out.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
@@ -169,62 +176,62 @@ export const EXPERIMENT_CATALOGUE = Object.freeze({
     sendable: true, blockedReason: null,
   }),
   F_PIDMAP_PARITY_HYPOTHESIS: Object.freeze({
-    id: "F_PIDMAP_PARITY_HYPOTHESIS", letter: "F", name: "PID map generic parity hypothesis", commandWord: "004E",
+    id: "PIDMAP_ALT", letter: "F", name: "PID map generic parity alternative", commandWord: "004E",
     envelope: ["01B0", "FF5F", "004E", "00A0"],
     description: "Parity-calculated alternative to 005E. Not published as a command by any external reference. Distinct from received frame-ID E.",
     source: "local parity derivation", sourceUrl: null,
     parityStatus: "GENERIC_MATCH", evidenceLevel: "REVERSE_ENGINEERING_HYPOTHESIS",
     classification: "READ_ONLY", risk: "MEDIUM", timeoutMs: 20000,
     requiredEcuState: "ANY_POWERED", repeats: false, requiresMapOrQualifier: false,
-    armCommand: null, readCommand: null, variantKey: null,
-    sendable: false, blockedReason: "Denied hypothesis: 005E is the published literal; never automatically fall back to 004E.",
+    armCommand: "ARM_PIDMAP_ALT", readCommand: "READ_PIDMAP_ALT", variantKey: "PIDMAP_ALT",
+    sendable: true, blockedReason: null,
   }),
   G_READ_PID_VALUES: Object.freeze({
-    id: "G_READ_PID_VALUES", letter: "G", name: "Read PID values", commandWord: "21F6",
+    id: "PID_VALUES", letter: "G", name: "Read PID values", commandWord: "21F6",
     envelope: ["01B0", "FF5F", "21F6", "00A0"],
     description: "Streams PID telemetry values after map configuration. Used continuously in LIVE profiles.",
     source: "doncreat0r/eeciv + flxkrmr", sourceUrl: "https://github.com/doncreat0r/eeciv",
     parityStatus: "GENERIC_MATCH", evidenceLevel: "HISTORICAL_ECU_EVIDENCE",
     classification: "READ_ONLY", risk: "LOW", timeoutMs: 180 * 60 * 1000,
     requiredEcuState: "ANY_POWERED", repeats: true, requiresMapOrQualifier: true,
-    armCommand: "ARM_LIVE", readCommand: "READ_LIVE", variantKey: "LIVE",
-    sendable: false, blockedReason: "Requires pre-loaded PID map; access via LIVE/LIVE2/LIVE3/ALL modes.",
+    armCommand: "ARM_PID_VALUES", readCommand: "READ_PID_VALUES", variantKey: "PID_VALUES",
+    sendable: true, blockedReason: null,
   }),
   H_CLEAR_FLAGS: Object.freeze({
-    id: "H_CLEAR_FLAGS", letter: "H", name: "Clear DCL flags (01A1)", commandWord: "01A1",
+    id: "CLEAR_A1", letter: "H", name: "Clear DCL flags (01A1)", commandWord: "01A1",
     envelope: ["01B0", "FF5F", "01A1", "00A0"],
     description: "Clears internal DCL error/status flags register in ECU.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
     parityStatus: "GENERIC_MATCH", evidenceLevel: "UNVERIFIED_CANDIDATE",
     classification: "STATE_CHANGING", risk: "MEDIUM", timeoutMs: 10000,
     requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: false, requiresMapOrQualifier: false,
-    armCommand: null, readCommand: null, variantKey: null,
-    sendable: false, blockedReason: "Deferred: state-clearing command; requires verified protocol requirement before transmission.",
+    armCommand: "ARM_CLEAR_A1", readCommand: "READ_CLEAR_A1", variantKey: "CLEAR_A1",
+    sendable: true, blockedReason: null,
   }),
   H_CLEAR_FLAGS_ALT: Object.freeze({
-    id: "H_CLEAR_FLAGS_ALT", letter: "H", name: "Clear DCL errors (01F4)", commandWord: "01F4",
+    id: "CLEAR_F4", letter: "H", name: "Clear DCL errors (01F4)", commandWord: "01F4",
     envelope: ["01B0", "FF5F", "01F4", "00A0"],
     description: "Alternative DCL error clear command from flxkrmr reference.",
     source: "flxkrmr/eec-iv-reader-arduino", sourceUrl: "https://github.com/flxkrmr/eec-iv-reader-arduino",
     parityStatus: "GENERIC_MATCH", evidenceLevel: "UNVERIFIED_CANDIDATE",
     classification: "STATE_CHANGING", risk: "MEDIUM", timeoutMs: 10000,
     requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: false, requiresMapOrQualifier: false,
-    armCommand: null, readCommand: null, variantKey: null,
-    sendable: false, blockedReason: "Deferred: state-clearing command; excluded from passive discovery.",
+    armCommand: "ARM_CLEAR_F4", readCommand: "READ_CLEAR_F4", variantKey: "CLEAR_F4",
+    sendable: true, blockedReason: null,
   }),
   I_LOAD_DMRMAP: Object.freeze({
-    id: "I_LOAD_DMRMAP", letter: "I", name: "Transmit/load DMR map", commandWord: "42A6",
+    id: "DMRMAP_TX", letter: "I", name: "Transmit/load DMR map", commandWord: "42A6",
     envelope: ["01B0", "FF5F", "42A6", "00A0"],
     description: "Loads memory address map into ECU for Direct Memory Read.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
     parityStatus: "GENERIC_MATCH", evidenceLevel: "UNVERIFIED_CANDIDATE",
-    classification: "STATE_CHANGING", risk: "HIGH", timeoutMs: 10000,
+    classification: "CONFIG_CHANGE", risk: "HIGH", timeoutMs: 10000,
     requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: false, requiresMapOrQualifier: true,
-    armCommand: null, readCommand: null, variantKey: null,
-    sendable: false, blockedReason: "Deferred: map payload and SME-105 memory compatibility are unverified.",
+    armCommand: "ARM_DMRMAP_TX", readCommand: "READ_DMRMAP_TX", variantKey: "DMRMAP_TX",
+    sendable: true, blockedReason: null,
   }),
   J_READ_DMRMAP: Object.freeze({
-    id: "J_READ_DMRMAP", letter: "J", name: "Read DMR map", commandWord: "242E",
+    id: "DMRMAP", letter: "J", name: "Read DMR map", commandWord: "242E",
     envelope: ["01B0", "FF5F", "242E", "00A0"],
     description: "Read existing DMR memory address map from ECU. Raw response capture only.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
@@ -235,7 +242,7 @@ export const EXPERIMENT_CATALOGUE = Object.freeze({
     sendable: true, blockedReason: null,
   }),
   K_READ_DMR_VALUES: Object.freeze({
-    id: "K_READ_DMR_VALUES", letter: "K", name: "Read DMR values", commandWord: "22C6",
+    id: "DMR_VALUES", letter: "K", name: "Read DMR values", commandWord: "22C6",
     envelope: ["01B0", "FF5F", "22C6", "00A0"],
     description: "Streams DMR values using address iteration; requires valid loaded DMR map.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
@@ -243,10 +250,10 @@ export const EXPERIMENT_CATALOGUE = Object.freeze({
     classification: "READ_ONLY", risk: "MEDIUM", timeoutMs: 20000,
     requiredEcuState: "ANY_POWERED", repeats: false, requiresMapOrQualifier: true,
     armCommand: "ARM_DMR", readCommand: "READ_DMR", variantKey: "DMR",
-    sendable: false, blockedReason: "Deferred pending protocol support: requires valid DMR map and address-qualifier iteration.",
+    sendable: true, blockedReason: null,
   }),
   L_READ_COMBINED: Object.freeze({
-    id: "L_READ_COMBINED", letter: "L", name: "Read combined PID + DMR values", commandWord: "271E",
+    id: "PID_DMR_BOTH", letter: "L", name: "Read combined PID + DMR values", commandWord: "271E",
     envelope: ["01B0", "FF5F", "271E", "00A0"],
     description: "Requests simultaneous streaming of configured PID and DMR tables.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
@@ -254,122 +261,280 @@ export const EXPERIMENT_CATALOGUE = Object.freeze({
     classification: "READ_ONLY", risk: "MEDIUM", timeoutMs: 20000,
     requiredEcuState: "ANY_POWERED", repeats: false, requiresMapOrQualifier: true,
     armCommand: "ARM_BOTH", readCommand: "READ_BOTH", variantKey: "BOTH",
-    sendable: false, blockedReason: "Deferred pending protocol support: requires verified combined map structure and response schema.",
+    sendable: true, blockedReason: null,
   }),
   M_CHANGE_BAUD: Object.freeze({
-    id: "M_CHANGE_BAUD", letter: "M", name: "Change baud rate", commandWord: "8174",
+    id: "CHANGE_BAUD", letter: "M", name: "Change DCL baud", commandWord: "8174",
     envelope: ["01B0", "FF5F", "8174", "00A0"],
     description: "Switches communication speed. Upstream SetBaudrate() is commented out; no recovery sequence.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
     parityStatus: "GENERIC_MATCH", evidenceLevel: "UNVERIFIED_CANDIDATE",
-    classification: "MODE_CHANGING", risk: "CRITICAL", timeoutMs: 5000,
+    classification: "CONFIG_CHANGE", risk: "CRITICAL", timeoutMs: 5000,
     requiredEcuState: "ANY_POWERED", repeats: false, requiresMapOrQualifier: false,
-    armCommand: null, readCommand: null, variantKey: null,
-    sendable: false, blockedReason: "Deferred: risks permanent communication desynchronization; no recovery sequence.",
+    armCommand: "ARM_CHANGE_BAUD", readCommand: "READ_CHANGE_BAUD", variantKey: "CHANGE_BAUD",
+    sendable: true, blockedReason: null,
   }),
   Q_STOP_PID_FLOW: Object.freeze({
-    id: "Q_STOP_PID_FLOW", letter: "Q", name: "Stop PID data flow", commandWord: "411E",
+    id: "STOP_PID_FLOW", letter: "Q", name: "Stop PID value flow", commandWord: "411E",
     envelope: ["01B0", "FF5F", "411E", "00A0"],
     description: "Zero/stop active live PID streaming block flow.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
     parityStatus: "GENERIC_MATCH", evidenceLevel: "UNVERIFIED_CANDIDATE",
-    classification: "MODE_CHANGING", risk: "LOW", timeoutMs: 5000,
-    requiredEcuState: "ANY_POWERED", repeats: false, requiresMapOrQualifier: false,
-    armCommand: null, readCommand: null, variantKey: null,
-    sendable: false, blockedReason: "Deferred: sequence-dependent mode control; our bridge uses timeout/STOP.",
-  }),
-  R_IDLE_BLOCK: Object.freeze({
-    id: "R_IDLE_BLOCK", letter: "R", name: "Idle/control block", commandWord: "FF5F",
-    envelope: null,
-    description: "Idle synchronization block; used as word 2 of our four-word request envelope.",
-    source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
-    parityStatus: "GENERIC_MATCH", evidenceLevel: "CONTROL_WORD",
-    classification: "CONTROL", risk: "LOW", timeoutMs: 0,
-    requiredEcuState: "ANY_POWERED", repeats: false, requiresMapOrQualifier: false,
-    armCommand: null, readCommand: null, variantKey: null,
-    sendable: false, blockedReason: "Framing/control word; not a standalone diagnostic inquiry.",
+    classification: "SEQUENCE_DEPENDENT", risk: "LOW", timeoutMs: 5000,
+    requiredEcuState: "ACTIVE_PID_FLOW", repeats: false, requiresMapOrQualifier: false,
+    armCommand: "ARM_STOP_PID_FLOW", readCommand: "READ_STOP_PID_FLOW", variantKey: "STOP_PID_FLOW",
+    sendable: true, blockedReason: null,
   }),
   MEM_READ: Object.freeze({
-    id: "MEM_READ", letter: null, name: "Experimental reverse-engineering memory read candidate (42F3 / 22D3)", commandWord: "42F3 / 22D3",
+    id: "MEMORY_READ", letter: null, name: "Experimental reverse-engineering memory read candidate (42F3 / 22D3)", commandWord: "42F3 / 22D3",
     envelope: ["01B0", "FF5F", "42F3", "00A0"],
     description: "Experimental reverse-engineering read candidate. The target address map is unverified for SME-105; 22D3 parity byte 93 differs from the generic-rule result 2293.",
     source: "local reverse-engineering candidate", sourceUrl: null,
-    parityStatus: "UNRESOLVED_MISMATCH", evidenceLevel: "REVERSE_ENGINEERING_HYPOTHESIS",
+    parityStatus: "UNRESOLVED_MISMATCH", evidenceLevel: "EXPERIMENTAL",
     classification: "READ_ONLY", risk: "HIGH", timeoutMs: 10000,
     requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: true, requiresMapOrQualifier: true,
     armCommand: "ARM_MEM", readCommand: "READ_MEM", variantKey: "MEM",
-    sendable: false, blockedReason: "Deferred pending protocol validation: target address map unverified for SME-105 and 22D3 parity byte 93 differs from the generic-rule result 2293.",
+    sendable: true, blockedReason: null,
+  }),
+  MEM_OFF0: Object.freeze({
+    id: "MEM_OFF0", letter: null, name: "MEM offset-zero hypothesis", commandWord: "42F3 / 22D3",
+    envelope: ["01B0", "FF5F", "42F3", "00A0"],
+    description: "Runs the standard memory-read continuation with offset zero included to test whether the first address is valid RAM or reserved.",
+    source: "local reverse-engineering experiment", sourceUrl: null,
+    parityStatus: "FIXED_LITERAL_93", evidenceLevel: "EXPERIMENTAL",
+    classification: "READ_ONLY", risk: "HIGH", timeoutMs: 13000,
+    requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: true, requiresMapOrQualifier: true,
+    armCommand: "ARM_MEM_OFF0", readCommand: "READ_MEM_OFF0", variantKey: "MEM_OFF0",
+    sendable: true, blockedReason: null,
+  }),
+  MEM_SINGLE: Object.freeze({
+    id: "MEM_SINGLE", letter: null, name: "MEM request-only single block", commandWord: "42F3",
+    envelope: ["01B0", "FF5F", "42F3", "00A0"],
+    description: "Sends the initial memory request once and does not send any continuation block.",
+    source: "local reverse-engineering experiment", sourceUrl: null,
+    parityStatus: "NOT_APPLICABLE", evidenceLevel: "EXPERIMENTAL",
+    classification: "READ_ONLY", risk: "HIGH", timeoutMs: 10000,
+    requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: false, requiresMapOrQualifier: false,
+    armCommand: "ARM_MEM_SINGLE", readCommand: "READ_MEM_SINGLE", variantKey: "MEM_SINGLE",
+    sendable: true, blockedReason: null,
+  }),
+  MEM_PARITY: Object.freeze({
+    id: "MEM_PARITY", letter: null, name: "MEM generic VPARITY continuation", commandWord: "42F3 / 2293",
+    envelope: ["01B0", "FF5F", "42F3", "00A0"],
+    description: "Runs offsets 1 through 15 with continuation 2293, the generic VPARITY result for 22D3 data and ID 3.",
+    source: "local VPARITY derivation", sourceUrl: null,
+    parityStatus: "GENERIC_MATCH", evidenceLevel: "EXPERIMENTAL",
+    classification: "READ_ONLY", risk: "HIGH", timeoutMs: 13000,
+    requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: true, requiresMapOrQualifier: true,
+    armCommand: "ARM_MEM_PARITY", readCommand: "READ_MEM_PARITY", variantKey: "MEM_PARITY",
+    sendable: true, blockedReason: null,
   }),
   OFF_GO_OFFLINE: Object.freeze({
-    id: "OFF_GO_OFFLINE", letter: null, name: "Go offline mode", commandWord: "80CE",
+    id: "GO_OFFLINE", letter: null, name: "Go offline mode", commandWord: "80CE / 7F20",
     envelope: ["01B0", "FF5F", "80CE", "7F20"],
     description: "Instructs ECU to terminate diagnostic session and return to autonomous CART bus master mode.",
     source: "current bridge firmware", sourceUrl: null,
     parityStatus: "GENERIC_MATCH", evidenceLevel: "HISTORICAL_ECU_EVIDENCE",
-    classification: "MODE_CHANGING", risk: "MEDIUM", timeoutMs: 15000,
+    classification: "SEQUENCE_DEPENDENT", risk: "MEDIUM", timeoutMs: 15000,
     requiredEcuState: "ANY_POWERED", repeats: false, requiresMapOrQualifier: true,
     armCommand: "ARM_OFF", readCommand: "READ_OFF", variantKey: "OFF",
-    sendable: true, blockedReason: "Mode-changing: disconnects diagnostic session and returns bus to ECU.",
+    sendable: true, blockedReason: null,
   }),
-});
+  OUTPUT_SWITCH_TEST: Object.freeze({
+    id: "OUTPUT_SWITCH_TEST", letter: null, name: "Output Switch Test", commandWord: "procedure", envelope: null,
+    description: "Factory guided KOEO relay/solenoid output test using a compatible scan tool; this is a procedure, not a raw DCL opcode.",
+    source: "SPX 9640 service manual", sourceUrl: null, parityStatus: "NOT_APPLICABLE", evidenceLevel: "FACTORY_PROCEDURE",
+    classification: "FACTORY_PROCEDURE", risk: "HIGH", timeoutMs: 0, requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: false,
+    armCommand: null, readCommand: null, variantKey: null, sendable: true, blockedReason: null, runnerKey: "OUTPUT_SWITCH_TEST",
+  }),
+  CYLINDER_BALANCE_TEST: Object.freeze({
+    id: "CYLINDER_BALANCE_TEST", letter: null, name: "Cylinder Balance Test", commandWord: "procedure", envelope: null,
+    description: "Factory guided KOER routine that cuts fuel per cylinder while the engine runs; this is a procedure, not a raw DCL opcode.",
+    source: "SPX 9640 service manual", sourceUrl: null, parityStatus: "NOT_APPLICABLE", evidenceLevel: "FACTORY_PROCEDURE",
+    classification: "FACTORY_PROCEDURE", risk: "HIGH", timeoutMs: 0, requiredEcuState: "KEY_ON_ENGINE_RUNNING", repeats: false,
+    armCommand: null, readCommand: null, variantKey: null, sendable: true, blockedReason: null, runnerKey: "CYLINDER_BALANCE_TEST",
+  }),
+};
+
+const BASELINE_FIRMWARE_CANDIDATES = new Set([
+  "STORED_0E", "STORED_A4", "CLEAR_DTC", "KOEO_253E", "KOER_253E", "GO_OFFLINE", "PIDMAP_TX",
+]);
+const DISCOVERY_FIRMWARE_CANDIDATES = new Set([
+  "ECU_STATUS", "PIDMAP", "DMRMAP", "DMR_VALUES", "PID_DMR_BOTH",
+]);
+const EXPANDED_FIRMWARE_CANDIDATES = new Set([
+  "PIDMAP_ALT", "KOEO_ALT", "CLEAR_A1", "CLEAR_F4", "CHANGE_BAUD", "DMRMAP_TX",
+  "STOP_PID_FLOW", "PID_VALUES", "MEMORY_READ", "MEM_OFF0", "MEM_SINGLE", "MEM_PARITY",
+]);
+
+function minimumFirmwareFor(candidate) {
+  if (BASELINE_FIRMWARE_CANDIDATES.has(candidate.id)) return 21;
+  if (DISCOVERY_FIRMWARE_CANDIDATES.has(candidate.id)) return 24;
+  if (EXPANDED_FIRMWARE_CANDIDATES.has(candidate.id)) return 27;
+  return candidate.classification === "CONTROL" ? 0 : 21;
+}
+
+export const EXPERIMENT_CATALOGUE = Object.freeze(Object.fromEntries(
+  Object.entries(EXPERIMENT_CATALOGUE_SOURCE).map(([key, candidate]) => [key,
+    Object.freeze({ ...candidate, requiredFirmwareVersion: minimumFirmwareFor(candidate) })]),
+));
 
 // Canonical action catalogue name for UI dispatch policy.
 export const COMMAND_CATALOGUE = EXPERIMENT_CATALOGUE;
 
+/**
+ * Fixed words that frame every four-word DCL request envelope. These are not
+ * independent ECU commands: 01B0 opens the request, FF5F synchronizes the idle
+ * bus, and 00A0 terminates the request. They are kept here, separate from the
+ * executable experiment catalogue, so no standalone transmission is invented.
+ */
+export const PROTOCOL_FRAMING_REFERENCE = Object.freeze([
+  Object.freeze({
+    id: "CONTROL_01B0", word: "01B0", name: "Request envelope start control word",
+    role: "ENVELOPE_START", position: 1, envelope: ["01B0"],
+    description: "First word in the fixed four-word diagnostic request envelope; not a standalone ECU inquiry.",
+    source: "current bridge request envelope", sourceUrl: null,
+    classification: "CONTROL", requiredFirmwareVersion: 0, sendable: false,
+    blockedReason: "Framing/control word; not a standalone diagnostic inquiry.",
+  }),
+  Object.freeze({
+    id: "CONTROL_FF5F", word: "FF5F", name: "Idle synchronization control word",
+    role: "IDLE_SYNC", position: 2, envelope: ["FF5F"],
+    description: "Idle synchronization block; used as word 2 of our four-word request envelope.",
+    source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
+    classification: "CONTROL", requiredFirmwareVersion: 0, sendable: false,
+    blockedReason: "Framing/control word; not a standalone diagnostic inquiry.",
+  }),
+  Object.freeze({
+    id: "CONTROL_00A0", word: "00A0", name: "Request envelope terminator",
+    role: "ENVELOPE_END", position: 4, envelope: ["00A0"],
+    description: "Fourth word in the fixed four-word request envelope; not a standalone ECU inquiry.",
+    source: "current bridge request envelope", sourceUrl: null,
+    classification: "CONTROL", requiredFirmwareVersion: 0, sendable: false,
+    blockedReason: "Framing/control word; not a standalone diagnostic inquiry.",
+  }),
+]);
+
+export function parseFirmwareVersion(status) {
+  const value = typeof status === "number" || typeof status === "string"
+    ? status
+    : status?.fields?.fw ?? parseFields(String(status?.raw || status || "")).fw;
+  const match = String(value ?? "").match(/(?:^|[^0-9])(\d+)(?:$|[^0-9])/);
+  return match ? Number(match[1]) : null;
+}
+
+export function firmwareCompatibility(candidate, firmwareVersion) {
+  const required = Number(candidate?.requiredFirmwareVersion) || 0;
+  const connected = parseFirmwareVersion(firmwareVersion);
+  if (connected == null) {
+    return {
+      required,
+      connected: null,
+      supported: false,
+      message: "Bridge firmware version unverified. Connect an authenticated bridge in safe IDLE to verify compatibility.",
+    };
+  }
+  if (connected < required) {
+    return {
+      required,
+      connected,
+      supported: false,
+      message: `Requires Firmware v${required}+ (Connected bridge: v${connected}). Please flash firmware v${required} to execute.`,
+    };
+  }
+  return { required, connected, supported: true, message: "" };
+}
+
+function probeSpec(id, label, extra = {}) {
+  const candidate = Object.values(EXPERIMENT_CATALOGUE).find(item => item.id === id);
+  return Object.freeze({
+    word: candidate?.commandWord || "",
+    label,
+    description: candidate?.description || "",
+    source: candidate?.source || "",
+    sourceUrl: candidate?.sourceUrl ?? null,
+    evidence: `${candidate?.evidenceLevel || "UNVERIFIED_CANDIDATE"}; not validated on 97AB-12A650-KA.`,
+    parityNote: candidate?.parityNote || "",
+    armCommand: candidate?.armCommand || null,
+    readCommand: candidate?.readCommand || null,
+    variantKey: candidate?.variantKey || null,
+    classification: candidate?.classification || "READ_ONLY",
+    risk: candidate?.risk || "LOW",
+    requiredEcuState: candidate?.requiredEcuState || "ANY_POWERED",
+    repeats: !!candidate?.repeats,
+    parityStatus: candidate?.parityStatus || "NOT_APPLICABLE",
+    envelope: candidate?.envelope || null,
+    sendable: !!candidate?.sendable,
+    blockedReason: candidate?.blockedReason || null,
+    ...extra,
+  });
+}
+
+/** Operation metadata is derived from the catalogue; candidate safety stays single-sourced. */
 export const DCL_PROBE_VARIANTS = Object.freeze({
-  ECU_STATUS: Object.freeze({
-    word: "0381", label: "ECU status", description: "Candidate status request. The external source labels it Get status.",
-    source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
-    evidence: "Experimental third-party command map; not validated on 97AB-12A650-KA.",
-    sendable: true, blockedReason: null,
+  ECU_STATUS: probeSpec("ECU_STATUS", "ECU status · 0381"),
+  PIDMAP: probeSpec("PIDMAP", "Read PID map · 005E", {
+    parityNote: "The published 005E literal differs from the generic VPARITY result 004E. Both are retained as separate candidates; no automatic fallback is used.",
   }),
-  PIDMAP: Object.freeze({
-    word: "005E", label: "Read PID map", description: "The source command table labels this as read PID map (comment: 0x23). Its dedicated 'f' response-state handler is commented out in the reference code, so no decoded response schema is established.",
-    parityNote: "Unresolved source-table mismatch: the published 005E literal fails the generic VPARITY calculation, which gives 004E. No ECU test or independent reference confirms a protocol exception; this may be a source-table typo or an unverified command. Preserve 005E as the published candidate; do not automatically send 004E.",
-    source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
-    evidence: "Experimental third-party command map; not validated on 97AB-12A650-KA.",
-    sendable: true, blockedReason: null,
+  PIDMAP_ALT: probeSpec("PIDMAP_ALT", "PID-map parity alternative · 004E", {
+    parityNote: "Local generic-parity derivation; independent ECU evidence is absent.",
   }),
-  DMRMAP: Object.freeze({
-    word: "242E", label: "Read DMR map", description: "The source command table labels this as read DMR map; no dedicated 'j' response-state handler is present in its scanner code. The acronym's exact expansion remains unresolved.",
-    source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
-    evidence: "Experimental third-party command map; not validated on 97AB-12A650-KA.",
-    sendable: true, blockedReason: null,
+  DMRMAP: probeSpec("DMRMAP", "Read DMR map · 242E"),
+  DMR: probeSpec("DMR_VALUES", "Read DMR values · 22C6"),
+  BOTH: probeSpec("PID_DMR_BOTH", "Read PID + DMR · 271E"),
+  KOEO_ALT: probeSpec("KOEO_ALT", "Alternate KOEO · 2594"),
+  CLEAR_A1: probeSpec("CLEAR_A1", "Clear DCL flags · 01A1"),
+  CLEAR_F4: probeSpec("CLEAR_F4", "Clear DCL errors · 01F4"),
+  DMRMAP_TX: probeSpec("DMRMAP_TX", "Transmit/load DMR map · 42A6"),
+  CHANGE_BAUD: probeSpec("CHANGE_BAUD", "Change DCL baud · 8174"),
+  STOP_PID_FLOW: probeSpec("STOP_PID_FLOW", "Stop PID flow · 411E"),
+  MEM: probeSpec("MEMORY_READ", "Experimental memory read · 42F3 / 22D3"),
+  MEM_OFF0: probeSpec("MEM_OFF0", "MEM offset-zero hypothesis · 42F3 / 22D3"),
+  MEM_SINGLE: probeSpec("MEM_SINGLE", "MEM request-only · 42F3"),
+  MEM_PARITY: probeSpec("MEM_PARITY", "MEM VPARITY continuation · 42F3 / 2293"),
+  PID_VALUES: probeSpec("PID_VALUES", "Read PID values · 21F6"),
+});
+
+export const MEM_EXPERIMENTS = Object.freeze([
+  Object.freeze({ id: "MEM", initialWord: "42F3", continuationWord: "22D3", offsetScope: "1..15", parityMethod: "Fixed firmware literal 22D3 (continuation byte 93)", firmwareVariant: "MEM", title: "Standard sequence" }),
+  Object.freeze({ id: "MEM_OFF0", initialWord: "42F3", continuationWord: "22D3", offsetScope: "0..15 (offset 0 hypothesis)", parityMethod: "Fixed firmware literal 22D3 (continuation byte 93)", firmwareVariant: "MEM_OFF0", title: "Offset zero hypothesis" }),
+  Object.freeze({ id: "MEM_SINGLE", initialWord: "42F3", continuationWord: "—", offsetScope: "Initial request only", parityMethod: "No continuation", firmwareVariant: "MEM_SINGLE", title: "Single block only" }),
+  Object.freeze({ id: "MEM_PARITY", initialWord: "42F3", continuationWord: "2293", offsetScope: "1..15", parityMethod: "Generic Ford VPARITY", firmwareVariant: "MEM_PARITY", title: "Generic VPARITY continuation" }),
+]);
+
+export const FACTORY_PROCEDURES = Object.freeze({
+  OUTPUT_SWITCH_TEST: Object.freeze({
+    id: "OUTPUT_SWITCH_TEST", variant: "KOEO", title: "Output Switch Test",
+    ecuState: "Key on, engine off; stationary, neutral, parking brake applied.",
+    prompts: Object.freeze([
+      "Depress and release the accelerator once to advance the output sequence.",
+      "Observe the cooling fan relay output.",
+      "Observe the fuel pump relay output.",
+      "Observe the EVAP solenoid output.",
+      "Observe the IAC output.",
+    ]),
   }),
-  DMR: Object.freeze({
-    word: "22C6", label: "Read DMR values", description: "The source labels this as read DMR values and has a 'k' address-iteration response handler. Its default DMR map is a list of addresses 0x10–0x4F with zero second bytes, not a validated sensor dictionary.",
-    source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
-    evidence: "Experimental third-party command map; not validated on 97AB-12A650-KA.",
-    sendable: true, blockedReason: null,
-  }),
-  BOTH: Object.freeze({
-    word: "271E", label: "Read PID + DMR values", description: "The source command table labels this as combined PID/DMR values; no dedicated 'l' response-state handler is present in its scanner code, so capture raw only.",
-    source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
-    evidence: "Experimental third-party command map; not validated on 97AB-12A650-KA.",
-    sendable: true, blockedReason: null,
+  CYLINDER_BALANCE_TEST: Object.freeze({
+    id: "CYLINDER_BALANCE_TEST", variant: "KOER", title: "Cylinder Balance Test",
+    ecuState: "Warm engine idling steadily in neutral; stationary with parking brake applied.",
+    prompts: Object.freeze([
+      "When the test prompts, tap the throttle once to establish the RPM-dip baseline.",
+      "Allow the ECU to step through each cylinder. Keep the engine idling steadily and do not hold the throttle.",
+    ]),
   }),
 });
 
-export const DCL_BLOCKED_CANDIDATES = Object.freeze([
-  { word: "42F3 / 22D3", label: "Experimental reverse-engineering memory-read candidate (MEM)", source: "local reverse-engineering candidate", reason: "Deferred pending protocol validation: target address map unverified for SME-105 and 22D3 parity byte 93 differs from the generic-rule result 2293." },
-  { word: "01A1", label: "Clear DCL error/flag register", source: "doncreat0r/eeciv", reason: "State-clearing command; deferred pending protocol support." },
-  { word: "01F4", label: "Clear DCL errors", source: "flxkrmr/eec-iv-reader-arduino", reason: "State-clearing command; deferred pending protocol support." },
-  { word: "0291", label: "Clear DTCs", source: "doncreat0r/eeciv", reason: "Already exposed as CLR; destructive state-change requiring separate approval." },
-  { word: "004E", label: "Parity-derived PID-map alternative", source: "local parity hypothesis only", reason: "Not listed by an external source; 005E is the published literal. Never automatically fall back to 004E." },
-  { word: "8174", label: "Change DCL baud rate", source: "doncreat0r/eeciv", reason: "Risks permanent communication desynchronization; upstream code commented out." },
-  { word: "42A6", label: "Transmit DMR map", source: "doncreat0r/eeciv", reason: "Loads a map into the ECU; payload and target compatibility are unverified." },
-  { word: "411E", label: "Stop PID value flow", source: "doncreat0r/eeciv", reason: "Sequence-dependent state control; not an independent read request." },
-  { word: "2594", label: "Alternate KOEO request", source: "flxkrmr/eec-iv-reader-arduino", reason: "Diagnostic self-test candidate; hold for a separate engine-off test procedure." },
-  { word: "26A4", label: "Alternate stored-code read", source: "flxkrmr/eec-iv-reader-arduino", reason: "Already available as READ_A4; keep separate from the 260E experiment." },
-  { word: "260E", label: "Stored-code read", source: "doncreat0r/eeciv", reason: "Already available as READ_0E; not a new discovery probe." },
-  { word: "253E", label: "KOEO/KOER self-test", source: "doncreat0r/eeciv", reason: "Already available as controlled KOEO/KOER tests; not a passive query." },
-  { word: "4196", label: "Transmit PID map", source: "doncreat0r/eeciv + flxkrmr", reason: "Already used by LIVE modes; this is a map-load step, not a sensor-discovery query." },
-  { word: "21F6", label: "Read PID values", source: "doncreat0r/eeciv + flxkrmr", reason: "Already used by LIVE modes; not a new standalone discovery command." },
-  { word: "80CE / 7F20", label: "Go offline", source: "current bridge firmware", reason: "Already exposed as OFF; changes diagnostic communication state." },
-  { word: "FF5F", label: "Idle block", source: "doncreat0r/eeciv", reason: "Already used as the second word in our fixed request sequence; not an independent command." },
-  { word: "00A0", label: "Request terminator/idle word", source: "current bridge sequence", reason: "Already used as the fourth word; not an independent query." },
-  { word: "procedure", label: "Output Switch / Output State Test", source: "SPX 9640 manual", reason: "Factory scan-tool procedure, not a raw DCL opcode; relays/solenoids toggle after KOEO setup, and injectors are not energized." },
-  { word: "procedure", label: "Cylinder Balance Test", source: "SPX 9640 manual", reason: "Factory guided KOER routine, not a free-form injector opcode; PCM cuts fuel per cylinder while engine runs." },
+export const DCL_BLOCKED_CANDIDATES = Object.freeze(PROTOCOL_FRAMING_REFERENCE
+  .map(candidate => Object.freeze({
+    word: candidate.word,
+    label: candidate.name,
+    source: candidate.source,
+    reason: candidate.blockedReason || "Not an independently sendable bridge operation.",
+  })));
+
+/** Fixed read-only discovery order: exactly the eight passive-probe candidates. */
+export const DISCOVERY_PASS_ORDER = Object.freeze([
+  "STORED_0E", "STORED_A4", "ECU_STATUS", "PIDMAP", "PIDMAP_ALT", "DMRMAP", "DMR_VALUES", "PID_DMR_BOTH",
 ]);
 
 export const VARIANTS = {
@@ -383,12 +548,23 @@ export const VARIANTS = {
   ALL: { command: "ALL", kind: "live", label: "ALL", timeoutMs: TIMEOUTS.ALL, expectMs: 180 * 60 * 1000 },
   CLR: { command: "CLR", kind: "clear", label: "CLR", timeoutMs: TIMEOUTS.CLR, expectMs: 4000 },
   MEM: { command: "MEM", kind: "memory", label: "MEM", timeoutMs: TIMEOUTS.MEM, expectMs: 10000 },
+  MEM_OFF0: { command: "MEM_OFF0", kind: "memory", label: "MEM offset zero", timeoutMs: 13000, expectMs: 13000 },
+  MEM_SINGLE: { command: "MEM_SINGLE", kind: "memory", label: "MEM single block", timeoutMs: TIMEOUTS.MEM, expectMs: TIMEOUTS.MEM },
+  MEM_PARITY: { command: "MEM_PARITY", kind: "memory", label: "MEM VPARITY", timeoutMs: 13000, expectMs: 13000 },
   OFF: { command: "OFF", kind: "offline", label: "OFF", timeoutMs: TIMEOUTS.OFF, expectMs: 15000 },
   ECU_STATUS: { command: "ECU_STATUS", kind: "probe", label: "ECU status · 03 81", timeoutMs: TIMEOUTS.DCL_PROBE, expectMs: TIMEOUTS.DCL_PROBE },
   PIDMAP: { command: "PIDMAP", kind: "probe", label: "PID map · 00 5E", timeoutMs: TIMEOUTS.DCL_PROBE, expectMs: TIMEOUTS.DCL_PROBE },
+  PIDMAP_ALT: { command: "PIDMAP_ALT", kind: "probe", label: "PID map alternative · 00 4E", timeoutMs: TIMEOUTS.DCL_PROBE, expectMs: TIMEOUTS.DCL_PROBE },
   DMRMAP: { command: "DMRMAP", kind: "probe", label: "DMR map · 24 2E", timeoutMs: TIMEOUTS.DCL_PROBE, expectMs: TIMEOUTS.DCL_PROBE },
   DMR: { command: "DMR", kind: "probe", label: "DMR values · 22 C6", timeoutMs: TIMEOUTS.DCL_PROBE, expectMs: TIMEOUTS.DCL_PROBE },
   BOTH: { command: "BOTH", kind: "probe", label: "PID + DMR values · 27 1E", timeoutMs: TIMEOUTS.DCL_PROBE, expectMs: TIMEOUTS.DCL_PROBE },
+  PID_VALUES: { command: "PID_VALUES", kind: "probe", label: "PID values · 21 F6", timeoutMs: TIMEOUTS.DCL_PROBE, expectMs: TIMEOUTS.DCL_PROBE },
+  KOEO_ALT: { command: "KOEO_ALT", kind: "probe", label: "Alternate KOEO · 25 94", timeoutMs: TIMEOUTS.KOEO, expectMs: TIMEOUTS.KOEO },
+  CLEAR_A1: { command: "CLEAR_A1", kind: "probe", label: "Clear DCL flags · 01 A1", timeoutMs: TIMEOUTS.CLR, expectMs: TIMEOUTS.CLR },
+  CLEAR_F4: { command: "CLEAR_F4", kind: "probe", label: "Clear DCL errors · 01 F4", timeoutMs: TIMEOUTS.CLR, expectMs: TIMEOUTS.CLR },
+  DMRMAP_TX: { command: "DMRMAP_TX", kind: "probe", label: "Transmit DMR map · 42 A6", timeoutMs: TIMEOUTS.DCL_PROBE, expectMs: TIMEOUTS.DCL_PROBE },
+  CHANGE_BAUD: { command: "CHANGE_BAUD", kind: "probe", label: "Change DCL baud · 81 74", timeoutMs: TIMEOUTS.DCL_PROBE, expectMs: TIMEOUTS.DCL_PROBE },
+  STOP_PID_FLOW: { command: "STOP_PID_FLOW", kind: "probe", label: "Stop PID flow · 41 1E", timeoutMs: TIMEOUTS.DCL_PROBE, expectMs: TIMEOUTS.DCL_PROBE },
 };
 
 export function reasonText(code) {

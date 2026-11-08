@@ -6,7 +6,8 @@ import { dashboardReading } from "./throttle-display.js";
 import { lookupCode } from "./codes-db.js";
 import { AUTOMATIC_PIDS, judgeReading, PID_TEXT, PIDS, rowsToCsv, summarizeSeries } from "./pids.js";
 import { combinedSnapshot } from "./combined.js";
-import { COMMAND_CATALOGUE, reasonText, stageText, VARIANTS } from "./protocol.js";
+import { COMMAND_CATALOGUE, EXPERIMENT_CATALOGUE, MEM_EXPERIMENTS, dclVParityByte, firmwareCompatibility, reasonText, stageText, VARIANTS } from "./protocol.js";
+import * as PROTOCOL from "./protocol.js";
 import { STR } from "./strings.js";
 import { readingReference, VEHICLE_PROFILE } from "./reference.js";
 import { LIVE_GROUP_HELP, LIVE_GROUP_TITLES, sensorsForGroup, sensorFreshness } from "./live-dashboard.js";
@@ -30,6 +31,13 @@ let detailHistory = null;
 let detailLoad = 0;
 let chartProbe = null;
 let activeView = "live";
+let dclSearch = "";
+let dclCategory = "ALL";
+let dclFirmwareStatus = "ALL";
+let dclSelectedId = "";
+let dclState = null;
+let dclRenderedIds = "";
+const selectedDclCandidates = new Set();
 
 const PREF_KEY = "sme105-dashboard-prefs-v1";
 
@@ -139,6 +147,387 @@ export function confirmDialog(title, body) {
     $("modal-cancel").addEventListener("click", onCancel);
   });
 }
+
+const DCL_CLASS_LABELS = Object.freeze({
+  READ_ONLY: "Read-only · Class A",
+  SELF_TEST: "Self-test · Class B",
+  STATE_CHANGING: "State-changing · Class C",
+  CONFIG_CHANGE: "Config/Baud · Class D",
+  SEQUENCE_DEPENDENT: "Sequence-dependent · Class E",
+  FACTORY_PROCEDURE: "Factory procedure · Class F",
+  CONTROL: "Control word",
+});
+
+function normalizeHexSearch(value) {
+  return String(value || "").toUpperCase().replace(/^0X/, "").replace(/[\s_-]/g, "");
+}
+
+/** The three fixed envelope words are framing references, never standalone executable commands. */
+export function protocolFramingEntries() {
+  const reference = PROTOCOL.PROTOCOL_FRAMING_REFERENCE;
+  if (reference) return Array.isArray(reference) ? [...reference] : Object.values(reference);
+  return Object.values(EXPERIMENT_CATALOGUE).filter(item => item.classification === "CONTROL");
+}
+
+/** The Explorer lists only the 26 actual executable candidates, including the two guided procedures. */
+export function executableCatalogueEntries(catalogue = EXPERIMENT_CATALOGUE) {
+  return Object.values(catalogue).filter(item => item.classification !== "CONTROL");
+}
+
+export function filterDclCatalogue({ query = "", category = "ALL", firmwareStatus = "ALL", firmwareVersion = null } = {}, catalogue = EXPERIMENT_CATALOGUE) {
+  const text = String(query).trim().toLocaleLowerCase();
+  const hex = normalizeHexSearch(query);
+  const searchAsHex = !!hex && /^[0-9A-F]+$/.test(hex);
+  return executableCatalogueEntries(catalogue).filter(item => {
+    if (category !== "ALL" && item.classification !== category) return false;
+    const compatible = item.sendable && firmwareCompatibility(item, firmwareVersion).supported;
+    if (firmwareStatus === "SUPPORTED" && !compatible) return false;
+    if (firmwareStatus === "DEFERRED" && compatible) return false;
+    if (!text) return true;
+    const nameMatch = [item.id, item.name, item.variantKey, item.armCommand, item.readCommand]
+      .some(value => String(value || "").toLocaleLowerCase().includes(text));
+    const wordMatch = searchAsHex && normalizeHexSearch(item.commandWord).includes(hex);
+    return nameMatch || wordMatch;
+  });
+}
+
+function wordsAsBytes(words) {
+  if (!Array.isArray(words) || !words.length) return "Procedure only; no raw command bytes.";
+  return words.map(word => String(word).match(/[0-9A-Fa-f]{4}/g)?.map(group => `${group.slice(0, 2).toUpperCase()} ${group.slice(2).toUpperCase()}`).join(" / ") || String(word)).join(" → ");
+}
+
+function parityDescription(item) {
+  const candidateWords = String(item.commandWord || "").match(/[0-9A-F]{4}/gi) || [];
+  const envelopeWords = (item.envelope || []).filter(word => /^[0-9A-F]{4}$/i.test(word));
+  const words = [...new Set([...envelopeWords, ...candidateWords])];
+  if (!words.length) return "No parity calculation applies to this factory procedure.";
+  const results = words.map(word => {
+    const first = Number.parseInt(word.slice(0, 2), 16);
+    const listed = Number.parseInt(word.slice(2), 16);
+    const id = listed & 0x0f;
+    const calculated = dclVParityByte(first, id);
+    return `${word.slice(0, 2)} ${word.slice(2)} → ${first.toString(16).toUpperCase().padStart(2, "0")} ${calculated.toString(16).toUpperCase().padStart(2, "0")} (${calculated === listed ? "match" : "listed literal differs"})`;
+  });
+  return `VPARITY: high nibble = ((first >> 4) XOR (first AND 0x0F) XOR id XOR 0x0A) AND 0x0F; low nibble = id. ${results.join("; ")}`;
+}
+
+function addDetail(body, label, value) {
+  const row = document.createElement("div");
+  row.className = "dcl-detail-row";
+  const heading = document.createElement("strong");
+  heading.textContent = label;
+  const content = document.createElement("p");
+  content.textContent = String(value ?? "—");
+  row.append(heading, content);
+  body.append(row);
+}
+
+function previousResult(state, item) {
+  const batch = state?.discoveryPass?.results?.filter(result => result.candidateId === item.id).at(-1);
+  if (batch) return `${batch.status} · ${batch.responseBytes ?? 0} RO byte(s) · recording ${batch.recordingId || "not created"}`;
+  const session = state?.lastSession;
+  if (session && session.variant === item.variantKey) {
+    return `${session.verdict?.status || "UNKNOWN"} · ${session.verdict?.end?.ro_bytes ?? 0} RO byte(s) · ${session.completedAt ? new Date(session.completedAt).toISOString() : "completion time unavailable"} · recording ${session.recordingId || "not created"}`;
+  }
+  return "No result recorded for this candidate.";
+}
+
+function selectedCommand(state, item) {
+  const title = $("dcl-command-detail-title");
+  const body = $("dcl-command-detail-body");
+  if (!title || !body) return;
+  title.textContent = `${item.name} · ${item.commandWord}`;
+  body.replaceChildren();
+  const sequence = item.armCommand && item.readCommand
+    ? `STATUS safety check → ${item.armCommand} → wait for read_armed → ${item.readCommand} → stream raw RO bytes through END.`
+    : item.variantKey ? `${item.armCommand || "No arm command"} → ${item.readCommand || "No read command"}; see description for sequence constraints.`
+    : "No direct bridge transmission; see provenance and procedure details.";
+  let exactBytes = wordsAsBytes(item.envelope);
+  if (item.id === "MEMORY_READ") exactBytes += "; fixed continuation: 22 D3 (address map remains experimental).";
+  const prerequisites = [
+    `ECU state: ${item.requiredEcuState || "unspecified"}`,
+    `Repeats: ${item.repeats ? "yes" : "no"}`,
+    item.requiresMapOrQualifier ? "Requires a configured map or qualifier." : "No map or qualifier prerequisite recorded.",
+    "Bridge: authenticated, safe IDLE, stage 0, read_used 0; TX2_BENCH runs first if required.",
+  ].join(" ");
+  addDetail(body, "Exact bytes", exactBytes);
+  addDetail(body, "Transmission sequence", sequence);
+  if (item.runnerKey) {
+    addDetail(body, "Guided factory session", "Initiates the EEC-IV self-test protocol (KOEO or KOER) and guides the technician through manual throttle/pedal inputs while logging raw DCL response. Actuator cycling, fuel-cut sequencing, and cylinder identification are not claimed as verified ECU operations without live evidence.");
+  }
+  addDetail(body, "Parity calculation", parityDescription(item));
+  addDetail(body, "Source provenance", `${item.source}${item.sourceUrl ? ` · ${item.sourceUrl}` : ""}`);
+  addDetail(body, "Prerequisites", prerequisites);
+  addDetail(body, "Classification / risk", `${DCL_CLASS_LABELS[item.classification] || item.classification} · ${item.risk}`);
+  const compatibility = firmwareCompatibility(item, state?.transport === "demo" ? null : state?.status);
+  addDetail(body, "Firmware requirement", `Firmware v${item.requiredFirmwareVersion}+ required. ${state?.transport === "demo" ? "Demo mode uses simulated execution and does not require bridge firmware." : compatibility.message || (compatibility.connected == null ? "Bridge version is unavailable; inspect all details and use simulated execution while disconnected." : `Connected bridge firmware v${compatibility.connected} is compatible.`)}`);
+  addDetail(body, "Transmission status", item.sendable ? "Operational transmission path available." : `Deferred / Needs Setup · ${item.blockedReason || "Not directly sendable."}`);
+  addDetail(body, "Previous result", previousResult(state, item));
+
+  const actions = document.createElement("div");
+  actions.className = "dcl-candidate-actions";
+  const selection = document.createElement("label");
+  selection.className = "check dcl-candidate-select";
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.disabled = !!item.runnerKey || !item.variantKey;
+  checkbox.checked = selectedDclCandidates.has(item.id);
+  checkbox.setAttribute("aria-label", `Select ${item.name} for batch execution`);
+  checkbox.addEventListener("change", () => {
+    if (checkbox.checked) selectedDclCandidates.add(item.id);
+    else selectedDclCandidates.delete(item.id);
+    updateCandidateBatchControls();
+  });
+  selection.append(checkbox, document.createTextNode(checkbox.disabled ? "Run procedure individually" : "Include in batch"));
+  const execute = document.createElement("button");
+  execute.type = "button";
+  execute.className = "primary";
+  execute.textContent = item.classification === "FACTORY_PROCEDURE" ? "Run Guided Procedure" : "Transmit / Run Experiment";
+  execute.disabled = !item.sendable;
+  execute.addEventListener("click", () => document.dispatchEvent(new document.defaultView.CustomEvent("dcl:run-candidate", { detail: { candidateId: item.id } })));
+  actions.append(selection, execute);
+  body.append(actions);
+}
+
+function updateCandidateBatchControls() {
+  const run = $("dcl-run-selected");
+  if (run) run.disabled = !selectedDclCandidates.size;
+}
+
+function commandLabel(id) {
+  const item = Object.values(EXPERIMENT_CATALOGUE).find(entry => entry.id === id);
+  return item ? `${item.name} · ${item.commandWord}` : id;
+}
+
+function renderDiscoveryPass(state) {
+  const pass = state?.discoveryPass;
+  const active = $("discovery-active");
+  const progress = $("discovery-progress");
+  const run = $("discovery-run");
+  const stop = $("discovery-stop");
+  const exportButton = $("discovery-export");
+  if (!active || !progress || !run || !stop || !exportButton) return;
+  const total = pass?.candidates?.length || 8;
+  const finished = (pass?.completed?.length || 0) + (pass?.failed?.length || 0);
+  const activeCount = pass?.status === "running" ? Math.min(total, (pass.currentIndex || 0) + 1) : finished;
+  progress.max = total;
+  progress.value = activeCount;
+  active.textContent = !pass ? "No discovery pass has been run."
+    : pass.status === "running" ? `${activeCount} of ${total} · Active: ${pass.activeVariant || "checking bridge"}`
+    : `${pass.status.toUpperCase()} · ${finished} of ${total} attempted${pass.error ? ` · ${pass.error}` : ""}`;
+  const canStart = state?.link === "ready" && state?.phase === "idle" && state?.transport !== "demo" &&
+    state?.identity?.helloOk === true && state?.identity?.pinsOk === true &&
+    (state?.transport !== "ble" || state?.identity?.auth === "OK") && pass?.status !== "running";
+  run.disabled = !canStart;
+  stop.disabled = pass?.status !== "running";
+  exportButton.disabled = pass?.status === "running" || !pass?.results?.some(result => result.recordingId);
+  const batchStatus = $("dcl-batch-status");
+  if (batchStatus) {
+    const batch = state?.candidateBatch;
+    batchStatus.textContent = !batch ? "No candidate batch is running."
+      : `${String(batch.status || "idle").toUpperCase()} · ${batch.results?.length || 0} candidate(s) executed${batch.error ? ` · ${batch.error}` : ""}`;
+  }
+  const runSelected = $("dcl-run-selected");
+  const stopSelected = $("dcl-stop-selected");
+  const exportExperiments = $("dcl-experiment-export");
+  if (runSelected) runSelected.disabled = selectedDclCandidates.size === 0 || state?.candidateBatch?.status === "running";
+  if (stopSelected) stopSelected.disabled = state?.candidateBatch?.status !== "running";
+  if (exportExperiments) exportExperiments.disabled = !(state?.experimentResults?.length || state?.memMatrix?.results?.length || state?.discoveryPass?.results?.length || state?.lastSession?.dclProbe);
+  const list = (id, rows, kind) => {
+    const node = $(id);
+    if (!node) return;
+    const fragments = rows?.length ? rows.map(item => {
+      const li = document.createElement("li");
+      li.textContent = kind === "remaining" ? commandLabel(item) :
+        `${commandLabel(item.candidateId)} · ${item.status || "UNKNOWN"}${item.responseBytes != null ? ` · ${item.responseBytes} byte(s)` : ""}${item.error ? ` · ${item.error}` : ""}`;
+      return li;
+    }) : [Object.assign(document.createElement("li"), { textContent: "None" })];
+    node.replaceChildren(...fragments);
+  };
+  list("discovery-completed", pass?.completed || [], "completed");
+  list("discovery-failed", pass?.failed || [], "failed");
+  list("discovery-remaining", pass?.remaining || [], "remaining");
+}
+
+function appendCell(row, value) {
+  const cell = document.createElement("td");
+  cell.textContent = String(value ?? "—");
+  row.append(cell);
+  return cell;
+}
+
+function renderMemExperimentMatrix(state) {
+  const body = $("mem-matrix-body");
+  const comparison = $("mem-matrix-comparison");
+  const status = $("mem-matrix-status");
+  const runAll = $("mem-run-all");
+  const stop = $("mem-stop");
+  if (!body || !comparison || !status || !runAll || !stop) return;
+  const matrix = state?.memMatrix || { status: "idle", results: [] };
+  const latest = new Map((matrix.results || []).map(result => [result.experimentId, result]));
+  body.replaceChildren(...MEM_EXPERIMENTS.map(experiment => {
+    const result = latest.get(experiment.id);
+    const row = document.createElement("tr");
+    appendCell(row, experiment.id);
+    appendCell(row, experiment.initialWord);
+    appendCell(row, experiment.continuationWord);
+    appendCell(row, experiment.offsetScope);
+    appendCell(row, experiment.parityMethod);
+    appendCell(row, experiment.firmwareVariant);
+    appendCell(row, result?.status || "NOT RUN");
+    appendCell(row, result?.responseBytes ?? "—");
+    appendCell(row, result?.verdict?.status || result?.error || "—");
+    const action = document.createElement("td");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.memRun = experiment.id;
+    button.textContent = "Run";
+    button.disabled = matrix.status === "running";
+    button.addEventListener("click", () => document.dispatchEvent(new document.defaultView.CustomEvent("dcl:run-mem", { detail: { experimentId: experiment.id } })));
+    action.append(button);
+    row.append(action);
+    return row;
+  }));
+  comparison.replaceChildren(...(matrix.results || []).map(result => {
+    const row = document.createElement("tr");
+    appendCell(row, result.experimentId);
+    appendCell(row, result.responseBytes);
+    appendCell(row, result.responseHex || "(zero bytes)");
+    appendCell(row, result.txEnvelope?.join(" → ") || "—");
+    appendCell(row, result.verdict?.status || result.status);
+    return row;
+  }));
+  status.textContent = matrix.status === "running"
+    ? `Running ${matrix.activeId || "MEM experiment"} · ${matrix.results?.length || 0} result(s) captured.`
+    : matrix.status === "idle" ? "No MEM experiments have been run."
+      : `${String(matrix.status).toUpperCase()} · ${matrix.results?.length || 0} result(s) · ${matrix.error || "Each result retains its raw IndexedDB capture."}`;
+  runAll.disabled = matrix.status === "running";
+  stop.disabled = matrix.status !== "running";
+}
+
+function renderFactoryProcedure(state) {
+  const procedure = state?.factoryProcedure;
+  const status = $("factory-procedure-status");
+  const steps = $("factory-procedure-steps");
+  const next = $("factory-procedure-next");
+  const stop = $("factory-procedure-stop");
+  if (!status || !steps || !next || !stop) return;
+  if (!procedure) {
+    status.textContent = "No factory procedure is running.";
+    steps.replaceChildren();
+    next.disabled = true;
+    stop.disabled = true;
+    return;
+  }
+  const running = ["preflight", "running", "stopping"].includes(procedure.status);
+  status.textContent = `${procedure.title} · ${String(procedure.status).toUpperCase()} · Required: ${procedure.ecuState}` +
+    (procedure.status === "running" ? ` · ${procedure.responseBytes || 0} raw response byte(s) so far.` : "") +
+    (procedure.error ? ` ${procedure.error}` : "") +
+    (procedure.status === "complete" || procedure.status === "stopped" || procedure.status === "incomplete"
+      ? ` Verdict: ${procedure.verdict?.status || "UNKNOWN"}; decoded codes: ${procedure.codes?.map(item => item.code).join(", ") || "none"}.` : "");
+  const instruction = procedure.status === "preflight"
+    ? `Step 1 — Pre-flight: ${procedure.ecuState}`
+    : procedure.status === "running"
+      ? `Step ${procedure.stepIndex + 2} — ${procedure.prompts[procedure.stepIndex] || "All operator prompts completed; ending the capture."}`
+      : `${procedure.prompts.length + 2} guided steps; capture status: ${procedure.verdict?.status || procedure.status}.`;
+  const items = [instruction,
+    procedure.guidance || "Guided factory diagnostic session: initiates the EEC-IV self-test protocol and guides the technician through manual throttle/pedal inputs while logging raw DCL response.",
+    `Step 2 — Transmit the ${procedure.variant} initiation request (253E) to start the EEC-IV self-test protocol.`,
+    ...(procedure.prompts || []).map((prompt, index) => `${procedure.completedPrompts?.includes(prompt) ? "✓" : "○"} ${prompt}`),
+    procedure.evidenceScope || "Raw DCL response capture only. Actuator cycling, fuel-cut sequencing, and cylinder identification are not claimed as verified ECU operations without live evidence.",
+    `Live capture: ${procedure.responseBytes || 0} response byte(s); raw TX/RX transcript is saved in recording ${procedure.recordingId || "when finalized"}.`];
+  steps.replaceChildren(...items.map(text => Object.assign(document.createElement("li"), { textContent: text })));
+  next.disabled = procedure.status !== "running";
+  next.textContent = procedure.stepIndex >= (procedure.prompts?.length || 0) - 1 ? "Finish and Stop Cleanly" : "Next Procedure Step";
+  stop.disabled = !running;
+}
+
+function renderProtocolFramingReference() {
+  const list = $("protocol-framing-list");
+  if (!list) return;
+  const entries = protocolFramingEntries();
+  list.replaceChildren(...entries.map(item => {
+    const row = document.createElement("li");
+    const word = document.createElement("strong");
+    word.className = "mono";
+    word.textContent = item.commandWord || item.word || "—";
+    const name = document.createElement("span");
+    name.textContent = ` · ${item.name || item.label || "Framing word"}`;
+    const description = document.createElement("span");
+    description.textContent = item.description ? ` — ${item.description}` : "";
+    row.append(word, name, description);
+    return row;
+  }));
+  const count = $("dcl-catalogue-count");
+  if (count) {
+    const executable = executableCatalogueEntries().length;
+    count.textContent = `${executable} executable command candidates; ${entries.length} framing reference words are listed separately below.`;
+  }
+}
+
+export function renderDclCommandExplorer(state) {
+  dclState = state;
+  const list = $("dcl-command-list");
+  if (!list) return;
+  renderProtocolFramingReference();
+  const filtered = filterDclCatalogue({ query: dclSearch, category: dclCategory, firmwareStatus: dclFirmwareStatus, firmwareVersion: state?.transport === "demo" ? null : state?.status });
+  if (!filtered.some(item => item.id === dclSelectedId)) dclSelectedId = filtered[0]?.id || "";
+  const renderedIds = filtered.map(item => item.id).join("|");
+  if (renderedIds !== dclRenderedIds) {
+    const buttons = filtered.map(item => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "dcl-command-card";
+      button.setAttribute("role", "listitem");
+      button.setAttribute("aria-pressed", String(item.id === dclSelectedId));
+      const heading = document.createElement("strong");
+      heading.textContent = item.name;
+      const word = document.createElement("span");
+      word.className = "mono";
+      word.textContent = item.commandWord;
+      const status = document.createElement("small");
+      const compatibility = firmwareCompatibility(item, dclState?.transport === "demo" ? null : dclState?.status);
+      status.textContent = `${DCL_CLASS_LABELS[item.classification] || item.classification} · ${!item.sendable ? "Not sendable" : dclState?.transport === "demo" ? "Demo simulation available" : compatibility.message || `Requires fw v${item.requiredFirmwareVersion}+`}`;
+      button.append(heading, word, status);
+      button.addEventListener("click", () => {
+        dclSelectedId = item.id;
+        renderDclCommandExplorer(dclState);
+      });
+      return button;
+    });
+    list.replaceChildren(...buttons);
+    dclRenderedIds = renderedIds;
+  } else {
+    [...list.children].forEach((button, index) => button.setAttribute("aria-pressed", String(filtered[index]?.id === dclSelectedId)));
+  }
+  const selected = filtered.find(item => item.id === dclSelectedId);
+  const body = $("dcl-command-detail-body");
+  if (selected) selectedCommand(state, selected);
+  else {
+    $("dcl-command-detail-title").textContent = "No matching candidates";
+    if (body) body.textContent = "Change the search or filters to show catalogue entries.";
+  }
+  renderDiscoveryPass(state);
+  renderMemExperimentMatrix(state);
+  renderFactoryProcedure(state);
+  updateCandidateBatchControls();
+}
+
+export function wireDclCommandExplorer() {
+  $("dcl-command-search")?.addEventListener("input", event => { dclSearch = event.currentTarget.value; renderDclCommandExplorer(dclState); });
+  $("dcl-command-category")?.addEventListener("change", event => { dclCategory = event.currentTarget.value; renderDclCommandExplorer(dclState); });
+  $("dcl-command-firmware")?.addEventListener("change", event => { dclFirmwareStatus = event.currentTarget.value; renderDclCommandExplorer(dclState); });
+  $("dcl-run-selected")?.addEventListener("click", () => document.dispatchEvent(new document.defaultView.CustomEvent("dcl:run-selected", { detail: { candidateIds: [...selectedDclCandidates] } })));
+  $("mem-run-all")?.addEventListener("click", () => document.dispatchEvent(new document.defaultView.CustomEvent("dcl:run-mem-all")));
+  $("mem-stop")?.addEventListener("click", () => document.dispatchEvent(new document.defaultView.CustomEvent("dcl:stop-mem")));
+  $("dcl-experiment-export")?.addEventListener("click", () => document.dispatchEvent(new document.defaultView.CustomEvent("dcl:export-experiments")));
+  $("factory-procedure-next")?.addEventListener("click", () => document.dispatchEvent(new document.defaultView.CustomEvent("dcl:procedure-next")));
+  $("factory-procedure-stop")?.addEventListener("click", () => document.dispatchEvent(new document.defaultView.CustomEvent("dcl:procedure-stop")));
+  document.querySelectorAll("[data-run-procedure]").forEach(button => button.addEventListener("click", () =>
+    document.dispatchEvent(new document.defaultView.CustomEvent("dcl:run-procedure", { detail: { procedureId: button.dataset.runProcedure } }))));
+}
+
+export function getSelectedDclCandidates() { return [...selectedDclCandidates]; }
 
 function hexByte(value) {
   if (value == null) return STR.notKnown;

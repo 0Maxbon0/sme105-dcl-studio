@@ -3,6 +3,15 @@ import { rowsToCsv } from "./pids.js";
 
 const HEADER = rowsToCsv([]);
 const activeRecordings = new Map();
+
+/** `navigator` is absent in Node 18 and some headless runners; never reference it directly. */
+function storageManager() {
+  try {
+    return typeof navigator !== "undefined" ? navigator.storage : undefined;
+  } catch {
+    return undefined;
+  }
+}
 const WRITER_HEARTBEAT_MS = 5000;
 const WRITER_LEASE_MS = 15000;
 let database;
@@ -47,11 +56,12 @@ export async function recordingBlob(id, kind, extras = []) {
   return new Blob([...parts, ...extras], { type: kind === "csv" ? "text/csv" : "text/plain" });
 }
 
-export async function createRecording(variant, onError = () => {}, unitSystem = "metric") {
+export async function createRecording(variant, onError = () => {}, unitSystem = "metric", extraMetadata = {}) {
   const database = await db();
   const isContinuous = ["LIVE", "LIVE2", "LIVE3", "ALL"].includes(variant);
   const requiredSpace = isContinuous ? 1024 ** 3 : 20 * 1024 ** 2;
-  const estimate = await navigator.storage?.estimate?.();
+  let estimate = null;
+  try { estimate = await storageManager()?.estimate?.(); } catch { estimate = null; }
   if (estimate && estimate.quota - estimate.usage < requiredSpace) {
     const msg = isContinuous
       ? "Less than 1 GB of recording space is available. Free phone storage before a long capture."
@@ -59,12 +69,14 @@ export async function createRecording(variant, onError = () => {}, unitSystem = 
     throw new Error(msg);
   }
   // The browser decides whether persistence can be granted. No data is deleted.
-  const persistent = await navigator.storage?.persist?.().catch(() => false) || false;
+  let persistent = false;
+  try { persistent = !!(await storageManager()?.persist?.()); } catch { persistent = false; }
   const id = new Date().toISOString() + "-" + crypto.randomUUID();
   const writerToken = crypto.randomUUID();
   const fencingGen = 1;
   const metadata = {
     id, sessionId: id, variant, persistent, unitSystem, started: Date.now(),
+    ...extraMetadata,
     writerToken, writerHeartbeat: Date.now(), fencingGen,
   };
   await new Promise((resolve, reject) => {
@@ -446,4 +458,163 @@ export async function exportExperimentArchive(id) {
   const archiveSha = [...new Uint8Array(shaDigest)].map(b => b.toString(16).padStart(2, "0")).join("");
 
   return { blob: zipBlob, sha256Sums: shaText, archiveSha, id, capture };
+}
+
+/** Bundle every finalized capture from one discovery pass with a verified manifest and checksums. */
+export async function exportDiscoveryPassArchive(pass, { appVersion = "", firmwareIdentity = null } = {}) {
+  if (!pass || !Array.isArray(pass.results) || !pass.results.length) throw new Error("No discovery pass captures are available to export.");
+  if (pass.status === "running") throw new Error("Stop or finish the discovery pass before exporting it.");
+  const recordings = new Map((await listRecordings()).map(item => [item.id, item]));
+  const files = new Map();
+  const manifestCandidates = [];
+
+  for (let index = 0; index < pass.results.length; index += 1) {
+    const result = pass.results[index];
+    const recordingId = result.recordingId || null;
+    let paths = null;
+    if (recordingId) {
+      const capture = recordings.get(recordingId);
+      if (!capture) throw new Error(`Discovery recording ${recordingId} is missing from the archive.`);
+      if (!capture.ended || !capture.verdict) throw new Error(`Discovery recording ${recordingId} is not finalized.`);
+      const folder = `captures/${String(index + 1).padStart(2, "0")}-${String(result.candidateId || "candidate").replace(/[^A-Za-z0-9_-]/g, "_")}`;
+      const rawPath = `${folder}/raw.txt`;
+      const metadataPath = `${folder}/recording-metadata.json`;
+      files.set(rawPath, new Uint8Array(await (await recordingBlob(recordingId, "raw")).arrayBuffer()));
+      files.set(metadataPath, new TextEncoder().encode(`${JSON.stringify(capture, null, 2)}\n`));
+      paths = { rawCapture: rawPath, recordingMetadata: metadataPath };
+    }
+    manifestCandidates.push({
+      ...result,
+      recordingId,
+      responseByteCount: Number(result.responseBytes ?? result.verdict?.end?.ro_bytes ?? 0),
+      executionStartedAt: result.startedAt ?? null,
+      executionCompletedAt: result.completedAt ?? null,
+      files: paths,
+    });
+  }
+
+  const checksums = {};
+  for (const [name, bytes] of files) {
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    checksums[name] = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  }
+  const manifest = {
+    schemaVersion: 1,
+    discoveryPassId: pass.id,
+    status: pass.status,
+    startedAt: pass.startedAt,
+    completedAt: pass.completedAt ?? null,
+    summary: {
+      candidateCount: pass.candidates?.length ?? manifestCandidates.length,
+      completedCount: pass.completed?.length ?? 0,
+      failedCount: pass.failed?.length ?? 0,
+      remainingCount: pass.remaining?.length ?? 0,
+      error: pass.error || "",
+    },
+    appVersion,
+    firmwareIdentity,
+    originalRecordingIds: manifestCandidates.map(item => item.recordingId).filter(Boolean),
+    candidates: manifestCandidates,
+    fileSha256: checksums,
+  };
+  files.set("discovery-manifest.json", new TextEncoder().encode(`${JSON.stringify(manifest, null, 2)}\n`));
+
+  const checksumLines = [];
+  const checksumMap = new Map();
+  for (const [name, bytes] of files) {
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    const hash = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    checksumMap.set(name, hash);
+    checksumLines.push(`${hash}  ${name}`);
+  }
+  const shaText = `${checksumLines.join("\n")}\n`;
+  files.set("SHA256SUMS", new TextEncoder().encode(shaText));
+
+  const JSZip = await getJSZip();
+  const zip = new JSZip();
+  for (const [name, bytes] of files) zip.file(name, bytes);
+  const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 5 } });
+  const verifiedZip = await JSZip.loadAsync(await blob.arrayBuffer());
+  for (const [name, expected] of checksumMap) {
+    const entry = verifiedZip.file(name);
+    if (!entry) throw new Error(`Discovery archive is missing ${name}`);
+    const digest = await crypto.subtle.digest("SHA-256", await entry.async("uint8array"));
+    const actual = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    if (actual !== expected) throw new Error(`Discovery archive checksum verification failed for ${name}`);
+  }
+  const archiveDigest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+  const archiveSha = [...new Uint8Array(archiveDigest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  return { blob, archiveSha, sha256Sums: shaText, manifest };
+}
+
+/** Bundle every finalized experiment and procedure recording into a consolidated ZIP archive with verified checksums. */
+export async function exportAllExperimentsArchive({ appVersion = "", firmwareIdentity = null } = {}) {
+  const recordings = await listRecordings();
+  const endedRecordings = recordings.filter(r => r.ended && r.verdict);
+  if (!endedRecordings.length) throw new Error("No finalized experiment recordings are available to export.");
+
+  const files = new Map();
+  const manifestCandidates = [];
+
+  for (let index = 0; index < endedRecordings.length; index += 1) {
+    const capture = endedRecordings[index];
+    const recordingId = capture.id;
+    const folder = `captures/${String(index + 1).padStart(2, "0")}-${String(capture.variant || "experiment").replace(/[^A-Za-z0-9_-]/g, "_")}`;
+    const rawPath = `${folder}/raw.txt`;
+    const metadataPath = `${folder}/recording-metadata.json`;
+    files.set(rawPath, new Uint8Array(await (await recordingBlob(recordingId, "raw")).arrayBuffer()));
+    files.set(metadataPath, new TextEncoder().encode(`${JSON.stringify(capture, null, 2)}\n`));
+    manifestCandidates.push({
+      recordingId,
+      variant: capture.variant,
+      status: capture.verdict?.status || (capture.ended ? "ENDED" : "UNKNOWN"),
+      responseByteCount: Number(capture.verdict?.end?.ro_bytes ?? 0),
+      executionStartedAt: capture.startedAt ?? null,
+      executionCompletedAt: capture.endedAt ?? null,
+      files: { rawCapture: rawPath, recordingMetadata: metadataPath },
+    });
+  }
+
+  const checksums = {};
+  for (const [name, bytes] of files) {
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    checksums[name] = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  }
+  const manifest = {
+    schemaVersion: 1,
+    exportedAt: Date.now(),
+    appVersion,
+    firmwareIdentity,
+    recordingCount: manifestCandidates.length,
+    recordings: manifestCandidates,
+    fileSha256: checksums,
+  };
+  files.set("experiment-manifest.json", new TextEncoder().encode(`${JSON.stringify(manifest, null, 2)}\n`));
+
+  const checksumLines = [];
+  const checksumMap = new Map();
+  for (const [name, bytes] of files) {
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    const hash = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    checksumMap.set(name, hash);
+    checksumLines.push(`${hash}  ${name}`);
+  }
+  const shaText = `${checksumLines.join("\n")}\n`;
+  files.set("SHA256SUMS", new TextEncoder().encode(shaText));
+
+  const JSZip = await getJSZip();
+  const zip = new JSZip();
+  for (const [name, bytes] of files) zip.file(name, bytes);
+  const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 5 } });
+  const verifiedZip = await JSZip.loadAsync(await blob.arrayBuffer());
+  for (const [name, expected] of checksumMap) {
+    const entry = verifiedZip.file(name);
+    if (!entry) throw new Error(`Experiment archive is missing ${name}`);
+    const digest = await crypto.subtle.digest("SHA-256", await entry.async("uint8array"));
+    const actual = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    if (actual !== expected) throw new Error(`Experiment archive checksum verification failed for ${name}`);
+  }
+  const archiveDigest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+  const archiveSha = [...new Uint8Array(archiveDigest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  return { blob, archiveSha, sha256Sums: shaText, manifest };
 }

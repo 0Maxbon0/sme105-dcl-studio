@@ -5,7 +5,12 @@ import { ALL_LIVE_PIDS, PIDS, pidSetForVariant, summarizeSeries } from "./pids.j
 import {
   TIMEOUTS,
   VARIANTS,
+  COMMAND_CATALOGUE,
+  DISCOVERY_PASS_ORDER,
   DCL_PROBE_VARIANTS,
+  FACTORY_PROCEDURES,
+  MEM_EXPERIMENTS,
+  firmwareCompatibility,
   parseLine,
   reasonText,
 } from "./protocol.js";
@@ -18,6 +23,55 @@ function unique(list) {
   const out = [];
   for (const item of list) if (item && !out.includes(item)) out.push(item);
   return out;
+}
+
+const CATALOGUE_ENTRIES = Object.values(COMMAND_CATALOGUE);
+
+export function discoveryPassCandidates() {
+  const orderedIds = [...DISCOVERY_PASS_ORDER];
+  return orderedIds.map(id => CATALOGUE_ENTRIES.find(item => item.id === id)).filter(item =>
+    item?.sendable && item.classification === "READ_ONLY" && item.variantKey && VARIANTS[item.variantKey]);
+}
+
+const ECU_STATE_TRANSITIONS = Object.freeze({
+  ANY_POWERED: "ignition ON so the ECU is powered, transmission in neutral, parking brake applied",
+  KEY_ON_ENGINE_OFF: "ignition ON, engine OFF, transmission in neutral, parking brake applied",
+  KEY_ON_ENGINE_RUNNING: "engine running at operating temperature, vehicle stationary in neutral, parking brake applied",
+  ACTIVE_PID_FLOW: "an active PID data stream that this command is allowed to stop",
+});
+
+/** State-changing, self-test, configuration, and experimental memory reads need a fresh operator check. */
+export function candidateRequiresOperatorConfirmation(candidate) {
+  if (!candidate) return true;
+  return candidate.classification !== "READ_ONLY" ||
+    candidate.id === "MEMORY_READ" || String(candidate.id).startsWith("MEM_");
+}
+
+export function candidateRequiredStateText(candidate) {
+  const state = candidate?.requiredEcuState || "ANY_POWERED";
+  return ECU_STATE_TRANSITIONS[state] || `the ECU state recorded as ${state}`;
+}
+
+export function candidateConfirmationRequiredMessage(candidate) {
+  return `${candidate?.name || "This command"} was not transmitted because the operator confirmation or required vehicle state was not provided. Required transition: ${candidateRequiredStateText(candidate)}.`;
+}
+
+
+function catalogueCandidateForVariant(variant) {
+  return CATALOGUE_ENTRIES.find(candidate => candidate.variantKey === variant) || null;
+}
+
+function verifiedBridgeStatus(parsed) {
+  const statusKeys = [...parsed.raw.matchAll(/(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)=/g)].map(match => match[1]);
+  return parsed.identity === "SME105_USB_BRIDGE_V1" && new Set(statusKeys).size === statusKeys.length &&
+    ["out_overflow", "transport_lost", "usb_skipped"].every(key => parsed.fields[key] === "0" ||
+      (parsed.fields[key] == null && !(Number(parsed.fields.fw) >= 24 || parsed.fields.pad_evidence === "2"))) &&
+    ["0", "3", "4", "15", "16", "19"].includes(parsed.fields.fault);
+}
+
+function statusCanRearm(parsed) {
+  return verifiedBridgeStatus(parsed) && parsed.safe && parsed.fields.stage === "0" &&
+    parsed.fields.read_used === "0" && parsed.fields.fault === "0";
 }
 
 export function createController({ now = () => Date.now(), send = () => {} } = {}) {
@@ -42,6 +96,11 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     deadline: null,
     combined: null,
     archive: null,
+    discoveryPass: null,
+    memMatrix: { status: "idle", activeId: "", stopRequested: false, results: [] },
+    factoryProcedure: null,
+    experimentResults: [],
+    candidateBatch: null,
   };
 
   function touch() {
@@ -59,7 +118,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     }
     const variant = state.op?.variant || state.lastSession?.variant || "";
     const requestedMode = variant === "0E" || variant === "A4" ? 0x26
-      : variant === "KOEO" || variant === "KOER" ? 0x25 : null;
+      : variant === "KOEO" || variant === "KOER" || variant === "KOEO_ALT" ? 0x25 : null;
     const probeSpec = DCL_PROBE_VARIANTS[variant] || null;
     const dclProbe = probeSpec ? {
       variant, ...probeSpec,
@@ -67,6 +126,12 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       responseObserved: (state.op?.session?.rx ?? 0) > 0,
       ecuOriginVerified: false,
       bridgeCaptureStatus: verdict.status,
+    } : null;
+    const factoryProcedure = state.factoryProcedure ? {
+      ...state.factoryProcedure,
+      prompts: [...state.factoryProcedure.prompts],
+      codes: [...(state.factoryProcedure.codes || [])],
+      verdict: state.factoryProcedure.verdict ? { ...state.factoryProcedure.verdict } : null,
     } : null;
     const codes = (snap?.codes || []).map((entry) => ({
       code: entry.code,
@@ -93,6 +158,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       variant,
       kind: state.op?.kind || "",
       dclProbe,
+      factoryProcedure,
       source: state.op?.source || "bridge",
       startedAt: state.op?.startedAt || null,
       completedAt: now(),
@@ -123,6 +189,10 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       blocks25: snap?.blocks25 || 0,
       blocks26: snap?.blocks26 || 0,
       bridgeBlocks: state.op?.session?.bridgeBlocks ?? null,
+      bridgeFaults: [...(state.op?.session?.faults || [])],
+      bridgeProblems: [...(state.op?.session?.problems || [])],
+      operatorStop: !!state.op?.operatorStop,
+      recordingError: state.archive?.error || "",
       offlineQuietUs: state.op?.session?.offlineQuietUs ?? null,
       parityRejects: snap?.parityRejects || 0,
       codeParityRejects: snap?.codeParityRejects || 0,
@@ -164,6 +234,17 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       };
     } else if (!verdict) {
       verdict = { valid: false, status: "INCOMPLETE", reasons: ["session did not start"], end: null };
+    }
+    if (state.factoryProcedure?.status === "running" || state.factoryProcedure?.status === "stopping") {
+      const procedure = state.factoryProcedure;
+      procedure.status = state.op?.operatorStop ? "stopped"
+        : procedure.stepIndex >= procedure.prompts.length ? "complete" : "incomplete";
+      procedure.completedAt = now();
+      procedure.responseBytes = session?.rx ?? 0;
+      procedure.codes = [...(state.cart?.snapshot()?.codes || [])];
+      procedure.verdict = verdict;
+      procedure.error = procedure.status === "stopped" ? "Stopped by operator."
+        : procedure.status === "incomplete" ? "Capture ended before all procedure prompts were completed." : "";
     }
     state.lastSession = buildResult(verdict);
     state.lastSession.recordingId = state.archive?.id || null;
@@ -284,17 +365,35 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       receivedAt: now(),
     };
     state.bench.pass = parsed.fields.tx2_bench_pass === "1";
+    if (state.phase === "discovery_status") {
+      const ok = state.link === "ready" &&
+        (state.transport !== "ble" || state.identity.auth === "OK") && statusCanRearm(parsed);
+      const result = {
+        ok,
+        status: state.status,
+        error: ok ? "" : state.link !== "ready"
+          ? "Bridge connection was lost during the safety check."
+          : !parsed.safe ? "Bridge is not in a safe IDLE state."
+          : parsed.fields.read_used !== "0" ? "Bridge read latch is used; it cannot be re-armed."
+          : parsed.fields.fault !== "0" ? `Bridge reports fault ${parsed.fields.fault}; discovery stopped.`
+          : "Bridge status is incomplete or reports transport errors.",
+      };
+      state.phase = "idle";
+      state.deadline = null;
+      state.message = ok ? "Bridge safe and re-armable" : result.error;
+      const resolve = state.discoveryPass?.statusResolver;
+      if (state.discoveryPass) state.discoveryPass.statusResolver = null;
+      touch();
+      resolve?.(result);
+      return;
+    }
     if (state.phase === "identify_status") {
       state.phase = "idle";
       state.deadline = null;
       state.message = parsed.safe ? "Bridge idle" : "Bridge is not in a safe idle state";
       return;
     }
-    const statusKeys = [...parsed.raw.matchAll(/(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)=/g)].map(match => match[1]);
-    const verifiedStatus = parsed.identity === "SME105_USB_BRIDGE_V1" && new Set(statusKeys).size === statusKeys.length &&
-      ["out_overflow", "transport_lost", "usb_skipped"].every(key => parsed.fields[key] === "0" ||
-        (parsed.fields[key] == null && !(Number(parsed.fields.fw) >= 24 || parsed.fields.pad_evidence === "2"))) &&
-      ["0", "3", "4", "15", "16", "19"].includes(parsed.fields.fault);
+    const verifiedStatus = verifiedBridgeStatus(parsed);
     if (state.phase === "reboot_status") {
       if (!parsed.safe || !verifiedStatus || state.link !== "ready" ||
           (state.transport === "ble" && state.identity.auth !== "OK") ||
@@ -358,6 +457,7 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       } : {});
     }
     noteSessionLine(state.op.session, parsed);
+    if (state.factoryProcedure?.status === "running") state.factoryProcedure.responseBytes = state.op.session.rx;
     try {
       if (parsed.type === "rx" && state.cart) state.cart.pushRx(parsed.t_us, parsed.byte, now());
       if (parsed.type === "rx_batch" && state.cart) {
@@ -449,6 +549,11 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
         return;
       }
       state.phase = "read";
+      if (state.factoryProcedure?.status === "preflight") {
+        state.factoryProcedure.status = "running";
+        state.factoryProcedure.stepIndex = 0;
+        state.factoryProcedure.startedAt = now();
+      }
       if (state.combined?.active) state.combined.rotateAt = now() + GROUP_WINDOW_MS;
       state.op.session = createSession();
       state.cart = createCartDecoder(pidSetForVariant(state.op.variant));
@@ -542,6 +647,38 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     touch();
   }
 
+  function waitForCapture(variant, previousSession) {
+    return new Promise(resolve => {
+      let observed = !!state.op;
+      let settled = false;
+      let timer;
+      const done = value => {
+        if (settled) return;
+        settled = true;
+        listeners.delete(check);
+        clearTimeout(timer);
+        resolve(value);
+      };
+      const check = () => {
+        if (state.op?.variant === variant) observed = true;
+        if (observed && !state.op && state.phase === "idle" && state.lastSession && state.lastSession !== previousSession) {
+          done({ ok: true, session: state.lastSession });
+        } else if (state.link !== "ready" && !state.op) {
+          done({ ok: false, error: "Bridge connection was lost before the capture completed." });
+        }
+      };
+      listeners.add(check);
+      timer = setTimeout(() => {
+        if (state.op && state.phase !== "stopping") {
+          state.op.operatorStop = true;
+          stop();
+          timer = setTimeout(() => done({ ok: false, error: "Capture did not finalize after STOP." }), TIMEOUTS.stop + 1000);
+        } else done({ ok: false, error: "Capture did not reach a finalized END." });
+      }, (VARIANTS[variant]?.timeoutMs || TIMEOUTS.DCL_PROBE) + TIMEOUTS.status + TIMEOUTS.arm + TIMEOUTS.stop + 5000);
+      check();
+    });
+  }
+
   return {
     state,
     setArchive(archive) {
@@ -592,6 +729,15 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       state.identity.auth = "";
       state.deviceName = "";
       state.transport = "";
+      if (phase === "discovery_status") {
+        state.phase = "idle";
+        state.deadline = null;
+        const resolve = state.discoveryPass?.statusResolver;
+        if (state.discoveryPass) state.discoveryPass.statusResolver = null;
+        resolve?.({ ok: false, error: "Bridge connection was lost during the safety check." });
+        touch();
+        return;
+      }
       if (phase === "idle") {
         state.message = "Disconnected";
         touch();
@@ -610,6 +756,14 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     requestVehicle(variant) {
       if (state.combined?.active) return { ok: false, error: "all-data recording is running" };
       if (!VARIANTS[variant]) return { ok: false, error: "unknown variant" };
+      const candidate = catalogueCandidateForVariant(variant);
+      const compatibility = candidate ? firmwareCompatibility(candidate, state.status) : { supported: true, message: "" };
+      const isDemo = state.transport === "demo" || state.deviceName === "demo" || state.deviceName?.includes?.("demo");
+      if (state.link === "ready" && !isDemo && !compatibility.supported) {
+        state.message = compatibility.message;
+        touch();
+        return { ok: false, error: compatibility.message };
+      }
       if (variant === "ALL" && state.status?.fields?.live_all !== "1") {
         return { ok: false, error: "Continuous all-data capture requires bridge firmware v21 or newer." };
       }
@@ -667,6 +821,499 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       if (state.op && state.phase !== "stopping") state.op.operatorStop = true;
       stop();
     },
+    async runCandidateBatch({ candidateIds = [], createArchive = null, onProgress = () => {}, confirmCandidate = null } = {}) {
+      if (state.candidateBatch?.status === "running") return { ok: false, error: "A candidate batch is already running." };
+      if (typeof createArchive !== "function") return { ok: false, error: "A recording archive factory is required." };
+      const candidates = candidateIds.map(id => CATALOGUE_ENTRIES.find(item => item.id === id)).filter(item => item?.sendable && item.variantKey && VARIANTS[item.variantKey]);
+      if (!candidates.length) return { ok: false, error: "Select at least one executable command candidate." };
+      if (state.link !== "ready" || state.phase !== "idle" ||
+          (state.transport === "ble" && state.identity.auth !== "OK")) {
+        return { ok: false, error: "Connect an authenticated idle bridge, or enable Demo mode, before running candidates." };
+      }
+      const batch = {
+        status: "running", startedAt: now(), completedAt: null, candidateIds: candidates.map(item => item.id),
+        currentId: "", stopRequested: false, results: [], error: "", skipped: [],
+      };
+      state.candidateBatch = batch;
+      const publish = () => { try { onProgress(batch); } catch { /* Display callbacks cannot alter bridge state. */ } touch(); };
+      publish();
+      for (const candidate of candidates) {
+        if (batch.stopRequested) break;
+        batch.currentId = candidate.id;
+        const compatibility = firmwareCompatibility(candidate, state.status);
+        if (state.transport !== "demo" && !compatibility.supported) {
+          batch.results.push({ candidateId: candidate.id, status: "FIRMWARE_TOO_OLD", responseBytes: 0, recordingId: null, error: compatibility.message, startedAt: now(), completedAt: now() });
+          publish();
+          continue;
+        }
+        if (candidateRequiresOperatorConfirmation(candidate)) {
+          let approved = false;
+          if (typeof confirmCandidate === "function") {
+            try { approved = await confirmCandidate(candidate, { batch }); }
+            catch { approved = false; }
+          }
+          if (!approved) {
+            const error = candidateConfirmationRequiredMessage(candidate);
+            batch.results.push({ candidateId: candidate.id, variant: candidate.variantKey, commandWord: candidate.commandWord, status: "CONFIRMATION_REQUIRED", responseBytes: 0, recordingId: null, error, startedAt: now(), completedAt: now() });
+            batch.skipped.push(candidate.id);
+            publish();
+            continue;
+          }
+          if (batch.stopRequested) break;
+        }
+        const startedAt = now();
+        let archive;
+        try {
+          archive = await createArchive(candidate.variantKey, candidate, { batchId: batch.startedAt, batchCandidateId: candidate.id });
+          archive?.line?.(`EXPERIMENT_CANDIDATE id=${candidate.id} command=${candidate.commandWord} tx=${candidate.envelope?.join(" ") || "procedure"}`);
+        } catch (error) {
+          batch.error = `Could not create recording for ${candidate.name}: ${error.message}`;
+          batch.results.push({ candidateId: candidate.id, status: "ARCHIVE_FAILED", responseBytes: 0, recordingId: null, error: error.message, startedAt, completedAt: now() });
+          break;
+        }
+        if (batch.stopRequested) {
+          await archive?.finish?.({ valid: false, status: "INCOMPLETE", reasons: ["Stopped before transmission"] });
+          break;
+        }
+        try { this.setArchive(archive); }
+        catch (error) {
+          await archive?.finish?.({ valid: false, status: "INCOMPLETE", reasons: [error.message] });
+          batch.error = error.message;
+          break;
+        }
+        const previous = state.lastSession;
+        const completion = waitForCapture(candidate.variantKey, previous);
+        const startError = beginVehicle(candidate.variantKey);
+        if (startError) {
+          await archive?.finish?.({ valid: false, status: "INCOMPLETE", reasons: [startError] });
+          batch.error = startError;
+          batch.results.push({ candidateId: candidate.id, status: "NOT_STARTED", responseBytes: 0, recordingId: archive?.id || null, error: startError, startedAt, completedAt: now() });
+          break;
+        }
+        const capture = await completion;
+        if (!capture.ok) {
+          batch.error = capture.error;
+          if (state.op && state.phase !== "stopping") { state.op.operatorStop = true; stop(); }
+          break;
+        }
+        await state.archive?.finished;
+        const session = capture.session;
+        const end = session.verdict?.end || null;
+        const responseBytes = end?.ro_bytes ?? session.dclProbe?.responseBytes ?? 0;
+        const zeroResponse = !session.operatorStop && responseBytes === 0 && end && [15, 16].includes(end.reason) && end.de === "LOW" && end.ro_lost === 0 && end.uart_errors === 0 && !(session.bridgeFaults || []).length;
+        const result = {
+          candidateId: candidate.id, variant: candidate.variantKey, commandWord: candidate.commandWord,
+          status: session.operatorStop ? "STOPPED" : zeroResponse ? "ZERO_RESPONSE" : session.verdict?.status || "FAILED",
+          responseBytes, recordingId: session.recordingId || archive?.id || null, verdict: session.verdict || null,
+          startedAt: session.startedAt || startedAt, completedAt: session.completedAt || now(), error: session.recordingError || "",
+        };
+        batch.results.push(result);
+        state.experimentResults.push(result);
+        publish();
+        if (session.operatorStop || batch.stopRequested) break;
+        if (state.link !== "ready" || session.recordingError || (end && ![15, 16].includes(end.reason))) {
+          batch.error = session.recordingError || "Bridge capture fault; candidate batch stopped without retry.";
+          break;
+        }
+      }
+      if (batch.skipped.length && !batch.error) {
+        batch.error = `${batch.skipped.length} command(s) were skipped because the operator confirmation or required vehicle state was not provided. No command was retried.`;
+      }
+      batch.status = batch.stopRequested ? "stopped" : batch.error ? "failed" : "complete";
+      batch.currentId = "";
+      batch.completedAt = now();
+      publish();
+      return { ok: batch.status === "complete", batch, error: batch.error };
+    },
+    stopCandidateBatch() {
+      const batch = state.candidateBatch;
+      if (!batch || batch.status !== "running") return;
+      batch.stopRequested = true;
+      if (state.op && state.phase !== "stopping") {
+        state.op.operatorStop = true;
+        stop();
+      }
+      state.message = "Stopping candidate batch safely";
+      touch();
+    },
+    async runMemExperiment(experimentId, { createArchive = null } = {}) {
+      if (state.memMatrix.status === "running") return { ok: false, error: "A MEM experiment run is already active." };
+      return this.runAllMemExperiments({ createArchive, experimentIds: [experimentId] });
+    },
+    async runAllMemExperiments({ createArchive = null, experimentIds = MEM_EXPERIMENTS.map(item => item.id) } = {}) {
+      if (state.memMatrix.status === "running") return { ok: false, error: "A MEM experiment run is already active." };
+      if (typeof createArchive !== "function") return { ok: false, error: "A recording archive factory is required." };
+      if (!experimentIds.length || experimentIds.some(id => !MEM_EXPERIMENTS.some(item => item.id === id))) {
+        return { ok: false, error: "Unknown MEM experiment selection." };
+      }
+      if (state.link !== "ready" || state.phase !== "idle" ||
+          (state.transport === "ble" && state.identity.auth !== "OK")) {
+        return { ok: false, error: "Connect an authenticated idle bridge, or enable Demo mode, before running MEM experiments." };
+      }
+      state.memMatrix.status = "running";
+      state.memMatrix.stopRequested = false;
+      state.memMatrix.startedAt = now();
+      state.memMatrix.completedAt = null;
+      state.memMatrix.error = "";
+      state.memMatrix.results = state.memMatrix.results.filter(result => !experimentIds.includes(result.experimentId));
+      touch();
+      for (const experimentId of experimentIds) {
+        if (state.memMatrix.stopRequested) break;
+        const spec = MEM_EXPERIMENTS.find(item => item.id === experimentId);
+        const candidate = CATALOGUE_ENTRIES.find(item => item.variantKey === spec.firmwareVariant);
+        const compatibility = firmwareCompatibility(candidate, state.status);
+        if (state.transport !== "demo" && !compatibility.supported) {
+          const blocked = {
+            experimentId, variant: spec.firmwareVariant, title: spec.title, status: "FIRMWARE_TOO_OLD",
+            responseBytes: 0, responseHex: "", txEnvelope: candidate?.envelope || [], verdict: null,
+            recordingId: null, startedAt: now(), completedAt: now(), error: compatibility.message,
+          };
+          state.memMatrix.results.push(blocked);
+          state.memMatrix.error = compatibility.message;
+          touch();
+          continue;
+        }
+        const startedAt = now();
+        state.memMatrix.activeId = experimentId;
+        touch();
+        let archive;
+        try {
+          archive = await createArchive(spec.firmwareVariant, candidate, {
+            experimentId, matrixId: "MEM", startedAt, specification: spec,
+          });
+          archive?.line?.(`MEM_EXPERIMENT id=${experimentId} initial=${spec.initialWord} continuation=${spec.continuationWord} offsets=${spec.offsetScope} parity=${spec.parityMethod}`);
+        } catch (error) {
+          state.memMatrix.results.push({
+            experimentId, variant: spec.firmwareVariant, title: spec.title, status: "ARCHIVE_FAILED",
+            responseBytes: 0, responseHex: "", txEnvelope: candidate?.envelope || [], verdict: null,
+            recordingId: null, startedAt, completedAt: now(), error: error.message,
+          });
+          state.memMatrix.error = error.message;
+          break;
+        }
+        if (state.memMatrix.stopRequested) {
+          await archive?.finish?.({ valid: false, status: "INCOMPLETE", reasons: ["Stopped before transmission"] });
+          break;
+        }
+        try { this.setArchive(archive); }
+        catch (error) {
+          await archive?.finish?.({ valid: false, status: "INCOMPLETE", reasons: [error.message] });
+          state.memMatrix.error = error.message;
+          break;
+        }
+        const previous = state.lastSession;
+        const completion = waitForCapture(spec.firmwareVariant, previous);
+        const startError = beginVehicle(spec.firmwareVariant);
+        if (startError) {
+          await archive?.finish?.({ valid: false, status: "INCOMPLETE", reasons: [startError] });
+          state.memMatrix.results.push({
+            experimentId, variant: spec.firmwareVariant, title: spec.title, status: "NOT_STARTED",
+            responseBytes: 0, responseHex: "", txEnvelope: candidate?.envelope || [], verdict: null,
+            recordingId: archive?.id || null, startedAt, completedAt: now(), error: startError,
+          });
+          state.memMatrix.error = startError;
+          break;
+        }
+        const capture = await completion;
+        if (!capture.ok) {
+          state.memMatrix.error = capture.error;
+          if (state.op && state.phase !== "stopping") { state.op.operatorStop = true; stop(); }
+          break;
+        }
+        await state.archive?.finished;
+        const session = capture.session;
+        const end = session.verdict?.end || null;
+        const responseBytes = end?.ro_bytes ?? session.dclProbe?.responseBytes ?? 0;
+        const responseHex = latestDclCaptureLines(state.log).flatMap(line => {
+          const rx = /^RX\s+t_us=\d+\s+byte=([0-9A-F]{2})/.exec(line);
+          const rxb = /^RXB\s+t_us=\d+\s+data=([0-9A-F]+)/.exec(line);
+          return rx ? [rx[1]] : rxb ? rxb[1].match(/.{2}/g) || [] : [];
+        }).join(" ");
+        const zeroResponse = responseBytes === 0 && end && [15, 16].includes(end.reason) && end.de === "LOW" &&
+          end.ro_lost === 0 && end.uart_errors === 0 && !(session.bridgeFaults || []).length;
+        const result = {
+          experimentId, variant: spec.firmwareVariant, title: spec.title,
+          status: session.operatorStop ? "STOPPED" : zeroResponse ? "ZERO_RESPONSE" : session.verdict?.valid ? "VALID" : "FAILED",
+          responseBytes, responseHex, txEnvelope: candidate?.envelope || [], verdict: session.verdict || null,
+          recordingId: session.recordingId || archive?.id || null,
+          startedAt: session.startedAt || startedAt, completedAt: session.completedAt || now(),
+          firmwareVersion: state.status?.fields?.fw || null,
+          error: session.recordingError || "",
+        };
+        state.memMatrix.results.push(result);
+        touch();
+        if (session.operatorStop || state.memMatrix.stopRequested) break;
+        if (state.link !== "ready" || session.recordingError || (end && ![15, 16].includes(end.reason))) {
+          state.memMatrix.error = session.recordingError || "Bridge ended the MEM capture with a fault.";
+          break;
+        }
+      }
+      state.memMatrix.status = state.memMatrix.stopRequested ? "stopped" : state.memMatrix.error ? "failed" : "complete";
+      state.memMatrix.activeId = "";
+      state.memMatrix.completedAt = now();
+      touch();
+      return { ok: state.memMatrix.status === "complete", matrix: state.memMatrix, error: state.memMatrix.error };
+    },
+    stopMemExperiments() {
+      if (state.memMatrix.status !== "running") return;
+      state.memMatrix.stopRequested = true;
+      if (state.op && state.phase !== "stopping") {
+        state.op.operatorStop = true;
+        stop();
+      }
+      state.message = "Stopping MEM experiment safely";
+      touch();
+    },
+    async startFactoryProcedure(procedureId, { createArchive = null } = {}) {
+      const spec = FACTORY_PROCEDURES[procedureId];
+      const candidate = CATALOGUE_ENTRIES.find(item => item.id === procedureId);
+      if (!spec || !candidate?.sendable) return { ok: false, error: "Unknown factory procedure." };
+      if (typeof createArchive !== "function") return { ok: false, error: "A recording archive factory is required." };
+      if (state.factoryProcedure?.status === "preflight" || state.factoryProcedure?.status === "running" || state.factoryProcedure?.status === "stopping") {
+        return { ok: false, error: "A guided factory procedure is already active." };
+      }
+      if (state.link !== "ready" || state.phase !== "idle" ||
+          (state.transport === "ble" && state.identity.auth !== "OK")) return { ok: false, error: "Connect an authenticated idle bridge before starting the procedure." };
+      const compatibility = firmwareCompatibility(candidate, state.status);
+      if (state.transport !== "demo" && !compatibility.supported) return { ok: false, error: compatibility.message };
+      const procedure = {
+        id: procedureId, title: spec.title, variant: spec.variant, status: "preflight",
+        ecuState: spec.ecuState, prompts: [...spec.prompts], completedPrompts: [], stepIndex: 0,
+        protocol: "EEC-IV diagnostic self-test protocol (253E)",
+        guidance: "Guided factory diagnostic session: initiates the EEC-IV self-test protocol and guides the technician through manual throttle/pedal inputs while logging raw DCL response.",
+        evidenceScope: "Raw DCL response capture only. Actuator cycling, fuel-cut sequencing, and cylinder identification are not claimed as verified ECU operations without live evidence.",
+        startedAt: now(), completedAt: null, responseBytes: 0, codes: [], verdict: null, error: "",
+      };
+      let archive;
+      try {
+        archive = await createArchive(spec.variant, candidate, { procedureId, procedureTitle: spec.title });
+        archive?.line?.(`FACTORY_PROCEDURE id=${procedureId} variant=${spec.variant} required=${spec.ecuState}`);
+        archive?.line?.(`FACTORY_SESSION protocol="${procedure.protocol}" guidance="${procedure.guidance}" evidence="${procedure.evidenceScope}"`);
+      } catch (error) { return { ok: false, error: `Could not create procedure recording: ${error.message}` }; }
+      try { this.setArchive(archive); }
+      catch (error) {
+        await archive?.finish?.({ valid: false, status: "INCOMPLETE", reasons: [error.message] });
+        return { ok: false, error: error.message };
+      }
+      procedure.recordingId = archive?.id || null;
+      state.factoryProcedure = procedure;
+      const startError = beginVehicle(spec.variant);
+      if (startError) {
+        state.factoryProcedure.status = "failed";
+        state.factoryProcedure.error = startError;
+        await archive?.finish?.({ valid: false, status: "INCOMPLETE", reasons: [startError] });
+        touch();
+        return { ok: false, error: startError };
+      }
+      return { ok: true, procedure: state.factoryProcedure };
+    },
+    nextFactoryProcedureStep() {
+      const procedure = state.factoryProcedure;
+      if (!procedure || procedure.status !== "running" || state.phase !== "read") return { ok: false, error: "The procedure is not waiting for an operator step." };
+      if (procedure.stepIndex < procedure.prompts.length) {
+        procedure.completedPrompts.push(procedure.prompts[procedure.stepIndex]);
+        procedure.stepIndex += 1;
+      }
+      if (procedure.stepIndex >= procedure.prompts.length) {
+        procedure.status = "stopping";
+        state.message = "Procedure steps complete — ending capture cleanly";
+        stop();
+      }
+      touch();
+      return { ok: true, procedure };
+    },
+    stopFactoryProcedure() {
+      const procedure = state.factoryProcedure;
+      if (!procedure || !["preflight", "running"].includes(procedure.status)) return;
+      procedure.status = "stopping";
+      if (state.op && state.phase !== "stopping") {
+        state.op.operatorStop = true;
+        stop();
+      }
+      state.message = "Stopping factory procedure and draining capture";
+      touch();
+    },
+    async startDiscoveryPass({ createArchive = null, onProgress = () => {} } = {}) {
+      if (state.discoveryPass?.status === "running") return { ok: false, error: "A discovery pass is already running." };
+      const candidates = discoveryPassCandidates();
+      if (!candidates.length) return { ok: false, error: "No supported read-only discovery candidates are available." };
+      if (typeof createArchive !== "function") return { ok: false, error: "A recording archive factory is required." };
+      if (state.link !== "ready" || state.phase !== "idle" || state.transport === "demo" ||
+          state.identity.helloOk !== true || state.identity.pinsOk !== true ||
+          (state.transport === "ble" && state.identity.auth !== "OK")) {
+        return { ok: false, error: "Connect and verify an idle physical bridge before discovery." };
+      }
+
+      const pass = {
+        id: `discovery-${now()}-${Math.random().toString(36).slice(2, 8)}`,
+        status: "running", startedAt: now(), completedAt: null,
+        candidates: candidates.map(item => item.id), currentIndex: -1, activeVariant: "",
+        completed: [], failed: [], remaining: candidates.map(item => item.id), results: [],
+        stopRequested: false, error: "", statusResolver: null,
+      };
+      state.discoveryPass = pass;
+      const publish = () => {
+        try { onProgress(pass); } catch { /* UI callbacks cannot interrupt bridge safety handling. */ }
+        touch();
+      };
+      const finishPass = (status, reason = "") => {
+        pass.status = status;
+        pass.error = reason;
+        pass.activeVariant = "";
+        pass.remaining = candidates.slice(pass.results.length).map(item => item.id);
+        pass.completedAt = now();
+        publish();
+        return { ok: status === "complete", pass, error: reason };
+      };
+      const safetyCheck = () => new Promise(resolve => {
+        if (pass.stopRequested) { resolve({ ok: false, stopped: true, error: "Discovery stopped by operator." }); return; }
+        if (state.link !== "ready" || state.phase !== "idle" ||
+            (state.transport === "ble" && state.identity.auth !== "OK")) {
+          resolve({ ok: false, error: "Bridge is disconnected or busy." }); return;
+        }
+        pass.statusResolver = resolve;
+        state.phase = "discovery_status";
+        state.message = `Verifying safe IDLE before ${pass.activeVariant}`;
+        arm(TIMEOUTS.status);
+        try { send("STATUS"); } catch (error) {
+          state.phase = "idle";
+          state.deadline = null;
+          pass.statusResolver = null;
+          resolve({ ok: false, error: `Could not request bridge status: ${error.message}` });
+        }
+        touch();
+      });
+      const waitForCapture = (variant, previous) => new Promise(resolve => {
+        let observed = !!state.op;
+        let settled = false;
+        let timer = null;
+        let unsubscribe = () => {};
+        const done = value => {
+          if (settled) return;
+          settled = true;
+          unsubscribe();
+          if (timer != null) clearTimeout(timer);
+          resolve(value);
+        };
+        const check = () => {
+          if (state.op?.variant === variant) observed = true;
+          if (observed && !state.op && state.phase === "idle" && state.lastSession && state.lastSession !== previous) {
+            done({ ok: true, session: state.lastSession });
+          } else if (state.link !== "ready" && !state.op) {
+            done({ ok: false, error: "Bridge connection was lost before the capture completed." });
+          }
+        };
+        listeners.add(check);
+        unsubscribe = () => listeners.delete(check);
+        timer = setTimeout(() => {
+          if (state.op) {
+            if (state.phase !== "stopping") this.requestStop();
+            timer = setTimeout(() => done({ ok: false, error: "Discovery capture did not reach a finalized END after STOP." }), TIMEOUTS.stop + 1000);
+          } else done({ ok: false, error: "Discovery capture did not reach a finalized END." });
+        }, VARIANTS[variant].timeoutMs + TIMEOUTS.status + TIMEOUTS.arm + TIMEOUTS.stop + 5000);
+        check();
+      });
+
+      publish();
+      for (let index = 0; index < candidates.length; index += 1) {
+        const candidate = candidates[index];
+        const variant = candidate.variantKey;
+        pass.currentIndex = index;
+        pass.activeVariant = variant;
+        pass.remaining = candidates.slice(index).map(item => item.id);
+        publish();
+        const safe = await safetyCheck();
+        if (!safe.ok) {
+          if (safe.stopped || pass.stopRequested) return finishPass("stopped", safe.error || "Discovery stopped by operator.");
+          return finishPass("stopped", safe.error || "Bridge safety check failed; discovery stopped.");
+        }
+
+        let archive;
+        try {
+          archive = await createArchive(variant, candidate, pass);
+        } catch (error) {
+          const failed = { candidateId: candidate.id, variant, commandWord: candidate.commandWord, status: "ARCHIVE_FAILED", error: error.message, startedAt: now(), completedAt: now() };
+          pass.failed.push(failed);
+          pass.results.push(failed);
+          pass.remaining = candidates.slice(index + 1).map(item => item.id);
+          return finishPass("failed", `Could not create recording for ${candidate.name}: ${error.message}`);
+        }
+        if (pass.stopRequested) {
+          await archive?.finish?.({ valid: false, status: "INCOMPLETE", reasons: ["Discovery stopped before command start"] });
+          return finishPass("stopped", "Discovery stopped by operator.");
+        }
+
+        try { this.setArchive(archive); }
+        catch (error) {
+          await archive?.finish?.({ valid: false, status: "INCOMPLETE", reasons: [error.message] });
+          return finishPass("stopped", error.message);
+        }
+        const previous = state.lastSession;
+        const completion = waitForCapture(variant, previous);
+        const request = this.requestVehicle(variant);
+        if (!request.ok) {
+          const failed = { candidateId: candidate.id, variant, commandWord: candidate.commandWord, status: "NOT_STARTED", error: request.error, recordingId: archive?.id || null, startedAt: now(), completedAt: now() };
+          pass.failed.push(failed);
+          pass.results.push(failed);
+          await archive?.finish?.({ valid: false, status: "INCOMPLETE", reasons: [request.error] });
+          return finishPass("stopped", request.error);
+        }
+
+        const capture = await completion;
+        if (!capture.ok) {
+          if (state.op && state.phase !== "stopping") this.requestStop();
+          return finishPass("stopped", capture.error);
+        }
+        await state.archive?.finished;
+        const session = capture.session;
+        const end = session.verdict?.end || null;
+        const responseBytes = end?.ro_bytes ?? session.dclProbe?.responseBytes ?? 0;
+        const zeroResponse = responseBytes === 0;
+        const cleanZeroResponse = !session.operatorStop && zeroResponse && end && [15, 16].includes(end.reason) && end.de === "LOW" &&
+          end.ro_lost === 0 && end.uart_errors === 0 && !(session.bridgeFaults || []).length;
+        const outcome = session.operatorStop ? "STOPPED" : cleanZeroResponse ? "ZERO_RESPONSE" : session.verdict?.valid ? "VALID" : "FAILED";
+        const result = {
+          candidateId: candidate.id, variant, commandWord: candidate.commandWord,
+          recordingId: session.recordingId || archive?.id || null,
+          status: outcome, verdict: session.verdict || null, responseBytes,
+          startedAt: session.startedAt, completedAt: session.completedAt,
+          bridgeFaults: session.bridgeFaults || [],
+          error: session.recordingError || "",
+        };
+        pass.results.push(result);
+        if (outcome === "VALID" || outcome === "ZERO_RESPONSE") pass.completed.push(result);
+        else pass.failed.push(result);
+        pass.remaining = candidates.slice(index + 1).map(item => item.id);
+        publish();
+
+        if (pass.stopRequested) return finishPass("stopped", "Discovery stopped by operator.");
+        if (state.link !== "ready") return finishPass("stopped", "Bridge disconnected; discovery stopped.");
+        if (session.recordingError) return finishPass("failed", `Recording archive failed: ${session.recordingError}`);
+        if (!state.status || !statusCanRearm(state.status)) {
+          return finishPass("stopped", "Bridge returned an unsafe or non-rearmable status; discovery stopped.");
+        }
+        const faulted = !!result.bridgeFaults.length || (end && ![15, 16].includes(end.reason));
+        if (faulted) return finishPass("stopped", "Bridge fault detected; discovery stopped without retry.");
+      }
+      return finishPass("complete");
+    },
+    stopDiscoveryPass() {
+      const pass = state.discoveryPass;
+      if (!pass || pass.status !== "running") return;
+      pass.stopRequested = true;
+      if (state.phase === "discovery_status") {
+        state.phase = "idle";
+        state.deadline = null;
+        const resolve = pass.statusResolver;
+        pass.statusResolver = null;
+        resolve?.({ ok: false, stopped: true, error: "Discovery stopped by operator." });
+      } else if (state.op && state.phase !== "stopping") {
+        state.op.operatorStop = true;
+        stop();
+      }
+      state.message = "Stopping discovery pass safely";
+      touch();
+    },
     tick() {
       const combined = state.combined;
       if (combined?.active) {
@@ -694,6 +1341,15 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
           status: state.op?.forceStatus || "INCOMPLETE",
           reason: state.op?.forceReason || "timed out",
         });
+        return true;
+      }
+      if (state.phase === "discovery_status") {
+        state.phase = "idle";
+        state.message = "Bridge did not answer the discovery safety check";
+        const resolve = state.discoveryPass?.statusResolver;
+        if (state.discoveryPass) state.discoveryPass.statusResolver = null;
+        resolve?.({ ok: false, error: state.message });
+        touch();
         return true;
       }
       if (state.phase === "read" || state.phase === "arm" || state.phase === "bench"

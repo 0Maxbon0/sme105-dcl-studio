@@ -6,12 +6,12 @@ import { warningsForDiagnosticSession } from "./dtc-history.js";
 import { wireKline } from "./kline-ui.js";
 import { createKoerGuide } from "./koer-guide.js";
 import { BleTransport, bluetoothAvailable } from "./ble.js";
-import { createController } from "./controller.js";
-import { APP_VERSION, createLineBuffer, COMMAND_CATALOGUE, DCL_PROBE_VARIANTS, DCL_BLOCKED_CANDIDATES } from "./protocol.js";
+import { createController, candidateRequiresOperatorConfirmation, candidateRequiredStateText } from "./controller.js";
+import { APP_VERSION, createLineBuffer, COMMAND_CATALOGUE, DCL_PROBE_VARIANTS, DCL_BLOCKED_CANDIDATES, EXPERIMENT_CATALOGUE, firmwareCompatibility } from "./protocol.js";
 import { createMockTransport, createReplay } from "./mock-transport.js";
 import { STR } from "./strings.js";
-import { createRecording, exportExperimentArchive, listRecordings, recordingBlob, recoverInterruptedRecordings } from "./recording.js";
-import { applyStaticStrings, confirmDialog, exportCsv, exportLog, reorderPinnedSensor, pinnedSensors, isDashboardArranging, toggleDashboardArrangement, setDashboardDensity, setDashboardColumns, toggleDashboardFocus, inspectSensorChart, closeSensorDetails, openSensorDetails, refreshDashboardCharts, render, renderEventHistory, renderWarningHistory, setSensorChartRange, showView, toggleSensorPin } from "./ui.js";
+import { createRecording, exportExperimentArchive, exportDiscoveryPassArchive, exportAllExperimentsArchive, listRecordings, recordingBlob, recoverInterruptedRecordings } from "./recording.js";
+import { applyStaticStrings, confirmDialog, exportCsv, exportLog, reorderPinnedSensor, pinnedSensors, getSelectedDclCandidates, isDashboardArranging, toggleDashboardArrangement, setDashboardDensity, setDashboardColumns, toggleDashboardFocus, inspectSensorChart, closeSensorDetails, openSensorDetails, refreshDashboardCharts, render, renderDclCommandExplorer, wireDclCommandExplorer, renderEventHistory, renderWarningHistory, setSensorChartRange, showView, toggleSensorPin } from "./ui.js";
 import { closeDiagnosticRun, flushDiagnosticQueue, diagnosticHistory, recentDiagnosticEvents, recordDiagnosticEvent, recordDiagnosticWarning, setDiagnosticStorageErrorHandler, startDiagnosticRun } from "./diagnostics.js";
 import { exportDiagnosticZip, exportGroupCsv, exportSensorCsv, saveOrShare } from "./exports.js";
 import { lookupCode } from "./codes-db.js";
@@ -66,7 +66,7 @@ function latestDclCaptureLines(log) {
   return log.slice(first, end + 1).map(String);
 }
 
-function renderDclExplorer(state) {
+function renderSingleProbe(state) {
   const select = document.getElementById("dcl-probe-select");
   if (!select) return;
   const selected = DCL_PROBE_VARIANTS[select.value];
@@ -110,10 +110,30 @@ function renderDclExplorer(state) {
   }
 }
 
+function singleCandidateWarning(spec) {
+  const effects = {
+    READ_ONLY: "Fixed read candidate. This records raw RO bytes and does not verify ECU ownership or command meaning.",
+    SELF_TEST: "Diagnostic self-test candidate. It may actuate relays or other test outputs; keep the vehicle stationary with the engine OFF.",
+    STATE_CHANGING: "State-changing candidate. It can clear ECU DCL flags or change ECU state; capture stored codes first.",
+    CONFIG_CHANGE: spec.word === "8174"
+      ? "Baud configuration candidate. It may desynchronize the DCL link; no automatic baud recovery is performed."
+      : "Configuration candidate. It may replace ECU map/configuration state; its payload and meaning are not verified for this ECU.",
+    SEQUENCE_DEPENDENT: "Sequence-dependent control candidate. Use only when its stated ECU flow prerequisite is currently satisfied; it may stop an active PID stream or leave diagnostic mode.",
+  }[spec.classification] || "Fixed candidate; command meaning remains unverified.";
+  return [
+    `Confirm that the vehicle is stationary, the transmission is in neutral, the parking brake is applied, ignition is ON, and the engine is OFF.`,
+    `Classification: ${spec.classification} · risk ${spec.risk}. Required ECU state: ${spec.requiredEcuState}.`,
+    effects,
+    `Transmission: ${spec.armCommand} → ${spec.readCommand}. This sends one named fixed profile with no automatic retry or fallback.`,
+    `Candidate semantics have not been validated on SME-105. Source: ${spec.source}${spec.sourceUrl ? ` · ${spec.sourceUrl}` : ""}.`,
+  ].join("\n\n");
+}
+
 function renderApp(state) {
   reviewControls.update();
   render(state);
-  renderDclExplorer(state);
+  renderSingleProbe(state);
+  renderDclCommandExplorer(state);
 }
 
 const ignitionReview = createIgnitionReview({ controller, render: renderApp, refreshWarnings, refreshRecordings });
@@ -139,6 +159,12 @@ function demoEnabled() {
 
 function demoKey() {
   return document.getElementById("demo-capture").value;
+}
+
+/** Simulation is only allowed after the operator deliberately enables Demo mode. */
+function simulationSelected() {
+  return controller.state.transport === "demo" ||
+    (controller.state.link !== "ready" && demoEnabled());
 }
 
 async function refreshKoerJournal() {
@@ -388,10 +414,14 @@ async function startLive() {
   }
 }
 
-async function startVehicleOperation(variant) {
+async function startVehicleOperation(variant, experimentMetadata = {}) {
   if (controller.state.review?.active) return { ok: false, error: "Exit offline review before starting a vehicle operation" };
   try {
-    const archive = await createRecording(variant, error => controller.failRecording(`Recording stopped: ${error.message}`), readStorage("eeciv-unit-system") || "metric");
+    const archive = await createRecording(variant, error => controller.failRecording(`Recording stopped: ${error.message}`), readStorage("eeciv-unit-system") || "metric", {
+      appVersion: APP_VERSION,
+      firmwareIdentity: firmwareIdentitySnapshot(),
+      ...experimentMetadata,
+    });
     archive.line(`CAPTURE_START variant=${variant} started=${archive.started}`);
     for (const line of [controller.state.identity.hello, controller.state.identity.pins, controller.state.status?.raw]) if (line) archive.line(line);
     if (controller.state.phase !== "idle" || controller.state.link !== "ready") {
@@ -407,6 +437,261 @@ async function startVehicleOperation(variant) {
   } catch (error) {
     return { ok: false, error: `Cannot start recording: ${error.message}` };
   }
+}
+
+async function createExperimentRecording(variant, candidate, runMetadata = {}) {
+  const metadata = {
+    appVersion: APP_VERSION,
+    firmwareIdentity: firmwareIdentitySnapshot(),
+    experimentCandidateId: candidate?.id || "",
+    experimentId: candidate?.id || "",
+    commandWord: candidate?.commandWord || "",
+    experimentClassification: candidate?.classification || "",
+    memExperimentId: runMetadata.experimentId || "",
+    procedureId: runMetadata.procedureId || "",
+    ...runMetadata,
+  };
+  const archive = await createRecording(variant, error => controller.failRecording(`Experiment recording stopped: ${error.message}`), readStorage("eeciv-unit-system") || "metric", metadata);
+  archive.line(`EXPERIMENT_START candidate=${metadata.experimentCandidateId || metadata.procedureId} variant=${variant} command=${metadata.commandWord || candidate?.commandWord || ""} started=${archive.started}`);
+  for (const line of [controller.state.identity.hello, controller.state.identity.pins, controller.state.status?.raw]) if (line) archive.line(line);
+  return archive;
+}
+
+function candidateNeedsConfirmation(candidate) {
+  return candidateRequiresOperatorConfirmation(candidate);
+}
+
+function candidateConfirmationText(candidate) {
+  const special = {
+    CLEAR_DTC: "Clears stored continuous-memory DTCs. Export or write down the codes first.",
+    CLEAR_A1: "May clear DCL status flags; its behavior is unverified for this ECU.",
+    CLEAR_F4: "May clear DCL error state; its behavior is unverified for this ECU.",
+    KOEO_253E: "Runs a key-on/engine-off self-test and may actuate relays and solenoids.",
+    KOEO_ALT: "Runs an alternate key-on/engine-off self-test; exact ECU effects are unverified.",
+    KOER_253E: "Runs a self-test with the engine running. Keep the car stationary, in neutral, parking brake applied, and hands clear of moving parts.",
+    CHANGE_BAUD: "May change ECU DCL speed and desynchronize communication. No automatic baud recovery is provided.",
+    DMRMAP_TX: "May replace or load an ECU memory-address map. The map and payload are unverified.",
+    PIDMAP_TX: "Loads a PID map and begins repeated live requests; the capture may continue until Stop or timeout.",
+    STOP_PID_FLOW: "Sends a sequence-dependent control that may terminate an active PID stream.",
+    MEMORY_READ: "Experimental memory read: the address map and 22D3 continuation parity are unresolved.",
+    MEM_OFF0: "Experimental memory read includes offset zero, which may be reserved rather than RAM.",
+    MEM_SINGLE: "Experimental 42F3 request-only read; ECU response behavior is unknown.",
+    MEM_PARITY: "Experimental memory read uses 2293 generic VPARITY continuation, which differs from the fixed firmware literal 22D3.",
+    OUTPUT_SWITCH_TEST: "Guided EEC-IV KOEO factory diagnostic session. It initiates the self-test protocol and guides manual throttle/pedal inputs while logging raw DCL response. It does not verify actuator cycling unless live evidence supports it.",
+    CYLINDER_BALANCE_TEST: "Guided EEC-IV KOER factory diagnostic session. It initiates the self-test protocol and guides manual throttle/pedal inputs while logging raw DCL response. It does not verify fuel-cut sequencing or cylinder identification unless live evidence supports it.",
+    GO_OFFLINE: "Ends the diagnostic session and returns ECU bus ownership to autonomous mode.",
+  }[candidate.id] || "This candidate may change ECU state or initiate a test sequence; the behavior is not validated on this ECU.";
+  return [
+    `Required vehicle state: ${candidate.requiredEcuState}. Keep the vehicle stationary, in neutral, and the parking brake applied.`,
+    special,
+    `Candidate: ${candidate.name} (${candidate.commandWord}); classification ${candidate.classification}, risk ${candidate.risk}.`,
+    `Transmission is one fixed named operation with no automatic retry or fallback. ${candidate.source}${candidate.sourceUrl ? ` · ${candidate.sourceUrl}` : ""}`,
+  ].join("\n\n");
+}
+
+async function simulateCandidate(candidate, metadata = {}) {
+  if (!simulationSelected()) {
+    return { ok: false, error: "Simulation is disabled. Connect a physical bridge or deliberately enable Demo mode." };
+  }
+  const variant = candidate.variantKey || metadata.variant || `PROCEDURE_${candidate.id}`;
+  const archive = await createExperimentRecording(variant, candidate, { ...metadata, simulated: true });
+  archive.line(`SIMULATION mode=offline no_bridge_tx=1 candidate=${candidate.id}`);
+  archive.line(`TX_SIMULATED envelope=${candidate.envelope?.join(" ") || "procedure runner"}`);
+  archive.line("RX_SIMULATED bytes=0 source=synthetic");
+  const completedAt = Date.now();
+  await archive.finish({ valid: false, status: "SIMULATED", reasons: ["No bridge was connected; this record contains no vehicle transmission."] }, {
+    outcome: "SIMULATED", session: { variant, startedAt: archive.started, completedAt },
+  });
+  const result = {
+    candidateId: candidate.id, variant, commandWord: candidate.commandWord, status: "SIMULATED",
+    responseBytes: 0, recordingId: archive.id, startedAt: archive.started, completedAt,
+    verdict: { valid: false, status: "SIMULATED", reasons: ["No bridge was connected; no vehicle response was observed."] },
+  };
+  controller.state.experimentResults.push(result);
+  controller.state.message = `Simulated ${candidate.name}; no bridge command was transmitted.`;
+  renderApp(controller.state);
+  await refreshRecordings();
+  return { ok: true, simulated: true, result };
+}
+
+async function runCatalogueCandidate(candidateId) {
+  const candidate = Object.values(EXPERIMENT_CATALOGUE).find(item => item.id === candidateId);
+  if (!candidate?.sendable) return;
+  const demo = simulationSelected();
+  const connected = controller.state.link === "ready";
+  const compatibility = firmwareCompatibility(candidate, demo ? null : controller.state.status);
+  if (connected && !demo && !compatibility.supported) {
+    controller.state.message = compatibility.message;
+    renderApp(controller.state);
+    return;
+  }
+  if (!connected && !demo) {
+    controller.state.message = `Connect an authenticated bridge or deliberately enable Demo mode before transmitting ${candidate.name}. Required vehicle state: ${candidateRequiredStateText(candidate)}.`;
+    renderApp(controller.state);
+    return;
+  }
+  const proceed = !candidateNeedsConfirmation(candidate) || await confirmDialog(
+    `${candidate.runnerKey ? "Factory procedure" : "Confirm DCL candidate"} · ${candidate.commandWord}`,
+    candidate.runnerKey ? `${candidateConfirmationText(candidate)}\n\nThe guide checks bridge safe IDLE before starting, then captures raw bytes until Stop or completion.` : candidateConfirmationText(candidate),
+  );
+  if (!proceed) {
+    controller.state.message = `${candidate.name} was not transmitted. Required vehicle state: ${candidateRequiredStateText(candidate)}. No command was retried.`;
+    renderApp(controller.state);
+    return;
+  }
+  if (demo) {
+    if (candidate.runnerKey) return simulateCandidate(candidate, { procedureId: candidate.id, variant: candidate.id });
+    return simulateCandidate(candidate, { experimentCandidateId: candidate.id, experimentId: candidate.id });
+  }
+  if (candidate.runnerKey) {
+    const result = await controller.startFactoryProcedure(candidate.runnerKey, { createArchive: createExperimentRecording });
+    if (!result.ok) controller.state.message = result.error;
+    renderApp(controller.state);
+    return result;
+  }
+  const metadata = {
+    experimentCandidateId: candidate.id, experimentId: candidate.id,
+    commandWord: candidate.commandWord,
+  };
+  return startVehicleOperation(candidate.variantKey, metadata);
+}
+
+async function runSelectedCandidateBatch(candidateIds) {
+  if (controller.state.candidateBatch?.status === "running") return;
+  const candidates = candidateIds.map(id => Object.values(EXPERIMENT_CATALOGUE).find(item => item.id === id)).filter(item => item?.sendable && item.variantKey);
+  if (!candidates.length) return;
+  const demo = simulationSelected();
+  const connected = controller.state.link === "ready";
+  if (!connected && !demo) {
+    controller.state.message = "Connect an authenticated bridge or deliberately enable Demo mode before running selected candidates. No simulated result was produced.";
+    renderApp(controller.state);
+    return;
+  }
+  const confirmCandidate = async candidate => {
+    if (!candidateNeedsConfirmation(candidate)) return true;
+    const approved = await confirmDialog(
+      `Confirm ${candidate.name} · ${candidate.commandWord}`,
+      [
+        candidateConfirmationText(candidate),
+        `Required vehicle state: ${candidateRequiredStateText(candidate)}.`,
+        "This confirmation applies only to this command. The next state-changing, self-test, baud/map-writing, engine-running, or experimental command will ask again.",
+        "Stop ends the active capture and prevents the next candidate from starting. No command is retried.",
+      ].join("\n\n"),
+    );
+    if (!approved) controller.state.message = `${candidate.name} was skipped because its operator confirmation or required vehicle state was not provided.`;
+    renderApp(controller.state);
+    return approved;
+  };
+  if (demo) {
+    const results = [];
+    controller.state.candidateBatch = { status: "running", startedAt: Date.now(), results, candidateIds, currentId: "", stopRequested: false, error: "", skipped: [] };
+    renderApp(controller.state);
+    for (const candidate of candidates) {
+      if (controller.state.candidateBatch.stopRequested) break;
+      controller.state.candidateBatch.currentId = candidate.id;
+      const startedAt = Date.now();
+      if (!(await confirmCandidate(candidate))) {
+        results.push({ candidateId: candidate.id, variant: candidate.variantKey, commandWord: candidate.commandWord, status: "CONFIRMATION_REQUIRED", responseBytes: 0, recordingId: null, error: "Operator confirmation or required vehicle state was not provided.", startedAt, completedAt: Date.now() });
+        controller.state.candidateBatch.skipped.push(candidate.id);
+        renderApp(controller.state);
+        continue;
+      }
+      const simulated = await simulateCandidate(candidate, { experimentCandidateId: candidate.id, experimentId: candidate.id, batchId: controller.state.candidateBatch.startedAt });
+      results.push(simulated.ok ? simulated.result : { candidateId: candidate.id, status: "SIMULATION_BLOCKED", responseBytes: 0, recordingId: null, error: simulated.error, startedAt, completedAt: Date.now() });
+    }
+    if (controller.state.candidateBatch.skipped.length) {
+      controller.state.candidateBatch.error = `${controller.state.candidateBatch.skipped.length} command(s) were skipped because the operator confirmation or required vehicle state was not provided. No command was retried.`;
+    }
+    controller.state.candidateBatch.status = controller.state.candidateBatch.stopRequested ? "stopped" : controller.state.candidateBatch.error ? "failed" : "complete";
+    controller.state.candidateBatch.completedAt = Date.now();
+    controller.state.candidateBatch.currentId = "";
+    renderApp(controller.state);
+    return;
+  }
+  const outcome = await controller.runCandidateBatch({
+    candidateIds,
+    createArchive: createExperimentRecording,
+    onProgress: () => renderApp(controller.state),
+    confirmCandidate,
+  });
+  if (outcome.error) controller.state.message = outcome.error;
+  await refreshRecordings();
+  renderApp(controller.state);
+}
+
+async function runMemMatrix(experimentId = null) {
+  const demo = simulationSelected();
+  const connected = controller.state.link === "ready";
+  if (!connected && !demo) {
+    controller.state.message = "Connect an authenticated bridge or deliberately enable Demo mode before running MEM experiments. No simulated result was produced.";
+    renderApp(controller.state);
+    return;
+  }
+  const confirmation = await confirmDialog(
+    experimentId ? `Run MEM experiment ${experimentId}` : "Run all MEM experiments",
+    "Keep the vehicle stationary, in neutral, parking brake applied, ignition ON, and engine OFF. These memory-read profiles are experimental; the address map is not validated. Each run has a bounded capture, is stored separately in IndexedDB, and can be stopped without retry.",
+  );
+  if (!confirmation) return;
+  if (demo) {
+    const ids = experimentId ? [experimentId] : ["MEM", "MEM_OFF0", "MEM_SINGLE", "MEM_PARITY"];
+    controller.state.memMatrix.status = "running";
+    controller.state.memMatrix.stopRequested = false;
+    controller.state.memMatrix.results = controller.state.memMatrix.results.filter(row => !ids.includes(row.experimentId));
+    renderApp(controller.state);
+    for (const id of ids) {
+      if (controller.state.memMatrix.stopRequested) break;
+      const candidate = Object.values(EXPERIMENT_CATALOGUE).find(item => item.variantKey === id);
+      const simulated = await simulateCandidate(candidate, { experimentId: id, memExperimentId: id, matrixId: "MEM", variant: id });
+      controller.state.memMatrix.results.push({
+        experimentId: id, variant: id, title: id, status: simulated.ok ? "SIMULATED" : "SIMULATION_BLOCKED", responseBytes: 0, responseHex: "",
+        txEnvelope: candidate.envelope, verdict: simulated.result?.verdict || null, recordingId: simulated.result?.recordingId || null,
+        error: simulated.error || "",
+        startedAt: simulated.result?.startedAt || Date.now(), completedAt: simulated.result?.completedAt || Date.now(),
+      });
+      controller.state.memMatrix.activeId = "";
+      renderApp(controller.state);
+    }
+    controller.state.memMatrix.status = controller.state.memMatrix.stopRequested ? "stopped" : "complete";
+    controller.state.memMatrix.completedAt = Date.now();
+    renderApp(controller.state);
+    return;
+  }
+  const outcome = experimentId
+    ? await controller.runMemExperiment(experimentId, { createArchive: createExperimentRecording })
+    : await controller.runAllMemExperiments({ createArchive: createExperimentRecording });
+  if (outcome.error) controller.state.message = outcome.error;
+  await refreshRecordings();
+  renderApp(controller.state);
+}
+
+function firmwareIdentitySnapshot() {
+  const status = controller.state.status;
+  return {
+    identity: status?.identity || "",
+    firmwareVersion: status?.fields?.fw || null,
+    hello: controller.state.identity.hello || "",
+    pins: controller.state.identity.pins || "",
+    status: status?.raw || "",
+  };
+}
+
+async function createDiscoveryRecording(variant, candidate, pass) {
+  const archive = await createRecording(
+    variant,
+    error => controller.failRecording(`Discovery recording stopped: ${error.message}`),
+    readStorage("eeciv-unit-system") || "metric",
+    {
+      discoveryPassId: pass.id,
+      discoveryCandidateId: candidate.id,
+      commandWord: candidate.commandWord,
+      appVersion: APP_VERSION,
+      firmwareIdentity: firmwareIdentitySnapshot(),
+    },
+  );
+  archive.line(`DISCOVERY_PASS id=${pass.id} candidate=${candidate.id} command=${candidate.commandWord}`);
+  archive.line(`CAPTURE_START variant=${variant} started=${archive.started}`);
+  for (const line of [controller.state.identity.hello, controller.state.identity.pins, controller.state.status?.raw]) if (line) archive.line(line);
+  return archive;
 }
 
 async function refreshRecordings() { await reviewControls.refresh(); }
@@ -501,7 +786,9 @@ async function restoreLastDiagnosticResult() {
 function wire() {
   applyStaticStrings();
   const probeSelect = document.getElementById("dcl-probe-select");
-  probeSelect.replaceChildren(...Object.entries(DCL_PROBE_VARIANTS).map(([variant, spec]) => {
+  probeSelect.replaceChildren(...Object.entries(DCL_PROBE_VARIANTS)
+    .filter(([, spec]) => spec.sendable)
+    .map(([variant, spec]) => {
     const option = document.createElement("option");
     option.value = variant;
     option.textContent = `${spec.label} · ${spec.word}`;
@@ -513,7 +800,9 @@ function wire() {
     li.textContent = `${item.word} · ${item.label} — ${item.reason}`;
     return li;
   }));
-  renderDclExplorer(controller.state);
+  renderSingleProbe(controller.state);
+  renderDclCommandExplorer(controller.state);
+  wireDclCommandExplorer();
   document.getElementById("about-version").textContent = APP_VERSION;
   document.getElementById("secure-warning").hidden = window.isSecureContext;
   document.getElementById("bt-warning").hidden = bluetoothAvailable() || demoEnabled();
@@ -690,12 +979,75 @@ function wire() {
       closeSensorDetails();
     }
   });
-  document.getElementById("dcl-probe-select").addEventListener("change", () => renderDclExplorer(controller.state));
+  document.getElementById("dcl-probe-select").addEventListener("change", () => renderSingleProbe(controller.state));
+  document.addEventListener("dcl:run-candidate", event => { void runCatalogueCandidate(event.detail?.candidateId); });
+  document.addEventListener("dcl:run-selected", event => { void runSelectedCandidateBatch(event.detail?.candidateIds || getSelectedDclCandidates()); });
+  document.addEventListener("dcl:run-mem", event => { void runMemMatrix(event.detail?.experimentId); });
+  document.addEventListener("dcl:run-mem-all", () => { void runMemMatrix(); });
+  document.addEventListener("dcl:stop-mem", () => controller.stopMemExperiments());
+  document.addEventListener("dcl:run-procedure", event => { void runCatalogueCandidate(event.detail?.procedureId); });
+  document.addEventListener("dcl:procedure-next", () => controller.nextFactoryProcedureStep());
+  document.addEventListener("dcl:procedure-stop", () => controller.stopFactoryProcedure());
+  document.getElementById("dcl-stop-selected").addEventListener("click", () => controller.stopCandidateBatch());
+  document.addEventListener("dcl:export-experiments", async () => {
+    try {
+      const archive = await exportAllExperimentsArchive({ appVersion: APP_VERSION, firmwareIdentity: firmwareIdentitySnapshot() });
+      await saveOrShare(archive.blob, `sme105-experiments-${new Date().toISOString().replaceAll(":", "-")}.zip`);
+      controller.state.message = `Experiment archive integrity verified · SHA-256 ${archive.archiveSha.slice(0, 8)}...`;
+      renderApp(controller.state);
+    } catch (error) {
+      controller.state.message = `Experiment export failed: ${error.message}`;
+      renderApp(controller.state);
+    }
+  });
+  document.getElementById("discovery-run").addEventListener("click", async () => {
+    if (controller.state.link !== "ready" || controller.state.phase !== "idle" || controller.state.transport === "demo") {
+      controller.state.message = "Connect an authenticated physical bridge in safe IDLE before starting discovery.";
+      renderApp(controller.state);
+      return;
+    }
+    const confirmed = await confirmDialog(
+      "Run supported read-only discovery pass",
+      "Confirm all preconditions: the vehicle is stationary, the transmission is in neutral, the parking brake is applied, ignition is ON, and the engine is OFF. This pass sends exactly the eight passive read-only candidates in order: 0E (260E), A4 (26A4), 0381, 005E, 004E, 242E, 22C6, and 271E. No state-changing, self-test, baud, map-writing, or memory-read command is included. MEM experiments are a separate, dedicated MEM Experiment Matrix workflow. Each capture is recorded separately; the pass stops on bridge fault, unsafe status, or connection loss.",
+    );
+    if (!confirmed) return;
+    try {
+      const result = await controller.startDiscoveryPass({
+        createArchive: createDiscoveryRecording,
+        onProgress: () => renderApp(controller.state),
+      });
+      if (result.error) controller.state.message = result.error;
+      await refreshRecordings();
+      renderApp(controller.state);
+    } catch (error) {
+      controller.state.message = `Discovery pass failed: ${error.message}`;
+      renderApp(controller.state);
+    }
+  });
+  document.getElementById("discovery-stop").addEventListener("click", () => controller.stopDiscoveryPass());
+  document.getElementById("discovery-export").addEventListener("click", async () => {
+    const pass = controller.state.discoveryPass;
+    try {
+      const archive = await exportDiscoveryPassArchive(pass, {
+        appVersion: APP_VERSION,
+        firmwareIdentity: firmwareIdentitySnapshot(),
+      });
+      const safeId = String(pass.id || "pass").replace(/[^A-Za-z0-9_-]/g, "-");
+      const fileName = `sme105-discovery-${safeId}.zip`;
+      await saveOrShare(archive.blob, fileName);
+      controller.state.message = `Exported discovery archive ${fileName} (SHA-256 ${archive.archiveSha.slice(0, 8)}...)`;
+      renderApp(controller.state);
+    } catch (error) {
+      controller.state.message = `Discovery export failed: ${error.message}`;
+      renderApp(controller.state);
+    }
+  });
   document.getElementById("dcl-probe-run").addEventListener("click", () => {
     const variant = document.getElementById("dcl-probe-select").value;
     const spec = DCL_PROBE_VARIANTS[variant];
     if (!spec) return;
-    ask(`DCL discovery · ${spec.word}`, `Park the car, apply the parking brake, select neutral, switch ignition ON and keep the engine OFF. This sends exactly one fixed candidate request (${spec.word}); there is no opcode scan and no automatic retry. The source is an experimental third-party EEC-IV implementation, not proof that SME-105 supports it. Captured RO bytes may include local self-echo and will not be attributed to the ECU automatically.`, () => startVehicleOperation(variant));
+    const candidate = Object.values(EXPERIMENT_CATALOGUE).find(item => item.variantKey === variant);
+    if (candidate) void runCatalogueCandidate(candidate.id);
   });
   document.getElementById("dcl-probe-export").addEventListener("click", async () => {
     if (controller.state.phase !== "idle" || controller.state.op) {
