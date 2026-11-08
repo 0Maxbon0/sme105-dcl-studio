@@ -234,12 +234,14 @@ function previousResult(state, item) {
 
 function getVehicleConditions(item) {
   const isRunning = item.requiredEcuState === "KEY_ON_ENGINE_RUNNING" ||
+                    item.requiredEcuState === "ACTIVE_PID_FLOW" ||
                     item.id === "KOER_253E" ||
                     item.id === "CYLINDER_BALANCE_TEST";
   const isKeyOff = item.requiredEcuState === "KEY_OFF";
+  const isAnyEngine = item.requiredEcuState === "ANY_POWERED";
   return {
     ignition: isKeyOff ? "OFF" : "ON",
-    engine: isRunning ? "ON" : "OFF",
+    engine: isRunning ? "ON" : isAnyEngine ? "ANY" : "OFF",
   };
 }
 
@@ -261,7 +263,7 @@ function selectedCommand(state, item) {
     </div>
     <div class="dcl-condition-item">
       <span class="dcl-cond-label">Engine:</span>
-      <strong class="dcl-cond-val ${cond.engine === "ON" ? "cond-on" : "cond-off"}">${cond.engine}</strong>
+      <strong class="dcl-cond-val ${cond.engine === "ON" ? "cond-on" : cond.engine === "OFF" ? "cond-off" : "cond-any"}">${cond.engine}</strong>
     </div>
   `;
   body.append(condCard);
@@ -293,10 +295,13 @@ function selectedCommand(state, item) {
   actions.append(execute);
   body.append(actions);
 
-  // Raw technical metadata (hidden from view to prevent mobile clutter while preserving assertions)
-  const rawMeta = document.createElement("div");
+  // Collapsed technical details: accessible to technician on tap, but clean and non-cluttering by default
+  const rawMeta = document.createElement("details");
   rawMeta.className = "dcl-command-tech-meta";
-  rawMeta.hidden = true;
+  const rawSummary = document.createElement("summary");
+  rawSummary.className = "help";
+  rawSummary.textContent = "Technical Details (Exact Bytes, Parity, Sequence)";
+  rawMeta.append(rawSummary);
   const sequence = item.armCommand && item.readCommand
     ? `STATUS safety check → ${item.armCommand} → wait for read_armed → ${item.readCommand} → stream raw RO bytes through END.`
     : item.variantKey ? `${item.armCommand || "No arm command"} → ${item.readCommand || "No read command"}; see description for sequence constraints.`
