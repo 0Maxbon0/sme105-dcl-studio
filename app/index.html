@@ -178,7 +178,7 @@
         <pre id="status-raw" class="mono"></pre>
         <button id="connect-settings" type="button"></button>
       </details>
-      <details class="history-panel" open>
+      <details class="history-panel">
         <summary>DCL Command Explorer</summary>
         <p class="help">Browse the 26 executable SME-105 command candidates. The three fixed envelope framing words (01B0, FF5F, 00A0) are shown separately in the Protocol Framing Reference card and are not executable commands. Candidate provenance and parity remain visible; third-party command maps are not proof of ECU support. The Read-Only Discovery Pass is a separate eight-candidate workflow.</p>
         <label class="stack" for="dcl-command-search">Search command name or hexadecimal word<input id="dcl-command-search" type="search" placeholder="004E or PID map" autocomplete="off"></label>
@@ -259,7 +259,7 @@
         </details>
         <p class="help">For every result, distinguish bridge capture integrity from ECU acceptance. Raw RO bytes can include local self-echo; a response is not attributed to the ECU until its frame and direction are verified. Full raw records are included in History → Save full diagnostic ZIP.</p>
       </details>
-      <details>
+      <details open>
         <summary>Vehicle and display</summary>
         <p id="vehicle-profile" class="help"></p>
         <label class="check"><input id="manual-gearbox-settings" type="checkbox" checked> Manual gearbox profile</label>
