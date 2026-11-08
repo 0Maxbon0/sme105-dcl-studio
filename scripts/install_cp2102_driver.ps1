@@ -1,5 +1,5 @@
 # Download the official Silicon Labs CP210x Universal Windows Driver and install it.
-# Must run elevated. Launch Studio.bat will tell you when this is required.
+# Requests elevation when needed for the driver installation.
 
 $ErrorActionPreference = "Stop"
 
@@ -53,7 +53,7 @@ $device = Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object {
     $_.InstanceId -like "*VID_10C4&PID_EA60*"
 } | Select-Object -First 1
 if ($null -eq $device) {
-    Write-Host "Driver staged. Plug the ESP32 USB cable in, then open Launch Studio.bat."
+    Write-Host "Driver staged. Plug in the ESP32 USB cable, then check its COM port in Device Manager."
 } else {
     Write-Host ("Device: {0}  status={1}  problem={2}" -f $device.FriendlyName, $device.Status, $device.Problem)
     Get-PnpDevice -Class Ports -ErrorAction SilentlyContinue |
@@ -61,5 +61,5 @@ if ($null -eq $device) {
         ForEach-Object { Write-Host ("Port: {0} [{1}]" -f $_.FriendlyName, $_.Status) }
 }
 
-Write-Host "Done. Close this window, then run Launch Studio.bat."
+Write-Host "Done. Check the ESP32 COM port in Windows Device Manager."
 pause

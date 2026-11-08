@@ -1,187 +1,65 @@
-# SME105 EEC-IV Diagnostics
+# SME105 DCL Studio — Android application
 
-Offline, installable web app for a 1998 European Ford Escort 1.6 Zetec (Ford EEC-IV, DCL/CART). The phone talks Bluetooth Low Energy to the `SME105-DCL` ESP32 bridge. The bridge is the only thing that transmits on the car.
+**Current installed release:** Android **v1.8.17 / build 19**, ESP32 Wi-Fi bridge **v29** (`esp32dev`). This directory is the **canonical HTML/CSS/JavaScript source for the native Android app** packaged through Capacitor `webDir: "app"` in [`capacitor.config.json`](../capacitor.config.json). **It must not be removed as a legacy web site.** The obsolete *separate Python localhost GUI* was retired; no standalone hosted PWA is offered as the supported current product.
 
-## Coordinated release — 2026-11-07
+**Target:** Ford Escort 1998 1.6 Zetec-E / EEC-IV SME105 `97AB-12A650-KA`. Experimental diagnostic research tool; do not infer validated ECU support from successful network connection or a lit local output LED.
 
-This app release is **v1.8.12** (Android versionCode **14**), coordinated with
-ESP32 bridge firmware **v25** (`esp32dev_ble`). See the
-[release report](../artifacts/releases/2026-11-07-v25-release-report.md) for
-binary hashes, recorded verification results, and deployment pre-checks.
+## Direct ESP32 Wi-Fi — no router
 
-The full command catalogue is in the
-[A–R experiment plan](../docs/sme105-dcl-experiment-plan-2026-11-07.md).
-Historical target-session evidence covers `26A4`, `260E`, `253E`, and the
-`4196` / `21F6` live sequence. Prepared new raw-read candidates are `0381`,
-published literal `005E`, and `242E`. DMR values (`22C6`), combined values
-(`271E`), MEM, CLR, and OFF remain separate experimental variants. In
-particular, `005E` stays distinct from parity-derived `004E`; the latter is
-neither an automatic fallback nor the same thing as a received frame-ID E.
+1. Flash/use the Wi-Fi firmware v29, not the separate legacy `esp32dev_ble` variant. ESP32 provides a WPA2 2.4 GHz SoftAP, typically `SME105-DIRECT-2BF8`, with a fixed `10.77.13.1:8765` listener (one associated client).
+2. In Android **Settings → Wi-Fi Bridge**, confirm the actual board SSID, enter the **one WPA2 passphrase**, and tap **Save Passphrase**. It is encrypted in Android Keystore-backed private storage, **not** browser localStorage or the source files.
+3. Tap **Connect** and accept the Android local-only Wi-Fi request. Because this hotspot has no Internet access, Android may display a network preference/no-Internet warning; maintain the device network association.
+4. The Android native plugin derives the existing 32-hex `AUTH` value from this single user-entered secret (PBKDF2-HMAC-SHA256 with an SSID-bound salt) and must receive exact `AUTH OK` before using the bridge. There is **no manually entered bridge token**.
+5. The app then requests read-only `HELLO`, `PINS` and `STATUS`. It never automatically starts an ECU read, arms an output, clears codes or replays a stale write after a disconnected session.
 
-## Android app
+See [direct Wi-Fi provisioning](../docs/wifi_bridge_architecture_and_setup.md) for USB setup, the safe explicit `WIFI_AP_REKEY` procedure, verification and rollback. Keep real Wi-Fi credentials out of Git, terminal histories and exported logs. The legacy STA/token path remains a compatibility layer in native code; it is not visible in the current direct-link Android settings.
 
-The native Android app works offline after installation and uses authenticated BLE through the ESP32 bridge. It needs no phone Wi-Fi or network permission. Android WebView storage is private to this installed app; Chrome PWA recordings do not migrate automatically. Export the old PWA data before removing it.
+## Build / test
 
-Build the debuggable APK from the repository root with Node.js, JDK 21, and Android SDK platform 36:
+Prerequisites: Node.js 22, Java JDK 21, Android SDK platform 36 and the project lockfile.
 
 ```bash
 npm ci
 npm test
-npm run android:debug
+npm run android:sync
+cd android
+./gradlew :app:testDebugUnitTest :app:assembleDebug --offline
 ```
 
-The artifact is `android/app/build/outputs/apk/debug/app-debug.apk`. Install it with `adb install -r android/app/build/outputs/apk/debug/app-debug.apk`. The app connects only after you tap **Connect**; live capture and diagnostic reads require separate explicit actions. No background vehicle reads are started automatically. The browser PWA remains available from `app/index.html`.
+Windows users run `gradlew.bat`. The debug APK is `android/app/build/outputs/apk/debug/app-debug.apk`; install it **in place** with `adb install -r ...` to retain private WebView data and long-running captures. Never uninstall/clear app data as a routine update. A production-signed release requires an additional signing/distribution process; debug APKs are not published as active releases in Git.
 
-## Continuous all-data monitoring
+The previous v1.8.17 acceptance run reported **273 passing JavaScript tests / 3 skipped**, successful Android native JVM tests and APK build, and **105 bundled web assets verified byte-for-byte**. These are software/packaging checks, not a field-radio endurance test or ECU certification. The owner later reported direct phone pairing and a bench LED/output demonstration with the vehicle disconnected; record it as **owner-observed bench evidence**.
 
-**All live data** uses `ARM_ALL` / `READ_ALL` on bridge firmware v23 or newer.
-It loads one mode-41 map with three words in each of frames 1–15, then repeats
-mode 21 without changing groups. The 45 slots contain all 39 requested channels
-and six repeated key readings. Frame length remains 6: the designed update
-interval is 360 ms per block, not simultaneous measurements. Actual timing and
-supported equipment still require verification on this SME-105 ECU. The three
-individual sets remain available, with an expandable explanation under each
-selection. The earlier rotating survey survives internally for compatibility;
-it is not used by the All live data button.
+## Features and experimental scope
 
-The map follows LHBH1 chapter 13, pp.13-13/14: configurable slots, mode 41 then
-mode 21. [Reference code](https://github.com/doncreat0r/eeciv/blob/master/tables.h)
-uses multiple PID slots per frame; [another implementation](https://github.com/flxkrmr/eec-iv-reader-arduino/blob/master/src/EecIv.cpp)
-also loads a multi-slot map. These references do not establish vehicle-specific
-sensor support, electrical safety or sustained operation of this bridge.
+The native app includes an engineering Dashboard; status and electrical gates; live read views; KOEO/KOER and DTC workstreams; DCL Explorer for fixed candidate commands; MEM experimentation; raw frame inspection; review/comparison; offline diagnostics; session history; and verified ZIP/CSV export. Older Ford projects and formula tables are reference candidates, not confirmed SME105 sensor addresses or commands.
 
-All live modes have a **three-hour** firmware limit, with an extra minute in
-the app to receive a final END. The decoder unwraps the wire's 32-bit
-microsecond clock (about 71.6 minutes per wrap). The ESP32 keeps fixed-size RAM
-queues and streams data; it does not accumulate a trip or write readings to its
-flash. Its existing pad, DE watchdog, transport and overflow checks remain;
-five seconds without ECU data ends live capture as incomplete, without retry.
-Turning off the key stops ECU communication; it does not provide a clean final
-capture verdict, and does not replace the link/overflow checks during a trip.
+Active reads retain `TX2_BENCH` (per boot) and an explicit matching `ARM_*` before bounded `READ_*`. The firmware has no general arbitrary ECU byte transmitter. `DE` must be LOW in idle; a pad proof does not establish MAX487 vehicle-side A/B polarity or ECU acceptance. No command should be initiated against a connected car without a safe, specifically authorized test procedure.
 
-The app stores per-operation metadata in IndexedDB `captures` and ordered raw
-and CSV Blob chunks in `chunks`, flushing about once per second. The UI retains
-at most 512 readings per channel and a recent log window in RAM; full-trip
-counts and min/max remain cumulative. CSV/log export reads the full saved
-recording, not just recent history. Saved recordings can be exported after
-reopening the app. The app never automatically deletes them.
-At least 1 GB of estimated free browser quota is required before live capture;
-this is headroom, not a promise of three hours. Browser quota, actual free space,
-link throughput, battery, Android background suspension and browser eviction
-still apply. A failed write or a queued backlog over 4 MB stops capture and
-retains pending chunks for export in that tab. A process/power loss may lose the
-latest uncommitted chunk. Export recordings before clearing browser data.
-See [browser storage documentation](https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria).
+The documented **All live data** path uses one mode-41 map with 45 slots (39 requested channels plus repeated key readings), then mode-21 values, with known 360ms/block planned cadence and a firmware three-hour cap. Exact support and units on SME105 remain individually unverified. The independent EEC-IV references are [flxkrmr](https://github.com/flxkrmr/eec-iv-reader-arduino) and [doncreat0r](https://github.com/doncreat0r/eeciv), not authoritative ECU calibration maps. See [project reference index](../docs/REFERENCES.md).
 
-### Durable experiment recordings
+## Durable experiment recordings
 
-For command experiments, the capture record is created before command dispatch
-and includes the experiment/session ID, variant, persistence status, unit
-system, start/end times, sample count, duration, verdict, and outcome. Raw
-bridge lines remain in order. Startup recovery marks an unended operation
-`INCOMPLETE` without fabricating an `END`; storage failure preserves queued
-chunks for export in the still-open tab and stops capture.
+Every operation creates its capture record before dispatch, recording session/experiment ID, operation variant, timestamps, firmware and transport state, metadata, outcome/verdict, and raw bridge lines in order. The app stores metadata in IndexedDB `captures` and ordered raw/CSV Blob chunks in `chunks`, flushing at approximately one-second intervals. Dashboard RAM samples are bounded; exports load stored records and not only the visible recent values.
 
-The `exportExperimentArchive(id)` helper builds and verifies a ZIP containing:
+Startup recovery marks an operation without a legitimate END as **INCOMPLETE**; it does not synthesize successful completion. Link-loss preserves received raw bytes and revokes authenticated readiness. Storage/queue failures stop collection and report incomplete evidence rather than silently fabricating data. Export recordings before any planned handset migration or app data reset.
 
-| Member | Contents |
-|---|---|
-| `metadata.json` | Saved experiment metadata and verdict. |
-| `raw.txt` | Original stored bridge lines. |
-| `events.jsonl` | JSON Lines for selected `EVENT`, `FAULT`, `DENIED`, `END`, `STATUS`, `PINS`, `BOOT`, and `HELLO` lines. |
-| `ro.bin` | Raw RO bytes reconstructed from `RX` / `RXB` records. |
-| `ro-timestamps.csv` | `index,t_us,byte_hex` timestamps for each RO byte. |
-| `tx-pad.jsonl` | Local transmit-pad witness rows. |
-| `SHA256SUMS` | SHA-256 for all preceding members; each member is re-read and verified before success. |
+`exportExperimentArchive(id)` creates a checksum-verified ZIP:
 
-The helper also returns the ZIP's SHA-256. Keep the archive unchanged and save
-that hash with the experiment. Android WebView IndexedDB is private to the
-installed app; existing Chrome PWA recordings do not migrate automatically.
-Export PWA evidence before removing site data or the old app installation.
+| File | Preserved evidence |
+| --- | --- |
+| `metadata.json` | Capture metadata, operation and outcome |
+| `raw.txt` | Original ordered bridge text |
+| `events.jsonl` | Event, status, fault and diagnostic timeline |
+| `ro.bin` | Reconstructed raw RO bytes |
+| `ro-timestamps.csv` | Byte indices and microsecond timestamps |
+| `tx-pad.jsonl` | Local TX-pad witness events |
+| `SHA256SUMS` | SHA-256 checksums of the members |
 
-Three hours of simulated ECU frames, including two clock wraps and more than
-1.3 million samples, pass decoder/bounded-memory checks. IndexedDB transaction
-tests use the pinned, lockfile-managed fake-indexeddb development dependency;
-run all checks with `npm test`.
+The archive itself has a SHA-256 digest. Keep raw files unchanged, keep event order, and use separate derived files when updating decoders or sensor interpretations. Chrome browser PWA and Android WebView storage were historically separate; there is no automatic transfer between those stores. If any old Chrome PWA recordings exist, export them independently before deleting browser storage.
 
-These are software checks, not a real three-hour car or radio test. Local
-browser preview was blocked because permission was declined; UI interaction
-and sustained phone storage remain unverified. Keep the app open and connected;
-this prototype has not been qualified for a road trip.
+**Storage limitations:** quotas/eviction depend on WebView and available device space. A process or power loss can truncate the latest uncommitted chunk. Reference: [MDN Storage Quotas](https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria). A three-hour simulation does not equal a three-hour road test.
 
-Target browser: Chrome on Android (checked against a Samsung Galaxy A52s). Web Bluetooth is not available in iOS Safari.
+## Read before a vehicle session
 
-## Install
-
-The app is static files. It does not use a build step, npm, or a CDN. After the first load the service worker keeps it available with no network.
-
-### Hosted (HTTPS)
-
-Put the contents of this `app/` directory on any static HTTPS host (GitHub Pages works). Open the site in Chrome on the phone. Use the browser menu and choose **Install app** (or **Add to Home screen**). Launch the installed icon after that; it opens standalone.
-
-If the repository itself is the site root, the app lives at `/app/` and the relative manifest still installs from that path.
-
-### Phone testing over the LAN
-
-Web Bluetooth only runs in a secure context (HTTPS or localhost). A phone cannot treat your computer’s `http://192.168.x.x` as localhost, so Chrome must be told that origin is safe for the test:
-
-1. On the computer, from this directory:
-
-   ```bash
-   python3 -m http.server 8000
-   ```
-
-2. On the phone, open `chrome://flags/#unsafely-treat-insecure-origin-as-secure` and add the origin you will open, for example `http://192.168.1.20:8000`. Relaunch Chrome.
-3. Open that exact origin, then **Install app**.
-
-Remove the flag when you are done. Prefer real HTTPS for anything you keep using.
-
-## Pairing
-
-The bridge characteristics require an encrypted link. If Android asks for a pairing code, enter the bridge owner-provided code in the operating-system dialog. The app cannot see or store that code. If another controller already owns the bridge, the link answers `DENIED remote_busy`.
-
-Device name filter: `SME105` (the bridge advertises `SME105-DCL`). Service: Nordic UART `6e400001-b5a3-f393-e0a9-e50e24dcca9e`.
-
-## Using it
-
-1. **Connect.** The app checks `HELLO`, `PINS`, and `STATUS` against this bridge. DE must be LOW, `auto_tx=0`, `gate4=1`, stage 0 (idle) before any vehicle command. Firmware v25 requires a successful `TX2_BENCH` on every boot before an active read; a matching `ARM_*` remains required for each operation.
-2. **Codes.** “Read stored codes” sends `ARM_0E` then `READ_0E`. “Run KOEO self-test” is about 60 seconds with the ignition ON, engine OFF, gear in P/N, feet off the pedals. Codes are not cleared.
-3. **Live.** Set 1 is engine and temperatures. Set 2 is flags, idle, and bitmaps. A capture runs about 90 seconds. “Record CSV” downloads the time series.
-4. **Tools.** Go offline silences the ECU link until the next ignition cycle. `TX2_BENCH` is local to the bridge (no ECU request), keeps DE LOW, and runs at most once per boot; the app runs it before the first active operation when `STATUS` has no pass latch. It must pass before active reads and is not retried automatically. It proves the GPIO pad path only, not the differential vehicle bus. Stop is in the header during an operation. Reboot drops the link and resets the pass latch.
-5. **Log.** Raw lines from this connection, plus valid / incomplete / failed and the END reason. Reason 16 (`CAPTURE_TIMEOUT`) is the normal end of a timed capture.
-
-The app sends `ARM` only after you confirm, then `READ` as soon as the arm event arrives (the arm window is 15 seconds). It never repeats a vehicle command by itself. If the Bluetooth link drops, the running operation is marked failed; the bridge stops the vehicle session on its own.
-
-A result is **valid** only when the capture has an `END`, `ro_lost=0`, `uart_errors=0`, the RX line count equals `ro_bytes`, every `TX_PAD` word matches, and no `FAULT`, `DENIED`, `EVENT rx_lost`, or `EVENT uart_errors` line occurred. Anything else is shown greyed as untrusted.
-
-## Demo mode
-
-About → “Use demo captures” replays a recorded transcript in a desktop browser:
-
-- Stored codes (`READ_0E`)
-- KOEO self-test
-- Live data, key on, engine off (that file also contains a go-offline)
-
-No Bluetooth and no car. Live set 2 is not in those recordings.
-
-## Tests
-
-From the repository root (Node 18+):
-
-```bash
-node --test app/tests/
-```
-
-Decoders are plain modules. They do not touch `window` or Bluetooth at import time. The checks replay `captures/SME105_97AB/` and compare stored codes, the KOEO result, and both live captures with `scripts/decode_live_pids.py`.
-
-## Fault text
-
-Descriptions are the European EEC-IV list from `EECIVFaults.csv` by babroval, MIT license:
-
-https://github.com/babroval/ford-eec-iv-diagnostic
-
-The five notes on codes 113, 122, 157, 214, and 452 were added for this car. Unknown codes read “Unknown code — not in database”.
-
-## Safety
-
-Park the car. Stored codes and KOEO: ignition ON, engine OFF. Live data: the engine may run, but the vehicle stays parked. Going offline means the ECU will not answer until the ignition is cycled. `CLR` clears DTCs and changes ECU diagnostic state; treat it as a separately approved state-changing operation. This is not a workshop manual.
+[Main README](../README.md) · [Roadmap](../ROADMAP.md) · [Wiring safety](../docs/wiring-safety.md) · [Current implementation](../docs/implementation-status.md) · [DCL experiment plan](../docs/sme105-dcl-experiment-plan-2026-11-07.md) · [References](../docs/REFERENCES.md)

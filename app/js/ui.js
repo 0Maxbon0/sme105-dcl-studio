@@ -1241,21 +1241,10 @@ export function renderSettings(state) {
   }
   const wifiSection = $("wifi-config-section");
   if (wifiSection) wifiSection.hidden = selectedTransport !== "wifi";
-  const wifiMode = $("wifi-mode");
-  const mode = readStored("sme105-wifi-mode") === "router" ? "router" : "softap";
-  if (wifiMode) wifiMode.value = mode;
   const wifiIp = $("wifi-ip");
-  if (wifiIp) wifiIp.readOnly = mode === "softap";
+  if (wifiIp) wifiIp.readOnly = true;
   const modeHelp = $("wifi-mode-help");
-  if (modeHelp) modeHelp.textContent = mode === "softap"
-    ? "Connect your phone to the bridge’s direct Wi-Fi network before connecting."
-    : "Connect your phone and bridge to the same router, then enter the bridge’s router-assigned IP address.";
-  const tokenStatus = $("wifi-auth-status");
-  if (tokenStatus) {
-    const configured = state.wifiTokenConfigured ?? readStored("sme105-wifi-token-configured") === "1";
-    tokenStatus.textContent = configured ? "Configured" : "Not configured";
-    tokenStatus.dataset.configured = String(!!configured);
-  }
+  if (modeHelp) modeHelp.textContent = "The ESP32 creates this Wi-Fi network. Enter its passphrase once to connect without a router.";
   const passwordStatus = $("wifi-password-status");
   if (passwordStatus) {
     const configured = !!state.wifiPasswordConfigured;
@@ -1273,7 +1262,7 @@ export function renderSettings(state) {
   else if (state.transport !== "demo" && connected) connectionState = "Authenticating";
 
   const activeTransport = state.transport === "wifi" || state.transport === "ble" ? state.transport : selectedTransport;
-  const ip = readStored("sme105-wifi-ip") || (mode === "softap" ? "10.77.13.1" : "");
+  const ip = "10.77.13.1";
   const port = readStored("sme105-wifi-port") || "8765";
   const activeName = activeTransport === "wifi"
     ? `ESP32 Wi-Fi${ip ? ` (${ip}:${port})` : ""}`

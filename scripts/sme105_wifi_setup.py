@@ -1,8 +1,10 @@
 """Provision SME-105 ESP32 WiFi over local USB only, without exposing secrets.
 
-The firmware stores its own token and credentials in NVS. The host never reads
-NetworkManager or another password store, never prints SSID/PSK/token, and
-does not enable any vehicle or generic bus-transmit command.
+For direct SoftAP, one WPA2 passphrase also derives the TCP AUTH secret in the
+client; no token is retrieved, saved, displayed or entered separately.
+STA mode continues using the existing private token-file workflow.
+The host never reads NetworkManager or another password store, never prints
+WiFi passwords/tokens and never enables a vehicle/bus-transmit command.
 """
 
 from __future__ import annotations
@@ -73,7 +75,7 @@ def wifi_config_command(ssid: bytes, password: bytes) -> bytes:
 
 
 def validate_ap_credentials(ssid: str, password: str) -> tuple[bytes, bytes]:
-    """Validate first-time SoftAP credentials without echoing either secret."""
+    """Validate SoftAP credentials without echoing either secret."""
     if not isinstance(ssid, str) or not isinstance(password, str):
         raise ProvisioningError("SoftAP SSID and password must be entered as text")
     try:
@@ -83,8 +85,8 @@ def validate_ap_credentials(ssid: str, password: str) -> tuple[bytes, bytes]:
         raise ProvisioningError("SoftAP credentials must contain ASCII characters only") from exc
     if not 1 <= len(ssid_bytes) <= 32:
         raise ProvisioningError("SoftAP SSID must be 1–32 ASCII characters")
-    if not 16 <= len(password_bytes) <= 63:
-        raise ProvisioningError("SoftAP WPA2 password must be 16–63 ASCII characters")
+    if not 8 <= len(password_bytes) <= 63:
+        raise ProvisioningError("SoftAP WPA2 password must be 8–63 ASCII characters")
     if (any(byte < 32 or byte == 127 for byte in ssid_bytes) or
             any(byte < 32 or byte > 126 for byte in password_bytes)):
         raise ProvisioningError("SoftAP credentials must use printable ASCII characters")
@@ -94,6 +96,11 @@ def validate_ap_credentials(ssid: str, password: str) -> tuple[bytes, bytes]:
 def wifi_ap_config_command(ssid: bytes, password: bytes) -> bytes:
     return (b"WIFI_AP_CONFIG " + base64.b64encode(ssid) + b" " +
             base64.b64encode(password) + b"\n")
+
+
+def wifi_ap_rekey_command(password: bytes) -> bytes:
+    """Atomic AP bundle migration/rotation; only sent on an explicit request."""
+    return b"WIFI_AP_REKEY " + base64.b64encode(password) + b"\n"
 
 
 class UsbSetupClient:
@@ -128,7 +135,8 @@ class UsbSetupClient:
                         b"WIFI_STATUS\n", b"WIFI_TOKEN\n",
                         b"WIFI_AP_STATUS\n", b"WIFI_STA_MODE\n",
                         b"WIFI_AP_MODE\n") or
-            bool(re.fullmatch(rb"WIFI_(?:AP_)?CONFIG [A-Za-z0-9+/=]+ [A-Za-z0-9+/=]+\n", command))
+            bool(re.fullmatch(rb"WIFI_(?:AP_)?CONFIG [A-Za-z0-9+/=]+ [A-Za-z0-9+/=]+\n", command)) or
+            bool(re.fullmatch(rb"WIFI_AP_REKEY [A-Za-z0-9+/=]+\n", command))
         )
         if not allowed:
             raise ProvisioningError("Non-provisioning USB command blocked")
@@ -323,8 +331,10 @@ def main(argv: list[str] | None = None,
                         help="explicitly replace an existing private local token")
     parser.add_argument("--ap", action="store_true",
                         help="provision the ESP32 direct WPA2 SoftAP instead of a router STA")
+    parser.add_argument("--ap-rekey", action="store_true",
+                        help="explicitly replace existing SoftAP password using atomic NVS bundle")
     parser.add_argument("--ap-ssid", default=DEFAULT_AP_SSID,
-                        help=f"direct SoftAP SSID (default: {DEFAULT_AP_SSID})")
+                        help=f"first-time direct SoftAP SSID (default: {DEFAULT_AP_SSID}); rekey preserves existing SSID")
     parser.add_argument("--ap-timeout-seconds", type=float, default=20.0,
                         help="maximum wait for the direct SoftAP to become active")
     parser.add_argument("--startup-seconds", type=float, default=1.5)
@@ -333,11 +343,14 @@ def main(argv: list[str] | None = None,
         parser.error("startup-seconds must be 0..10")
     if not 0 <= args.ap_timeout_seconds <= 120:
         parser.error("ap-timeout-seconds must be 0..120")
+    if args.ap_rekey and not args.ap:
+        parser.error("--ap-rekey requires --ap")
     try:
-        check_destination(args.token_file, replace=args.replace_token)
+        if not args.ap:
+            check_destination(args.token_file, replace=args.replace_token)
         if args.ap:
             ssid, password = validate_ap_credentials(
-                args.ap_ssid,
+                DEFAULT_AP_SSID if args.ap_rekey else args.ap_ssid,
                 ask_password("SoftAP WPA2 password (not echoed): "),
             )
         else:
@@ -358,52 +371,45 @@ def main(argv: list[str] | None = None,
             client = UsbSetupClient(port)
             client.verify_identity()
             if args.ap:
-                result = client.request(wifi_ap_config_command(ssid, password), timeout=8)
-                reused_existing_ap = False
-                if result == b"WIFI_AP_CONFIG OK saved=1 starting=1":
-                    pass
-                elif result == b"DENIED wifi_ap_config_exists":
-                    mode_result = client.request(b"WIFI_AP_MODE\n", timeout=8)
-                    if mode_result not in (
-                            b"WIFI_AP_MODE OK starting=1", b"WIFI_AP_MODE OK"):
+                if args.ap_rekey:
+                    result = client.request(wifi_ap_rekey_command(password), timeout=8)
+                    if result != b"WIFI_AP_REKEY OK saved=1 starting=1":
                         raise ProvisioningError(
-                            "Existing SoftAP could not be resumed; no token retrieved"
+                            "SoftAP rekey not acknowledged; old credentials may still be active"
                         )
-                    reused_existing_ap = True
                 else:
-                    raise ProvisioningError(
-                        "Firmware rejected SoftAP provisioning; it may be busy or "
-                        "require a 16–63 character WPA2 password"
-                    )
-                # Either exact acknowledgement selects the saved AP settings.
-                # Wait separately for the radio and listener; never resend the
-                # one-time config or alter existing NVS on the reuse path.
-                # On reuse, the saved SSID may differ from the supplied default,
-                # so validate readiness without assuming its name.
+                    result = client.request(wifi_ap_config_command(ssid, password), timeout=8)
+                    if result == b"DENIED wifi_ap_config_exists":
+                        raise ProvisioningError(
+                            "Existing SoftAP was not changed; use --ap --ap-rekey "
+                            "to explicitly apply a new WPA2 password"
+                        )
+                    if result != b"WIFI_AP_CONFIG OK saved=1 starting=1":
+                        raise ProvisioningError(
+                            "SoftAP provisioning not acknowledged; password must be "
+                            "8–63 printable ASCII characters"
+                        )
+                # A positive NVS/activation ACK alone does not prove readiness.
                 ap_status = wait_for_wifi_ap(
-                    client, None if reused_existing_ap else args.ap_ssid,
+                    client, None if args.ap_rekey else args.ap_ssid,
                     args.ap_timeout_seconds,
                 )
-                token = parse_wifi_token(client.request(b"WIFI_TOKEN\n"))
-                save_token(args.token_file, token, replace=args.replace_token)
-                if reused_existing_ap:
-                    display("Existing SoftAP configuration was safely reused; "
-                            "NVS was not erased or rotated, and no vehicle command was sent.")
+                if args.ap_rekey:
+                    display("Existing SoftAP password updated and AP restarted. "
+                            "Previous legacy NVS credentials were preserved.")
                 else:
                     display("Direct Wi-Fi SoftAP is ready.")
                 reported_ssid = ap_status.get("ssid")
                 if reported_ssid is not None:
                     display(f"  SSID: {reported_ssid} (2.4 GHz, WPA2, channel 6)")
-                elif reused_existing_ap:
-                    display("  SSID: saved SoftAP (not reported by firmware)")
+                elif args.ap_rekey:
+                    display("  SSID: existing SoftAP name preserved")
                 else:
                     display(f"  SSID: {args.ap_ssid} (2.4 GHz, WPA2, channel 6)")
                 display(f"  IP: {DIRECT_AP_IP}")
                 display(f"  TCP port: {DIRECT_AP_PORT}")
-                display("  Authentication token was retrieved over USB and saved "
-                        f"to the private 0600 file: {args.token_file.expanduser()}")
-                display("Connect the Android client to the SoftAP, then use the "
-                        "private token for its authenticated session.")
+                display("Use the same WPA2 password in the Android app; "
+                        "TCP AUTH is derived locally, with no separate token.")
                 return 0
 
             result = client.request(wifi_config_command(ssid, password), timeout=8)

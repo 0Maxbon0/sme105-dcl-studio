@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { pbkdf2Sync } from "node:crypto";
 import * as fake from "fake-indexeddb";
 import "./test-env.mjs";
 import { createController } from "../js/controller.js";
@@ -21,15 +22,22 @@ Object.defineProperty(globalThis, "navigator", { configurable: true, value: { st
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const fixture = name => readFileSync(path.join(repo, "app/demo", name), "utf8");
 const TOKEN = "0123456789abcdef0123456789abcdef";
-const PASSWORD = "SME105-bridge-pass";
+const PASSWORD = "ExamplePass9";
+const AP_SSID = "SME105-DIRECT-2BF8";
+const AP_DERIVED_TOKEN = "cbb4d68a0c00de650a1a307ef12b091a";
+
+function apToken(password, ssid) {
+  return pbkdf2Sync(password, `SME105-DCL-AUTH-V1:${ssid}`, 10_000, 16, "sha256").toString("hex");
+}
 
 const SAFE_STATUS = "STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW auto_tx=0 gate4=1 pad_rx=1 tx2_bench_used=1 tx2_bench_pass=1 read_used=0 observe_used=0 transport_lost=0 out_overflow=0 usb_skipped=0 armed=NONE fault=0 live_all=1 rx_batch=1 pad_evidence=2 fw=27";
 
 /** Fake native Wi-Fi plugin models Android's AP choice and the authenticated bridge socket. */
 class OfflineWifiBridge {
-  constructor({ token = TOKEN, expectedToken = TOKEN, connectAp = async () => ({ ssid: "SME105_DCL" }), onCommand = null } = {}) {
+  constructor({ token = TOKEN, expectedToken = TOKEN, expectedApToken = AP_DERIVED_TOKEN, connectAp = async () => ({ ssid: AP_SSID }), onCommand = null } = {}) {
     this.token = token;
     this.expectedToken = expectedToken;
+    this.expectedApToken = expectedApToken;
     this.connectAp = connectAp;
     this.onCommand = onCommand;
     this.listeners = new Map();
@@ -62,8 +70,9 @@ class OfflineWifiBridge {
   async connect(options) {
     const mode = options.mode ?? "ap";
     const host = options.host ?? "";
-    if (mode === "ap" && (!options.password || options.password.length < 16)) {
-      throw new Error("SoftAP WPA2 password must contain at least 16 characters");
+    const password = options.password || this.savedPassword;
+    if (mode === "ap" && (!password || !/^[\x20-\x7E]{8,63}$/.test(password))) {
+      throw new Error("SoftAP WPA2 password must contain 8–63 printable ASCII characters");
     }
     if (mode === "sta" && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)) {
       throw new Error("STA mode requires an explicit host IP address");
@@ -78,8 +87,11 @@ class OfflineWifiBridge {
     if (mode === "ap") assert.equal(ap.ssid, options.ssid);
     this.apJoined = true;
     this.tcpConnections += 1;
-    this.wireLines.push(`AUTH ${options.token}`);
-    if (options.token !== this.expectedToken) throw new Error("Authentication failed: DENIED auth");
+    const tcpToken = mode === "ap" ? apToken(password, this.ssid) : options.token || this.savedToken;
+    this.wireLines.push(`AUTH ${tcpToken}`);
+    if (tcpToken !== (mode === "ap" ? this.expectedApToken : this.expectedToken)) {
+      throw new Error("Authentication failed: DENIED auth");
+    }
     this.connected = true;
     this.authenticated = true;
   }
@@ -102,7 +114,7 @@ class OfflineWifiBridge {
 
   async saveToken({ token }) { this.savedToken = token; this.credentialCalls.push(["saveToken", token]); return { success: true }; }
   async hasPassword() {
-    const hasPassword = this.savedPassword.length >= 16;
+    const hasPassword = /^[\x20-\x7E]{8,63}$/.test(this.savedPassword);
     return { hasPassword, configured: hasPassword };
   }
 
@@ -142,7 +154,7 @@ class OfflineWifiLink {
   get apJoined() { return this.bridge.apJoined; }
 
   async connect() {
-    const result = await this.transport.connect({ mode: "ap", ssid: "SME105_DCL", password: PASSWORD, host: "10.77.13.1", port: 8765, token: this.bridge.token });
+    const result = await this.transport.connect({ mode: "ap", ssid: AP_SSID, password: PASSWORD, host: "10.77.13.1", port: 8765 });
     this.controller.onConnected(result.name, "wifi");
     this.controller.handleLine("AUTH OK");
     await this.drain();
@@ -189,7 +201,7 @@ test("SoftAP join authenticates TCP before HELLO, then verifies controller ident
   const networkSteps = [];
   link.bridge.connectAp = async () => {
     networkSteps.push("system-wifi-dialog");
-    return { ssid: "SME105_DCL" };
+    return { ssid: AP_SSID };
   };
 
   await link.connect();
@@ -199,11 +211,12 @@ test("SoftAP join authenticates TCP before HELLO, then verifies controller ident
     connected: true,
     authenticated: true,
     mode: "ap",
-    ssid: "SME105_DCL",
+    ssid: AP_SSID,
     host: "10.77.13.1",
     port: 8765,
   });
-  assert.deepEqual(link.writes.slice(0, 2), [`AUTH ${TOKEN}`, "HELLO"]);
+  assert.equal(apToken(PASSWORD, AP_SSID), AP_DERIVED_TOKEN);
+  assert.deepEqual(link.writes.slice(0, 2), [`AUTH ${AP_DERIVED_TOKEN}`, "HELLO"]);
   assert.equal(link.transport.authenticated, true);
   assert.deepEqual(commands.slice(0, 3), ["HELLO", "PINS", "STATUS"]);
   assert.equal(controller.state.transport, "wifi");
@@ -218,7 +231,7 @@ test("SoftAP without a WPA2 password fails before network, TCP, or ECU activity"
   const { controller, link } = makeIntegratedPeer();
 
   await assert.rejects(link.transport.connect({
-    mode: "ap", ssid: "SME105_DCL", password: "", host: "10.77.13.1", port: 8765, token: TOKEN,
+    mode: "ap", ssid: AP_SSID, password: "", host: "10.77.13.1", port: 8765,
   }), /WPA2 password/);
 
   assert.equal(link.bridge.networkRequests, 0);
@@ -227,11 +240,11 @@ test("SoftAP without a WPA2 password fails before network, TCP, or ECU activity"
   assert.equal(controller.state.link, "disconnected");
 });
 
-test("SoftAP with a WPA2 password shorter than 16 characters fails closed", async () => {
+test("SoftAP with a WPA2 password shorter than 8 characters fails closed", async () => {
   const { controller, link } = makeIntegratedPeer();
 
   await assert.rejects(link.transport.connect({
-    mode: "ap", ssid: "SME105_DCL", password: "short-pass", host: "10.77.13.1", port: 8765, token: TOKEN,
+    mode: "ap", ssid: AP_SSID, password: "short", host: "10.77.13.1", port: 8765,
   }), /WPA2 password/);
 
   assert.equal(link.bridge.networkRequests, 0);
@@ -286,7 +299,7 @@ test("native credential methods use normalized shapes and secrets stay out of br
       connected: true,
       authenticated: true,
       mode: "ap",
-      ssid: "SME105_DCL",
+      ssid: AP_SSID,
       host: "10.77.13.1",
       port: 8765,
     });
@@ -299,6 +312,7 @@ test("native credential methods use normalized shapes and secrets stay out of br
     assert.deepEqual(await WifiBridge.hasPassword(), { hasPassword: false, configured: false });
     assert.deepEqual(link.bridge.credentialCalls, [
       ["saveToken", TOKEN],
+      ["savePassword", PASSWORD],
       ["savePassword", PASSWORD],
       ["clearPassword"],
     ]);

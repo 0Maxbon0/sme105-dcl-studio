@@ -29,18 +29,18 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
-import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
-import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
+import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.PBEKeySpec;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -62,11 +62,13 @@ public class WifiBridgePlugin extends Plugin {
     private static final String PASSWORD_KEY = "wpa2_password";
     private static final String KEY_ALIAS = "sme105_wifi_bridge_token";
     private static final Pattern TOKEN_PATTERN = Pattern.compile("^[0-9a-fA-F]{32}$");
-    private static final Pattern WPA2_PASSWORD_PATTERN = Pattern.compile("^[\\x20-\\x7E]{16,63}$");
+    private static final Pattern WPA2_PASSWORD_PATTERN = Pattern.compile("^[\\x20-\\x7E]{8,63}$");
     private static final Pattern STA_PASSWORD_PATTERN = Pattern.compile("^[\\x20-\\x7E]{8,63}$");
+    private static final Pattern AP_SSID_PATTERN = Pattern.compile("^[\\x20-\\x7E]{1,32}$");
+    private static final String DEFAULT_AP_SSID = "SME105-DIRECT-2BF8";
+    private static final String AP_AUTH_SALT_PREFIX = "SME105-DCL-AUTH-V1:";
     private static final int MAX_LINE_BYTES = 16 * 1024;
     private static final int MAX_TIMEOUT_MS = 120_000;
-    private static final int WIFI_PROBE_TIMEOUT_MS = 1_500;
     private static final String WRITE_INVALIDATED_MESSAGE =
         "The authenticated Wi-Fi session for this queued write is no longer active. Reconnect and submit a fresh command after checking device state.";
     private static final String WRITE_UNCERTAIN_MESSAGE =
@@ -90,7 +92,7 @@ public class WifiBridgePlugin extends Plugin {
     private boolean authenticated;
     private boolean disconnecting;
     private String host = "10.77.13.1";
-    private String ssid = "SME105_DCL";
+    private String ssid = DEFAULT_AP_SSID;
     private int port = 8765;
     private String mode = "ap";
 
@@ -128,7 +130,8 @@ public class WifiBridgePlugin extends Plugin {
     @PluginMethod
     public void connect(PluginCall call) {
         String requestedMode = valueOr(call.getString("mode"), "ap").toLowerCase();
-        String requestedSsid = valueOr(call.getString("ssid"), "SME105_DCL");
+        String requestedSsid = valueOr(call.getString("ssid"),
+            requestedMode.equals("sta") ? "SME105_DCL" : DEFAULT_AP_SSID);
         String requestedHost = valueOr(call.getString("host"), "10.77.13.1");
         String password = call.getString("password");
         if ((password == null || password.isEmpty()) && requestedMode.equals("ap")) {
@@ -144,7 +147,7 @@ public class WifiBridgePlugin extends Plugin {
             return;
         }
         if (requestedMode.equals("ap") && !isValidWpa2Password(password)) {
-            call.reject("SoftAP WPA2 password (16–63 printable ASCII characters) is required");
+            call.reject("SoftAP WPA2 password (8–63 printable ASCII characters) is required");
             return;
         }
         if (requestedHost.isEmpty() || requestedPort < 1 || requestedPort > 65535) {
@@ -155,7 +158,19 @@ public class WifiBridgePlugin extends Plugin {
             call.reject("Connection timeouts must be between 1 and 120000 milliseconds");
             return;
         }
-        if (token == null || token.isEmpty()) token = loadToken();
+        if (requestedMode.equals("ap")) {
+            try {
+                // Direct Wi-Fi uses one user-entered password for WPA2 and TCP AUTH.
+                // Ignore even a supplied legacy token for SoftAP; its NVS peer derives
+                // the identical 16-byte result from the password and exact SSID.
+                token = deriveApAuthToken(password, requestedSsid);
+            } catch (GeneralSecurityException error) {
+                call.reject("Could not derive direct bridge authentication");
+                return;
+            }
+        } else if (token == null || token.isEmpty()) {
+            token = loadToken();
+        }
         if (token == null || !TOKEN_PATTERN.matcher(token).matches()) {
             call.reject("A valid 32-character authentication token is required");
             return;
@@ -219,17 +234,11 @@ public class WifiBridgePlugin extends Plugin {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && requestedMode.equals("ap")) {
                 ConnectivityManager manager = getContext().getSystemService(ConnectivityManager.class);
                 if (manager == null) throw new IOException("Wi-Fi network service is unavailable");
-                Network network = findReachableWifiNetwork(attempt, manager, requestedHost, requestedPort,
-                    Math.min(connectTimeoutMs, WIFI_PROBE_TIMEOUT_MS));
-                if (network == null) {
-                    try {
-                        network = requestWifiNetwork(attempt, requestedSsid, password, connectTimeoutMs);
-                    } catch (IOException requestError) {
-                        network = findReachableWifiNetwork(attempt, manager, requestedHost, requestedPort,
-                            Math.min(connectTimeoutMs, WIFI_PROBE_TIMEOUT_MS));
-                        if (network == null) throw requestError;
-                    }
-                }
+                // Never send even a derived AUTH line to an arbitrary Wi-Fi
+                // network merely because it happens to expose the bridge IP.
+                // Android must select the exact SSID through the system's
+                // Wi-Fi network request before this socket may open.
+                Network network = requestWifiNetwork(attempt, requestedSsid, password, connectTimeoutMs);
                 candidate = network.getSocketFactory().createSocket();
                 attempt.socket = candidate;
                 if (attempt.cancelled || attempt.networkLost) throw new IOException("Connection was cancelled");
@@ -364,40 +373,6 @@ public class WifiBridgePlugin extends Plugin {
         } finally {
             if (!success) releaseNetworkRequest(attempt);
         }
-    }
-
-    private Network findReachableWifiNetwork(ConnectAttempt attempt, ConnectivityManager manager,
-                                             String targetHost, int targetPort, int timeoutMs) throws IOException {
-        for (Network network : manager.getAllNetworks()) {
-            if (attempt.cancelled) return null;
-            NetworkCapabilities capabilities = manager.getNetworkCapabilities(network);
-            if (capabilities == null || !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue;
-            InetAddress[] addresses;
-            try {
-                addresses = network.getAllByName(targetHost);
-            } catch (UnknownHostException ignored) {
-                continue;
-            }
-            for (InetAddress address : addresses) {
-                if (attempt.cancelled) return null;
-                Socket probe = null;
-                try {
-                    probe = network.getSocketFactory().createSocket();
-                    attempt.socket = probe;
-                    if (attempt.cancelled) throw new IOException("Connection was cancelled");
-                    probe.connect(new InetSocketAddress(address, targetPort), timeoutMs);
-                    return network;
-                } catch (IOException ignored) {
-                    // Try other addresses or active Wi-Fi networks.
-                } finally {
-                    if (probe != null) {
-                        if (attempt.socket == probe) attempt.socket = null;
-                        closeQuietly(probe);
-                    }
-                }
-            }
-        }
-        return null;
     }
 
     private void startReader(ConnectAttempt attempt, Socket connectedSocket, InputStream input) {
@@ -671,7 +646,7 @@ public class WifiBridgePlugin extends Plugin {
         if (!valid) {
             call.reject(requestedMode.equals("sta")
                 ? "STA password (8–63 printable ASCII characters) is required"
-                : "SoftAP WPA2 password (16–63 printable ASCII characters) is required");
+                : "SoftAP WPA2 password (8–63 printable ASCII characters) is required");
             return;
         }
         try {
@@ -701,7 +676,7 @@ public class WifiBridgePlugin extends Plugin {
     @PluginMethod
     public void hasPassword(PluginCall call) {
         String password = loadPassword();
-        boolean configured = isValidStaPassword(password);
+        boolean configured = isValidWpa2Password(password);
         JSObject result = new JSObject();
         result.put("hasPassword", configured);
         result.put("configured", configured);
@@ -900,6 +875,32 @@ public class WifiBridgePlugin extends Plugin {
 
     private static boolean isValidStaPassword(String password) {
         return password != null && STA_PASSWORD_PATTERN.matcher(password).matches();
+    }
+
+    static String deriveApAuthToken(String password, String ssid) throws GeneralSecurityException {
+        if (!isValidWpa2Password(password) || ssid == null || !AP_SSID_PATTERN.matcher(ssid).matches()) {
+            throw new GeneralSecurityException("Invalid direct bridge credentials");
+        }
+        char[] chars = password.toCharArray();
+        PBEKeySpec spec = new PBEKeySpec(chars,
+            (AP_AUTH_SALT_PREFIX + ssid).getBytes(StandardCharsets.UTF_8), 10_000, 128);
+        java.util.Arrays.fill(chars, '\0');
+        try {
+            byte[] derived = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+                .generateSecret(spec).getEncoded();
+            try {
+                StringBuilder token = new StringBuilder(32);
+                for (byte value : derived) {
+                    token.append(Character.forDigit((value >>> 4) & 0x0f, 16));
+                    token.append(Character.forDigit(value & 0x0f, 16));
+                }
+                return token.toString();
+            } finally {
+                java.util.Arrays.fill(derived, (byte) 0);
+            }
+        } finally {
+            spec.clearPassword();
+        }
     }
 
     private static void closeQuietly(Socket socket) {

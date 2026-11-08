@@ -158,3 +158,9 @@ The newly added **actual JVM plugin test**, `android/app/src/test/java/com/maxim
 Independently verified release artifacts: Android **v1.8.16/code 18**, APK **4,992,238 bytes**, SHA-256 **`9a88e4a1c6bc1ebc56b182d4a2ff091d9fc4858df47e52a1f6a250223d6f4461`**. The USB Wi-Fi and BLE firmware binaries remain the unchanged v28 builds with hashes shown above. Android compilation and APK assembly succeeded with **JDK 21**, **Node 22** for Capacitor sync, and the existing local Android SDK. No source capture, Android app data, or ESP32 NVS was modified.
 
 **Verdict:** OFFLINE SOFTWARE/BUILD ACCEPTANCE PASS. Physical Android–ESP32 SoftAP, TCP authentication, background handling, range, and vehicle tests remain **PENDING**. No commit, push, install, flash, USB provisioning command, or vehicle DCL operation was authorized or performed in this correction round.
+
+---
+
+## Follow-up release (2026-11-09) — superseding v1.8.16 details
+
+This report describes the original v1.8.16 Wi-Fi-first development and is **historical**. The current installed release is **Android v1.8.17/build19 and ESP32 v29** with direct WPA2 SoftAP, one user-entered Wi-Fi password, internally derived TCP `AUTH`, and no manually entered token or router requirement. The owner has confirmed direct phone pairing and an isolated output-LED bench demonstration with the ECU disconnected; vehicle-side diagnostic and actuator semantics are **not** thereby verified. See [the current release/bench report](docs/releases/2026-11-09-direct-softap-bench.md), [main README](README.md), and [direct Wi-Fi setup](docs/wifi_bridge_architecture_and_setup.md) for the active baseline and recovery procedure. Earlier v1.8.16 validation results and hashes remain here only as dated history.

@@ -13,3 +13,24 @@ analysis/
 .pio/
 node_modules/
 android/local.properties
+
+# Local deployment outputs, credentials, screenshots and private device backups.
+.env
+.env.*
+!.env.example
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.key
+*.private
+*.secret
+*.bak
+*.backup
+.sme105-*
+**/local.properties
+**/.gradle/
+android/app/build/
+android/build/
+artifacts/android/*.apk
+# Generated/installed APKs must be published as tagged release assets, not committed.

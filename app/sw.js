@@ -1,4 +1,4 @@
-const CACHE_NAME = 'eeciv-v1.8.16';
+const CACHE_NAME = 'eeciv-v1.8.17';
 const FILES = [
   "./",
   "./index.html",

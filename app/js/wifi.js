@@ -1,6 +1,8 @@
 /** Authenticated SME105 bridge transport over the native Wi-Fi plugin. */
 import { createLineBuffer } from "./protocol.js";
 
+export const DIRECT_AP_SSID = "SME105-DIRECT-2BF8";
+
 function nativeAndroid() {
   return typeof window !== "undefined" && !!window.Capacitor?.isNativePlatform?.();
 }
@@ -28,7 +30,7 @@ export class WifiTransport {
     this.mode = "ap";
     this.host = "10.77.13.1";
     this.port = 8765;
-    this.ssid = "SME105_DCL";
+    this.ssid = DIRECT_AP_SSID;
     this.queue = Promise.resolve();
     this.lineBuffer = createLineBuffer();
     this.remembered = null;
@@ -87,17 +89,17 @@ export class WifiTransport {
 
   async openConnection(options) {
     const mode = options.mode ?? "ap";
-    const ssid = options.ssid ?? "SME105_DCL";
+    const ssid = options.ssid ?? (mode === "sta" ? "SME105_DCL" : DIRECT_AP_SSID);
     let password = options.password;
     let host = options.host;
     if (mode === "ap") {
       if (password !== undefined) {
-        if (typeof password !== "string" || !/^[\x20-\x7E]{16,63}$/.test(password)) {
-          throw new Error("SoftAP WPA2 password (16–63 printable ASCII characters) is required.");
+        if (typeof password !== "string" || !/^[\x20-\x7E]{8,63}$/.test(password)) {
+          throw new Error("SoftAP WPA2 password (8–63 printable ASCII characters) is required.");
         }
       } else {
         if (!(await this.hasPassword())) {
-          throw new Error("SoftAP WPA2 password (16–63 printable ASCII characters) is required.");
+          throw new Error("SoftAP WPA2 password (8–63 printable ASCII characters) is required.");
         }
         // The native bridge reads the password previously saved in its secure store.
         password = "";
@@ -108,17 +110,16 @@ export class WifiTransport {
     }
     if (mode === "ap") host ??= "10.77.13.1";
     const port = options.port ?? 8765;
-    const token = options.token;
+    const token = mode === "sta" ? options.token : undefined;
     const generation = ++this.generation;
 
     this.mode = mode;
     this.ssid = ssid;
     this.host = host;
     this.port = port;
-    this.remembered = {
-      mode, ssid, ...(options.password === undefined ? {} : { password: options.password }),
-      host, port, ...(token === undefined ? {} : { token }),
-    };
+    // Reconnect with the native Keystore value; never retain the typed AP
+    // password in a long-lived JavaScript connection configuration.
+    this.remembered = { mode, ssid, host, port, ...(token === undefined ? {} : { token }) };
     this.connectionWanted = true;
     this.connected = false;
     this.authenticated = false;
@@ -126,6 +127,14 @@ export class WifiTransport {
 
     try {
       const { WifiBridge } = await this.loadPlugins();
+      if (generation !== this.generation) throw new Error("Wi-Fi connection superseded");
+
+      if (mode === "ap" && password) {
+        // Enter once: native encrypts the passphrase before starting any
+        // network activity. Android derives the TCP AUTH from that same secret.
+        await WifiBridge.savePassword({ password, mode: "ap" });
+        password = "";
+      }
       if (generation !== this.generation) throw new Error("Wi-Fi connection superseded");
 
       await this.addListener(WifiBridge, "line", event => this.receiveLineEvent(event, generation), generation);
@@ -142,7 +151,7 @@ export class WifiTransport {
         this.handlers.onError(error?.error ?? error);
       }, generation);
 
-      await WifiBridge.connect({ mode, ssid, password, host, port, token });
+      await WifiBridge.connect({ mode, ssid, password, host, port, ...(token === undefined ? {} : { token }) });
       if (generation !== this.generation) throw new Error("Wi-Fi disconnected during connection setup");
       this.connected = true;
       this.authenticated = true;
@@ -265,11 +274,11 @@ export class WifiTransport {
   }
 
   async savePassword(password) {
-    if (typeof password !== "string" || password.length < 8 || password.length > 63) {
-      throw new Error("Wi-Fi password must be between 8 and 63 characters.");
+    if (typeof password !== "string" || !/^[\x20-\x7E]{8,63}$/.test(password)) {
+      throw new Error("Wi-Fi password must be 8–63 printable ASCII characters.");
     }
     const { WifiBridge } = await this.loadPlugins();
-    return WifiBridge.savePassword({ password });
+    return WifiBridge.savePassword({ password, mode: "ap" });
   }
 
   async clearPassword() {

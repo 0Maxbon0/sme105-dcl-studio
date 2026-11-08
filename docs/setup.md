@@ -1,298 +1,102 @@
-# Application and Ubuntu setup
+# SME105 DCL Studio — installation and hardware setup
 
-These commands assume a zero-state Ubuntu installation and a shell opened at
-the project root.
+**Current mode (2026-11-09):** native Android app v1.8.17 + ESP32 v29 direct WPA2 SoftAP; optional host Python CLI for evidence analysis. The obsolete Python localhost web GUI and associated launchers were retired from the maintained tree. Do not use `ford-dcl-gui` or the historical `Launch Studio.bat` instructions from old archived reports.
 
-## Install Python prerequisites
+## 1. Host tools: Ubuntu or Windows
+
+Use Python 3.12+, Node 22, JDK 21 and an Android SDK for app development. The Python CLI does not require Node/Android; Node is for building the phone application.
+
+### Ubuntu
 
 ```bash
-cd "/media/maxim/MAX/Docs/Maxim Docs/escort scanning"
 sudo apt update
-sudo apt install -y python3-venv python3-pip
-```
-
-## Create and activate the virtual environment
-
-```bash
+sudo apt install -y git python3 python3-venv python3-pip
+# From the repository root:
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -e .
-```
-
-For application packaging and API tests:
-
-```bash
-pip install -e ".[build]"
-```
-
-The prompt normally gains a `(.venv)` prefix. Verify that the project uses the
-virtual-environment interpreter:
-
-```bash
-which python
-python --version
-python -m pip --version
-```
-
-For every new terminal:
-
-```bash
-cd "/media/maxim/MAX/Docs/Maxim Docs/escort scanning"
-source .venv/bin/activate
-```
-
-## Launch the Diagnostic Studio
-
-```bash
-ford-dcl-gui
-```
-
-The process binds only to `127.0.0.1`, chooses another local port if 8765 is
-busy, prints a tokenized URL, and opens the default browser. Keep the process
-running while using the GUI. Settings and captures are stored in
-OS-appropriate per-user directories unless changed in the Settings tab.
-
-Ubuntu portable bundle:
-
-```bash
-./scripts/build_ubuntu.sh
-./scripts/launch_ubuntu.sh
-```
-
-Windows must build its own native bundle:
-
-```bat
-scripts\build_windows.bat
-scripts\launch_windows.bat
-```
-
-The Windows application discovers `COM` ports through pyserial. Install the
-USB/UART vendor driver if Windows does not expose the CP2102 as a COM port.
-The Linux and Windows bundles are not interchangeable.
-
-## Grant serial-port access
-
-Add the current login user to `dialout`:
-
-```bash
-sudo usermod -aG dialout "$USER"
-```
-
-Completely log out of the Ubuntu desktop session and log in again. Opening a
-new terminal alone is not sufficient. Then verify membership:
-
-```bash
-id
-id -nG
-getent group dialout
-```
-
-`dialout` must appear in `id -nG`, and the current username should appear in
-the `getent` result. Do not run the capture program with `sudo`; fix group
-membership or device rules instead.
-
-An IDE already running during the group change retains its old process groups.
-Fully quit and reopen Cursor after the logout/login cycle before launching the
-application from its integrated terminal.
-
-## Identify the adapter
-
-Disconnect the USB serial adapter, run:
-
-```bash
-sudo dmesg --follow
-```
-
-Connect the adapter and note the new device name. Press `Ctrl+C`. For a typical
-USB serial adapter, verify `/dev/ttyUSB0`:
-
-```bash
-ls -l /dev/ttyUSB0
-udevadm info --query=property --name=/dev/ttyUSB0
+python -m pip install -e .
+ford-dcl --help
 python -m serial.tools.list_ports -v
 ```
 
-The device can instead be `/dev/ttyUSB1`, `/dev/ttyACM0`, or another number.
-Use the device reported for the specific adapter. Recheck after each unplug;
-Linux numbering is not a permanent adapter identity. Prefer a stable
-`/dev/serial/by-id/...` path when one exists:
+To access `/dev/ttyUSB*` without root (log out and back in after adding the group):
 
 ```bash
+sudo usermod -aG dialout "$USER"
+id -nG
 ls -l /dev/serial/by-id/
 ```
 
-Before vehicle connection, ensure no terminal, modem manager, IDE serial
-monitor, or previous capture owns the port:
+A Silicon Labs CP2102 adapter commonly appears as `/dev/ttyUSB0` or a stable `/dev/serial/by-id/...` symlink. Never assume that a numeric port still identifies the same device after reconnecting it; confirm hardware identity before physical USB rekey or firmware flash.
 
-```bash
-fuser /dev/ttyUSB0
+### Windows
+
+Install a supported Python interpreter and Git; check CP2102 COM access in **Device Manager → Ports**. The included `Install CP2102 Driver.bat` can install the vendor driver if missing. Then, in PowerShell from the repository root:
+
+```powershell
+py -3 -m venv .venv
+.venv\Scripts\python.exe -m pip install -e .
+.venv\Scripts\ford-dcl.exe --help
+.venv\Scripts\python.exe -m serial.tools.list_ports -v
 ```
 
-No output means no process currently has the device open.
+The obsolete GUI EXE/bundle is not part of the maintained CLI/Android release; do not invoke old `scripts/build_windows.bat`, `scripts/launch_windows.bat` or `Launch Studio.bat` from historical notes.
 
-## Capture examples
+## 2. Build and install Android
 
-Keep the two serial links distinct:
-
-- The host CLI reads the ESP USB serial stream at 115200 baud.
-- The ESP's vehicle-side UART uses the DCL candidate setting. Public references
-  suggest 8 data bits, no UART parity, two stop bits (8N2), with 9600 and 19200
-  baud candidates. These DCL settings are not yet verified on SME-105.
-
-The `ford-dcl capture --baudrate` option configures only the host-to-ESP USB
-link. It does not change the DCL UART. Use one firmware-side DCL candidate per
-capture and name the output parent accordingly.
-
-DCL 9600 candidate, with USB at 115200:
+From the repository root:
 
 ```bash
-mkdir -p captures
-ford-dcl capture /dev/ttyUSB0 \
-  --baudrate 115200 \
-  --output captures/SME105_KOEO_PASSIVE_DCL9600_20260822T030000Z \
-  --no-reconnect
+npm ci
+npm test
+npm run android:sync
+cd android
+./gradlew :app:testDebugUnitTest :app:assembleDebug --offline
 ```
 
-DCL 19200 candidate, using firmware separately configured for 19200 8N2:
+On Windows, use `gradlew.bat` instead. Install the resulting APK **over** the existing application:
 
 ```bash
-ford-dcl capture /dev/ttyUSB0 \
-  --baudrate 115200 \
-  --output captures/SME105_KOEO_PASSIVE_DCL19200_20260822T031000Z \
-  --no-reconnect
+adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Timestamped binary firmware uses USB at 460800 baud:
+The APK keeps its existing Android private data and IndexedDB evidence. **Never uninstall, `pm clear` or reset app storage for an ordinary upgrade**. Old Chrome/PWA storage is distinct from installed Android WebView storage; export any historic Chrome recordings before removing obsolete browser installations.
+
+## 3. Build and configure the direct Wi-Fi bridge
+
+The standard **Wi-Fi** image is `esp32dev` (firmware v29), not `esp32dev_ble`:
 
 ```bash
-ford-dcl capture /dev/ttyUSB0 \
-  --format binary \
-  --baudrate 460800 \
-  --session-label SME105_KOEO_BINARY_DCL9600 \
-  --dcl-baud 9600 \
-  --dcl-format 8N2 \
-  --firmware passive_binary-v1 \
-  --adapter MAX3485-DE-RE \
-  --ignition-state koeo \
-  --output captures/SME105_KOEO_BINARY_DCL9600_20260822T032000Z \
-  --no-reconnect
+python -m pip install -e '.[firmware]'
+python -m platformio run -d firmware/sme105_usb_bridge -e esp32dev
 ```
 
-Do not use `--format binary` with the ASCII sketch or `--format ascii` with
-the binary sketch. A format mismatch is preserved in the raw files but cannot
-produce valid parsed events.
+Flash only the correct firmware application slot, with a verified image and private backups of existing `app0`/partition table/NVS/OTA. Detailed supervised flash and backup guidance lives in [the direct Wi-Fi engineering guide](wifi_bridge_architecture_and_setup.md).
 
-Stop capture with `Ctrl+C`. The command prints its create-only timestamped
-session directory when it exits. Use that exact directory for inspection and
-hash verification.
+The ESP32 creates the 2.4 GHz WPA2 network and listens at `10.77.13.1:8765`. **No router, cloud service or home Wi-Fi is needed**. Its existing SSID can be device-specific (`SME105-DIRECT-2BF8` on the current device).
 
-Passive RX likely receives nothing because DCL is request/response. A silent
-capture is a valid observation, not proof of a failed interface.
-
-If an ESP or bridge prints hexadecimal text terminated by CR/LF, capture that
-text only as bridge output. This project's host capture preserves exact USB
-bytes and parses whitespace-separated uppercase `XX` tokens. The ASCII line
-endings are not DCL frame boundaries, and the tokens are not raw DCL frames.
-
-## Inspect without changing evidence
-
-Set `SESSION_DIR` to the directory printed by the completed capture:
+If and only if the owner wants to replace a **previously configured** AP password, use the separate explicit physical-USB rekey command after verifying `STATUS` shows safe idle and `DE=LOW`:
 
 ```bash
-SESSION_DIR="captures/SME105_KOEO_PASSIVE_DCL9600_20260822T030000Z/<timestamped-session>"
-ford-dcl inspect "$SESSION_DIR"
-ford-dcl inspect "$SESSION_DIR" --gap-ms 25
+python scripts/sme105_wifi_setup.py --ap --ap-rekey --port /dev/ttyUSB0
 ```
 
-Inspection must read the source capture and write derived output elsewhere:
+The utility prompts privately for **one WPA2 passphrase**, saves a complete AP profile atomically, keeps previous AP keys for rollback, and never requires manual TCP token transfer. Do not supply passwords in command-line flags, examples or logs. `WIFI_FORGET` wipes more settings and is **not** a password-change operation.
 
-```bash
-mkdir -p analysis
-ford-dcl inspect "$SESSION_DIR" --json \
-  > analysis/SME105_KOEO_PASSIVE_DCL9600_20260822T030000Z.inspect.json
-```
+## 4. Connect the phone
 
-The reported gaps use host monotonic observation times. Candidate pair
-alignments and parity rates are exploratory statistics, not DCL framing.
+In **SME105 DCL Studio → Settings → Wi-Fi Bridge**, verify the configured SSID, enter the one WPA2 password and tap **Save Passphrase**, then **Connect**. If Android asks to connect to a local network without Internet, accept and stay on the ESP32 Wi-Fi. A connected phone should pass `AUTH`, `HELLO`, `PINS` and `STATUS`; the bridge should show safe idle. A network scan or LED flash alone is not ECU authentication evidence.
 
-Verify the installed interface with:
+The current owner confirmed direct phone pairing and a separate bench-output LED demonstration while the car/ECU was disconnected. Long-duration network stability and vehicle acceptance require separately recorded procedures.
+
+## 5. Read-only CLI and capture integrity
+
+`ford-dcl` remains available for **offline analysis** and *authorized* USB capture. `--baudrate` selects host↔ESP USB speed, **not** the firmware's vehicle DCL baud rate. Never infer ECU compatibility from reference framing alone.
 
 ```bash
 ford-dcl --help
-ford-dcl capture --help
-ford-dcl inspect --help
-ford-dcl decode --help
-ford-dcl frame --help
-ford-dcl dtc --help
-ford-dcl marker --help
-ford-dcl diagnose --help
-```
-
-Read-only analysis examples:
-
-```bash
 ford-dcl frame "FF 5F 00 A0" --json
-ford-dcl decode "00000000000000000000000000000000000000000000FF003090000000000000" --json
 ford-dcl dtc 0x116 0x121 0x551 --source continuous_memory --json
-ford-dcl marker TPS_SWEEP_START --output analysis/operator-markers.jsonl
-ford-dcl diagnose examples/high_idle_evidence.example.json --json
 ```
 
-All profile conversions and DTC catalog matches remain reference hypotheses
-until reproduced on the target ECU.
-
-Stop if the installed CLI does not match the documented interface. Do not use
-an interactive serial terminal to guess active DCL requests.
-
-## Developer and firmware verification
-
-Host checks use only the project venv:
-
-```bash
-python -m unittest discover -s tests -v
-python -m compileall -q src tests
-python -m pip install --upgrade ruff
-ruff check --select E4,E7,E9,F,I src tests
-```
-
-Optional ESP32 board compilation:
-
-```bash
-python -m pip install --upgrade platformio
-pio ci firmware/passive_ascii/passive_ascii.ino \
-  --board esp32dev --project-option="framework=arduino"
-pio ci firmware/passive_binary/passive_binary.ino \
-  --board esp32dev --project-option="framework=arduino"
-pio ci firmware/dcl_master/dcl_master.ino \
-  --board esp32dev --project-option="framework=arduino"
-```
-
-Each firmware directory now also contains a PlatformIO project. Build or
-upload the receive-only binary firmware with:
-
-```bash
-pio run --project-dir firmware/passive_binary
-pio run --project-dir firmware/passive_binary \
-  --target upload --upload-port /dev/ttyUSB0
-```
-
-The GUI Firmware tab runs the same allow-listed projects and streams the output
-to the live log. It requires explicit confirmation before uploading passive
-firmware. Active-master upload is locked.
-
-## Seal the capture
-
-The capture's terminal event records SHA-256 for each raw segment. Also create
-and protect a complete session manifest:
-
-```bash
-(cd "$SESSION_DIR" && sha256sum metadata.json events.jsonl usb-*.bin > SHA256SUMS)
-chmod a-w \
-  "$SESSION_DIR"/metadata.json \
-  "$SESSION_DIR"/events.jsonl \
-  "$SESSION_DIR"/usb-*.bin \
-  "$SESSION_DIR"/SHA256SUMS
-(cd "$SESSION_DIR" && sha256sum --check SHA256SUMS)
-```
-
+For raw capture, use the matching documented firmware format and explicit operator evidence labels; preserve the returned session directory, timestamp, exact bytes and SHA-256. A safe vehicle test must be separately authorized and follow [wiring safety](wiring-safety.md) and [experiment plan](sme105-dcl-experiment-plan-2026-11-07.md). Do not connect arbitrary A/B polarity, use OBD pin 16 as power, or execute `ARM_*`/`READ_*`/DTC clear as a Wi-Fi smoke test.

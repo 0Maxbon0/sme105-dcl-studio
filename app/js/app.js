@@ -6,7 +6,7 @@ import { warningsForDiagnosticSession } from "./dtc-history.js";
 import { wireKline } from "./kline-ui.js";
 import { createKoerGuide } from "./koer-guide.js";
 import { BleTransport, bluetoothAvailable } from "./ble.js";
-import { WifiTransport } from "./wifi.js";
+import { WifiTransport, DIRECT_AP_SSID } from "./wifi.js";
 import { createController, candidateRequiresOperatorConfirmation, candidateRequiredStateText } from "./controller.js";
 import { APP_VERSION, createLineBuffer, DCL_BLOCKED_CANDIDATES, EXPERIMENT_CATALOGUE, MEM_EXPERIMENTS, firmwareCompatibility } from "./protocol.js";
 import { createMockTransport, createReplay } from "./mock-transport.js";
@@ -290,8 +290,6 @@ function writeStorage(key, value) {
   try { localStorage.setItem(key, value); } catch { /* private mode */ }
 }
 
-const WIFI_TOKEN_KEY = "sme105-wifi-token";
-let simulatedWifiToken = "";
 let simulatedWifiPassword = "";
 
 function simulatedWifiStorage() {
@@ -303,7 +301,12 @@ function secureWifiStorageUnavailable() {
 }
 
 function validWpa2Password(password) {
-  return typeof password === "string" && /^[\x20-\x7E]{16,63}$/.test(password);
+  return typeof password === "string" && /^[\x20-\x7E]{8,63}$/.test(password);
+}
+
+function wifiSsid() {
+  const stored = readStorage("sme105-wifi-ssid");
+  return !stored || stored === "SME105_DCL" ? DIRECT_AP_SSID : stored;
 }
 
 function configuredTransport() {
@@ -312,60 +315,16 @@ function configuredTransport() {
 }
 
 function wifiConfig() {
-  const mode = readStorage("sme105-wifi-mode") === "router" ? "sta" : "ap";
-  const customIp = readStorage("sme105-wifi-ip");
   return {
-    mode,
-    ssid: readStorage("sme105-wifi-ssid") || "SME105_DCL",
-    host: customIp || (mode === "ap" ? "10.77.13.1" : ""),
-    ip: customIp || (mode === "ap" ? "10.77.13.1" : ""),
+    mode: "ap",
+    ssid: wifiSsid(),
+    host: "10.77.13.1",
+    ip: "10.77.13.1",
     port: Number(readStorage("sme105-wifi-port") || 8765),
     // Passwords are never persisted in localStorage. A typed value is passed
     // only for this connection; otherwise the native Keystore supplies it.
     password: document.getElementById("wifi-password")?.value || undefined,
   };
-}
-
-async function refreshWifiTokenStatus() {
-  try {
-    controller.state.wifiTokenConfigured = await hasWifiToken();
-  } catch {
-    controller.state.wifiTokenConfigured = false;
-  }
-  renderApp(controller.state);
-}
-
-async function hasWifiToken() {
-  if (simulatedWifiStorage()) return !!simulatedWifiToken;
-  return await wifi.hasToken();
-}
-
-async function saveWifiToken(token) {
-  if (simulatedWifiStorage()) {
-    simulatedWifiToken = token;
-  } else {
-    if (!nativeApp() || typeof wifi.saveToken !== "function") throw secureWifiStorageUnavailable();
-    try {
-      await wifi.saveToken(token);
-    } catch (error) {
-      if (/unavailable|not implemented/i.test(error?.message || "")) throw secureWifiStorageUnavailable();
-      throw error;
-    }
-  }
-  writeStorage("sme105-wifi-token-configured", "1");
-  await refreshWifiTokenStatus();
-}
-
-async function clearWifiToken() {
-  if (simulatedWifiStorage()) {
-    simulatedWifiToken = "";
-  } else {
-    if (!nativeApp() || typeof wifi.clearToken !== "function") throw secureWifiStorageUnavailable();
-    await wifi.clearToken();
-  }
-  try { localStorage.removeItem(WIFI_TOKEN_KEY); } catch { /* Remove any token written by an older insecure build. */ }
-  try { localStorage.removeItem("sme105-wifi-token-configured"); } catch { /* private mode */ }
-  await refreshWifiTokenStatus();
 }
 
 async function getWifiBridgePasswordMethod(method) {
@@ -382,7 +341,7 @@ async function getWifiBridgePasswordMethod(method) {
 }
 
 async function saveWifiPassword(password) {
-  if (!validWpa2Password(password)) throw new Error("Enter a WPA2 passphrase with 16–63 ASCII characters.");
+  if (!validWpa2Password(password)) throw new Error("Enter a WPA2 passphrase with 8–63 printable ASCII characters.");
   if (simulatedWifiStorage()) {
     simulatedWifiPassword = password;
   } else {
@@ -499,39 +458,29 @@ async function connect() {
     if (selectedTransport === "wifi") {
       controller.state.transportStatus = "connecting";
       renderApp(controller.state);
-      let tokenConfigured = false;
-      try { tokenConfigured = await hasWifiToken(); } catch { /* Missing native secure storage is a closed connection failure. */ }
-      if (!tokenConfigured) {
-        window.alert("Please configure your 32-character bridge token in Settings before connecting.");
-        controller.state.transportStatus = "disconnected";
-        return;
-      }
       const config = wifiConfig();
-      if (config.mode === "sta" && !config.ip) {
-        window.alert("Enter the bridge’s router-assigned IP address in Settings before connecting.");
+      const passwordInput = document.getElementById("wifi-password");
+      const typedPassword = passwordInput?.value || "";
+      const typedPasswordValid = validWpa2Password(typedPassword);
+      if (typedPassword && !typedPasswordValid) {
+        passwordInput.setCustomValidity("Enter 8–63 printable ASCII characters.");
+        passwordInput.reportValidity();
         controller.state.transportStatus = "disconnected";
         return;
       }
-      if (config.mode === "ap") {
-        const passwordInput = document.getElementById("wifi-password");
-        const typedPassword = passwordInput?.value || "";
-        const typedPasswordValid = validWpa2Password(typedPassword);
-        if (typedPassword && !typedPasswordValid) {
-          passwordInput.setCustomValidity("Enter 16–63 ASCII characters.");
-          passwordInput.reportValidity();
-          controller.state.transportStatus = "disconnected";
-          return;
-        }
-        let passwordConfigured = false;
-        try { passwordConfigured = await hasWifiPassword(); } catch { /* A valid typed password can be used without saving. */ }
-        if (!passwordConfigured && !typedPasswordValid) {
-          window.alert("Enter or save the WPA2 passphrase in Settings before connecting to the direct bridge network.");
-          controller.state.transportStatus = "disconnected";
-          return;
-        }
+      let passwordConfigured = false;
+      try { passwordConfigured = await hasWifiPassword(); } catch { /* Typed valid password still works with a fresh Keystore. */ }
+      if (!passwordConfigured && !typedPasswordValid) {
+        window.alert("Enter the ESP32 Wi-Fi passphrase in Settings to connect directly.");
+        controller.state.transportStatus = "disconnected";
+        return;
       }
       transport = wifi;
       const conn = await wifi.connect(config);
+      if (typedPasswordValid) {
+        passwordInput.value = "";
+        controller.state.wifiPasswordConfigured = true;
+      }
       controller.onConnected(conn?.name || "ESP32 Wi-Fi", "wifi");
       controller.state.transportStatus = "authenticating";
       controller.state.wifiAuthenticated = wifi.authenticated === true;
@@ -1025,84 +974,37 @@ function wire() {
   document.getElementById("about-version").textContent = APP_VERSION;
   selectedTransport = configuredTransport();
   document.getElementById("transport-select").value = selectedTransport;
-  const storedWifiMode = readStorage("sme105-wifi-mode") === "router" ? "router" : "softap";
-  document.getElementById("wifi-mode").value = storedWifiMode;
-  document.getElementById("wifi-ssid").value = readStorage("sme105-wifi-ssid") || "SME105_DCL";
-  let storedWifiIp = readStorage("sme105-wifi-ip");
-  if (storedWifiMode === "router" && storedWifiIp === "10.77.13.1") {
-    storedWifiIp = "";
-    writeStorage("sme105-wifi-ip", "");
+  if (readStorage("sme105-wifi-mode") === "router") {
+    // Old router preference must not send the new one-password flow to STA.
+    writeStorage("sme105-wifi-mode", "softap");
+    writeStorage("sme105-wifi-ssid", DIRECT_AP_SSID);
   }
-  document.getElementById("wifi-ip").value = storedWifiIp ?? (storedWifiMode === "router" ? "" : "10.77.13.1");
+  document.getElementById("wifi-ssid").value = wifiSsid();
+  document.getElementById("wifi-ip").value = "10.77.13.1";
   document.getElementById("wifi-port").value = readStorage("sme105-wifi-port") || "8765";
-  const updateWifiMode = () => {
-    const direct = document.getElementById("wifi-mode").value === "softap";
-    const ip = document.getElementById("wifi-ip");
-    if (direct && ip.value !== "10.77.13.1") {
-      ip.value = "10.77.13.1";
-      writeStorage("sme105-wifi-ip", "10.77.13.1");
-    } else if (!direct && ip.value.trim() === "10.77.13.1") {
-      ip.value = "";
-      writeStorage("sme105-wifi-ip", "");
-    }
-    ip.readOnly = direct;
-    document.getElementById("wifi-mode-help").textContent = direct
-      ? "Connect your phone to the bridge’s direct Wi-Fi network before connecting."
-      : "Connect your phone and bridge to the same router, then enter the bridge’s router-assigned IP address.";
-  };
-  updateWifiMode();
+  document.getElementById("wifi-ip").readOnly = true;
   document.getElementById("transport-select").addEventListener("change", event => {
     selectedTransport = event.target.value === "ble" ? "ble" : "wifi";
     writeStorage("sme105-transport", selectedTransport);
     updateBluetoothWarning();
     renderApp(controller.state);
   });
-  document.getElementById("wifi-mode").addEventListener("change", event => {
-    writeStorage("sme105-wifi-mode", event.target.value);
-    updateWifiMode();
-    renderApp(controller.state);
-  });
   document.getElementById("wifi-ssid").addEventListener("change", event => writeStorage("sme105-wifi-ssid", event.target.value.trim()));
-  document.getElementById("wifi-ip").addEventListener("change", event => writeStorage("sme105-wifi-ip", event.target.value.trim()));
   document.getElementById("wifi-port").addEventListener("change", event => {
     const port = Number(event.target.value);
     if (Number.isInteger(port) && port >= 1 && port <= 65535) writeStorage("sme105-wifi-port", String(port));
     else event.target.value = readStorage("sme105-wifi-port") || "8765";
   });
-  document.getElementById("wifi-token-save").addEventListener("click", async () => {
-    const input = document.getElementById("wifi-token");
-    const token = input.value.trim();
-    if (!/^[A-Fa-f0-9]{32}$/.test(token)) {
-      input.setCustomValidity("Enter exactly 32 hexadecimal characters.");
-      input.reportValidity();
-      return;
-    }
-    input.setCustomValidity("");
-    try {
-      await saveWifiToken(token);
-      input.value = "";
-      controller.state.message = "Bridge token saved.";
-    } catch (error) {
-      controller.state.message = `Could not save bridge token: ${error.message}`;
-    }
-    renderApp(controller.state);
-  });
-  document.getElementById("wifi-token").addEventListener("input", event => event.target.setCustomValidity(""));
-  document.getElementById("wifi-token-clear").addEventListener("click", async () => {
-    try {
-      await clearWifiToken();
-      document.getElementById("wifi-token").value = "";
-      controller.state.message = "Bridge token cleared.";
-    } catch (error) {
-      controller.state.message = `Could not clear bridge token: ${error.message}`;
-    }
-    renderApp(controller.state);
-  });
+  // Purge a token left in browser storage by historical app versions.
+  try {
+    localStorage.removeItem("sme105-wifi-token");
+    localStorage.removeItem("sme105-wifi-token-configured");
+  } catch { /* Private mode. */ }
   document.getElementById("wifi-password-save").addEventListener("click", async () => {
     const input = document.getElementById("wifi-password");
     const password = input.value;
     if (!validWpa2Password(password)) {
-      input.setCustomValidity("Enter 16–63 ASCII characters.");
+      input.setCustomValidity("Enter 8–63 printable ASCII characters.");
       input.reportValidity();
       return;
     }
@@ -1127,7 +1029,6 @@ function wire() {
     }
     renderApp(controller.state);
   });
-  void refreshWifiTokenStatus();
   void refreshWifiPasswordStatus();
   document.getElementById("secure-warning").hidden = window.isSecureContext;
   updateBluetoothWarning();

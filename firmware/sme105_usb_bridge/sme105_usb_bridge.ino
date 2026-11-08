@@ -9,6 +9,8 @@
 #include <esp_attr.h>
 #include <bootloader_random.h>
 #include <mbedtls/base64.h>
+#include <mbedtls/md.h>
+#include <mbedtls/pkcs5.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/sha256.h>
 #include <esp_ota_ops.h>
@@ -101,7 +103,7 @@ constexpr uint32_t kOtaCurrentVersion = 1;
 // still be able to boot PENDING_VERIFY from an older accepted version and
 // prove their manifest before promoting ota_ver. On a VALID app with NO pending
 // ledger, a supervised physical USB flash may adopt this build baseline.
-constexpr uint32_t kUsbInstalledBuildVersion = 28;
+constexpr uint32_t kUsbInstalledBuildVersion = 29;
 // This field build permits active-master commands only after the required
 // per-boot TX2_BENCH passes and each fixed profile is explicitly armed.
 constexpr bool kActiveMasterQualified = true;
@@ -536,6 +538,7 @@ uint32_t blePin = 0;
 bool wifiServerStarted = false;
 bool prefsReady = false, mdnsStarted = false, commandFromUSB = true;
 char wifiToken[33] = {};
+char wifiApAuthToken[33] = {}; // derived from AP WPA2 secret; never stored in NVS
 char wifiLine[240] = {}; // OTA_BEGIN signed manifest fits; never unbounded
 uint8_t wifiLineUsed = 0;
 bool wifiLineDiscard = false;
@@ -807,6 +810,112 @@ bool validHexToken(const char* value) {
     if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
   }
   return true;
+}
+// One NVS value is the transaction boundary for an AP profile. The old
+// ap_ssid/ap_pass/token keys remain untouched for firmware rollback.
+struct ApBundle {
+  uint8_t version;
+  uint8_t ssidLength;
+  uint8_t passwordLength;
+  char ssid[33];
+  char password[64];
+};
+constexpr uint8_t kApBundleVersion = 1;
+constexpr char kApAuthSaltPrefix[] = "SME105-DCL-AUTH-V1:";
+constexpr uint32_t kApAuthIterations = 10000;
+bool validApCredentials(const char* ssid, const char* password,
+                        size_t minPassword = 8) {
+  const size_t sn = strlen(ssid), pn = strlen(password);
+  if (sn < 1 || sn > 32 || pn < minPassword || pn > 63) return false;
+  for (size_t i = 0; i < sn; ++i) {
+    const uint8_t value = static_cast<uint8_t>(ssid[i]);
+    if (value < 32 || value == 127) return false;
+  }
+  for (size_t i = 0; i < pn; ++i) {
+    const uint8_t value = static_cast<uint8_t>(password[i]);
+    if (value < 32 || value > 126) return false;
+  }
+  return true;
+}
+bool readApBundle(char (&ssid)[33], char (&password)[64]) {
+  ApBundle bundle = {};
+  const bool loaded = wifiPrefs.getBytesLength("ap_bundle") == sizeof(bundle) &&
+      wifiPrefs.getBytes("ap_bundle", &bundle, sizeof(bundle)) == sizeof(bundle);
+  const bool valid = loaded && bundle.version == kApBundleVersion &&
+      bundle.ssidLength >= 1 && bundle.ssidLength <= 32 &&
+      bundle.passwordLength >= 8 && bundle.passwordLength <= 63 &&
+      bundle.ssid[bundle.ssidLength] == 0 &&
+      bundle.password[bundle.passwordLength] == 0 &&
+      strlen(bundle.ssid) == bundle.ssidLength &&
+      strlen(bundle.password) == bundle.passwordLength &&
+      validApCredentials(bundle.ssid, bundle.password);
+  if (valid) {
+    memcpy(ssid, bundle.ssid, bundle.ssidLength + 1);
+    memcpy(password, bundle.password, bundle.passwordLength + 1);
+  }
+  clearSecrets(&bundle, sizeof(bundle));
+  return valid;
+}
+bool loadApCredentials(char (&ssid)[33], char (&password)[64]) {
+  // Invalid modern bundle must fail closed, never silently use old credentials.
+  if (wifiPrefs.isKey("ap_bundle")) return readApBundle(ssid, password);
+  const String oldSsid = wifiPrefs.getString("ap_ssid", "");
+  const String oldPass = wifiPrefs.getString("ap_pass", "");
+  if (!validApCredentials(oldSsid.c_str(), oldPass.c_str(), 16)) return false;
+  oldSsid.toCharArray(ssid, sizeof(ssid));
+  oldPass.toCharArray(password, sizeof(password));
+  return true;
+}
+bool storeApBundle(const char* ssid, const char* password) {
+  if (!validApCredentials(ssid, password)) return false;
+  ApBundle bundle = {};
+  bundle.version = kApBundleVersion;
+  bundle.ssidLength = static_cast<uint8_t>(strlen(ssid));
+  bundle.passwordLength = static_cast<uint8_t>(strlen(password));
+  memcpy(bundle.ssid, ssid, bundle.ssidLength + 1);
+  memcpy(bundle.password, password, bundle.passwordLength + 1);
+  const bool written = wifiPrefs.putBytes("ap_bundle", &bundle, sizeof(bundle)) ==
+                       sizeof(bundle);
+  clearSecrets(&bundle, sizeof(bundle));
+  if (!written) return false;
+  char observedSsid[33] = {}, observedPassword[64] = {};
+  const bool verified = readApBundle(observedSsid, observedPassword) &&
+      strcmp(observedSsid, ssid) == 0 &&
+      strcmp(observedPassword, password) == 0;
+  clearSecrets(observedSsid, sizeof(observedSsid));
+  clearSecrets(observedPassword, sizeof(observedPassword));
+  return verified;
+}
+bool deriveApAuthToken(const char* ssid, const char* password,
+                       char (&token)[33]) {
+  clearSecrets(token, 33);
+  if (!validApCredentials(ssid, password)) return false;
+  uint8_t salt[sizeof(kApAuthSaltPrefix) + 32] = {};
+  uint8_t derived[16] = {};
+  const size_t prefixLength = sizeof(kApAuthSaltPrefix) - 1;
+  const size_t ssidLength = strlen(ssid);
+  memcpy(salt, kApAuthSaltPrefix, prefixLength);
+  memcpy(salt + prefixLength, ssid, ssidLength);
+  mbedtls_md_context_t context;
+  mbedtls_md_init(&context);
+  const mbedtls_md_info_t* sha = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+  const bool okay = sha && mbedtls_md_setup(&context, sha, 1) == 0 &&
+      mbedtls_pkcs5_pbkdf2_hmac(
+          &context, reinterpret_cast<const uint8_t*>(password),
+          strlen(password), salt, prefixLength + ssidLength,
+          kApAuthIterations, sizeof(derived), derived) == 0;
+  mbedtls_md_free(&context);
+  if (okay) {
+    static constexpr char alphabet[] = "0123456789abcdef";
+    for (size_t i = 0; i < sizeof(derived); ++i) {
+      token[2 * i] = alphabet[derived[i] >> 4];
+      token[2 * i + 1] = alphabet[derived[i] & 15];
+    }
+    token[32] = 0;
+  }
+  clearSecrets(salt, sizeof(salt));
+  clearSecrets(derived, sizeof(derived));
+  return okay;
 }
 bool generateToken() {
   uint8_t bytes[16];
@@ -1171,12 +1280,13 @@ void dropTcpClient(bool transportLost) {
   out.dropTcpAtCurrent();
 }
 bool tokenMatches(const char* supplied) {
-  if (!validHexToken(wifiToken) || strlen(supplied) != 32) return false;
+  const char* expected = wifiApMode ? wifiApAuthToken : wifiToken;
+  if (!validHexToken(expected) || strlen(supplied) != 32) return false;
   uint8_t diff = 0;
   for (size_t i = 0; i < 32; ++i) {
     char c = supplied[i];
     if (c >= 'A' && c <= 'F') c = static_cast<char>(c + ('a' - 'A'));
-    diff |= static_cast<uint8_t>(c ^ wifiToken[i]);
+    diff |= static_cast<uint8_t>(c ^ expected[i]);
   }
   return diff == 0;
 }
@@ -1249,11 +1359,16 @@ void startDirectAp() {
   WiFi.mode(WIFI_OFF);
 #else
   if (!wifiApMode || !wifiConfigured || !prefsReady || busSessionActive()) return;
-  const String ssid = wifiPrefs.getString("ap_ssid", "");
-  const String pass = wifiPrefs.getString("ap_pass", "");
-  if (ssid.length() < 1 || ssid.length() > 32 ||
-      pass.length() < 16 || pass.length() > 63) {
+  char ssid[33] = {}, pass[64] = {};
+  char derivedAuth[33] = {};
+  if (!loadApCredentials(ssid, pass) ||
+      !deriveApAuthToken(ssid, pass, derivedAuth)) {
     wifiApReady = false;
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_OFF);
+    clearSecrets(wifiApAuthToken, sizeof(wifiApAuthToken));
+    clearSecrets(ssid, sizeof(ssid));
+    clearSecrets(pass, sizeof(pass));
     return;
   }
   wifiLastApAttemptMs = millis();
@@ -1262,9 +1377,15 @@ void startDirectAp() {
   WiFi.mode(WIFI_AP);
   WiFi.persistent(false);
   const bool configured = WiFi.softAPConfig(kDirectApIp, kDirectApIp, kDirectApMask);
-  const bool started = configured && WiFi.softAP(ssid.c_str(), pass.c_str(), 6, 0, 1);
+  const bool started = configured && WiFi.softAP(ssid, pass, 6, 0, 1);
   wifiApReady = started && WiFi.softAPIP() == kDirectApIp;
-  if (!wifiApReady) WiFi.softAPdisconnect(true);
+  if (!wifiApReady) {
+    WiFi.softAPdisconnect(true);
+    clearSecrets(wifiApAuthToken, sizeof(wifiApAuthToken));
+  } else memcpy(wifiApAuthToken, derivedAuth, sizeof(wifiApAuthToken));
+  clearSecrets(derivedAuth, sizeof(derivedAuth));
+  clearSecrets(ssid, sizeof(ssid));
+  clearSecrets(pass, sizeof(pass));
 #endif
 }
 bool networkOnline() {
@@ -1296,10 +1417,10 @@ void initializeWiFi() {
   const String pass = wifiPrefs.getString("pass", "");
   wifiApMode = wifiPrefs.getBool("ap_mode", false);
   if (wifiApMode) {
-    const String apSsid = wifiPrefs.getString("ap_ssid", "");
-    const String apPass = wifiPrefs.getString("ap_pass", "");
-    wifiConfigured = apSsid.length() >= 1 && apSsid.length() <= 32 &&
-                     apPass.length() >= 16 && apPass.length() <= 63;
+    char apSsid[33] = {}, apPass[64] = {};
+    wifiConfigured = loadApCredentials(apSsid, apPass);
+    clearSecrets(apSsid, sizeof(apSsid));
+    clearSecrets(apPass, sizeof(apPass));
   } else {
     wifiConfigured = ssid.length() >= 1 && ssid.length() <= 32 &&
                      pass.length() >= 8 && pass.length() <= 63;
@@ -1551,6 +1672,7 @@ void processWiFiProvision(const char* command) {
     if (wifiServerStarted) { wifiServer.end(); wifiServerStarted = false; }
     if (mdnsStarted) { MDNS.end(); mdnsStarted = false; }
     if (wifiApMode) { WiFi.softAPdisconnect(true); wifiApReady = false; }
+    clearSecrets(wifiApAuthToken, sizeof(wifiApAuthToken));
     WiFi.disconnect(true, false);
     const bool saved = wifiPrefs.putString("ssid", ssid) == sn &&
                        wifiPrefs.putString("pass", password) == pn &&
@@ -1577,46 +1699,32 @@ void processDirectApProvision(const char* command) {
       !validHexToken(wifiToken)) {
     out.println(F("DENIED wifi_ap_busy")); return;
   }
-  // Refuse in-place AP PSK rewrites. NVS contains two individual strings;
-  // a partial write could otherwise destroy an already working direct link.
-  // The existing credentials are reusable via WIFI_AP_MODE.
+  // First-time provisioning only. Updating any existing bundle or legacy AP
+  // requires the dedicated USB rekey path with its single-record NVS write.
   const bool hadApSsid = wifiPrefs.isKey("ap_ssid");
   const bool hadApPass = wifiPrefs.isKey("ap_pass");
-  if (wifiApMode || (hadApSsid && hadApPass)) {
+  if (wifiApMode || wifiPrefs.isKey("ap_bundle") || hadApSsid || hadApPass) {
     out.println(F("DENIED wifi_ap_config_exists")); return;
   }
   char ssid[33] = {}, password[64] = {};
   size_t sn = 0, pn = 0;
   const bool valid = decodeWiFiCredentials(
-      command, sizeof("WIFI_AP_CONFIG ") - 1, ssid, password, sn, pn, 16);
+      command, sizeof("WIFI_AP_CONFIG ") - 1, ssid, password, sn, pn, 8);
   if (!valid) {
     clearSecrets(password, sizeof(password));
     clearSecrets(ssid, sizeof(ssid));
     out.println(F("DENIED wifi_ap_invalid"));
     return;
   }
-  // Interrupted first-time provisioning may have committed only one of the
-  // two NVS keys. Remove precisely that incomplete half, then retry with the
-  // same USB-supplied credentials. NEVER overwrite a complete AP pair.
-  if (hadApSsid != hadApPass &&
-      ((hadApSsid && !wifiPrefs.remove("ap_ssid")) ||
-       (hadApPass && !wifiPrefs.remove("ap_pass")))) {
-    clearSecrets(password, sizeof(password));
-    clearSecrets(ssid, sizeof(ssid));
-    out.println(F("DENIED wifi_ap_nvs_failed"));
-    return;
-  }
-  // NVS stores AP secrets privately; AP isn't activated until the commit flag.
-  // On failed writes, fail closed rather than silently selecting an open AP.
-  const bool saved = wifiPrefs.putString("ap_ssid", ssid) == sn &&
-                     wifiPrefs.putString("ap_pass", password) == pn &&
+  // A single NVS blob stores both AP credentials atomically. Keep all legacy
+  // keys and the STA token for rollback, including an incomplete legacy pair.
+  const bool saved = storeApBundle(ssid, password) &&
                      wifiPrefs.putBool("ap_mode", true) == 1;
   clearSecrets(password, sizeof(password));
   clearSecrets(ssid, sizeof(ssid));
   if (!saved) {
-    wifiPrefs.remove("ap_mode");
-    wifiPrefs.remove("ap_ssid");
-    wifiPrefs.remove("ap_pass");
+    // Do not remove/roll back an existing blob after a later mode-key failure.
+    // The next explicit USB rekey can recover without a partially written AP.
     out.println(F("DENIED wifi_ap_nvs_failed"));
     return;
   }
@@ -1628,7 +1736,58 @@ void processDirectApProvision(const char* command) {
   wifiApReady = false;
   wifiConfigured = true;
   startDirectAp();
-  out.println(F("WIFI_AP_CONFIG OK saved=1 starting=1"));
+  out.println(networkOnline() ? F("WIFI_AP_CONFIG OK saved=1 starting=1") :
+                              F("DENIED wifi_ap_start_failed"));
+}
+void processDirectApRekey(const char* command) {
+  if (!commandFromUSB) { out.println(F("DENIED usb_only")); return; }
+  if (stage != IDLE || busSessionActive() || slotInFlight || !stopLatched ||
+      otaUpdating() || otaFirstBootPending || !prefsReady ||
+      !validHexToken(wifiToken)) {
+    out.println(F("DENIED wifi_ap_busy")); return;
+  }
+  char ssid[33] = {}, previousPassword[64] = {}, password[64] = {};
+  if (!loadApCredentials(ssid, previousPassword)) {
+    out.println(F("DENIED wifi_ap_unavailable")); return;
+  }
+  clearSecrets(previousPassword, sizeof(previousPassword));
+  const char* encoded = command + sizeof("WIFI_AP_REKEY ") - 1;
+  size_t pn = 0;
+  bool valid = validBase64(encoded, 84) &&
+      decodeBase64(encoded, password, sizeof(password), pn) &&
+      pn >= 8 && pn <= 63;
+  for (size_t i = 0; valid && i < pn; ++i) {
+    const uint8_t byte = static_cast<uint8_t>(password[i]);
+    if (byte < 32 || byte > 126) valid = false;
+  }
+  if (!valid) {
+    clearSecrets(ssid, sizeof(ssid));
+    clearSecrets(password, sizeof(password));
+    out.println(F("DENIED wifi_ap_invalid")); return;
+  }
+  // Commit full credentials together, before interrupting the running AP.
+  // If NVS refuses the write, the existing radio/session remains usable.
+  const bool saved = storeApBundle(ssid, password);
+  clearSecrets(ssid, sizeof(ssid));
+  clearSecrets(password, sizeof(password));
+  if (!saved) { out.println(F("DENIED wifi_ap_nvs_failed")); return; }
+  if (!wifiApMode && wifiPrefs.putBool("ap_mode", true) != 1) {
+    out.println(F("DENIED wifi_ap_nvs_failed")); return;
+  }
+  armedVariant = 255; // no pending USB/TCP vehicle ARM survives AP reconfiguration
+  dropTcpClient(false);
+  if (wifiServerStarted) { wifiServer.end(); wifiServerStarted = false; }
+  if (mdnsStarted) { MDNS.end(); mdnsStarted = false; }
+  if (wifiApMode) WiFi.softAPdisconnect(true);
+  else WiFi.disconnect(true, false);
+  WiFi.mode(WIFI_OFF);
+  clearSecrets(wifiApAuthToken, sizeof(wifiApAuthToken));
+  wifiApMode = true;
+  wifiApReady = false;
+  wifiConfigured = true;
+  startDirectAp();
+  out.println(networkOnline() ? F("WIFI_AP_REKEY OK saved=1 starting=1") :
+                              F("DENIED wifi_ap_start_failed"));
 }
 void selectStaMode() {
   if (!commandFromUSB) { out.println(F("DENIED usb_only")); return; }
@@ -1650,6 +1809,7 @@ void selectStaMode() {
   WiFi.mode(WIFI_OFF);
   wifiApMode = false;
   wifiApReady = false;
+  clearSecrets(wifiApAuthToken, sizeof(wifiApAuthToken));
   wifiConfigured = true;
   startSta();
   out.println(F("WIFI_STA_MODE OK reconnecting=1"));
@@ -1660,10 +1820,11 @@ void selectApMode() {
       otaFirstBootPending || !prefsReady || !validHexToken(wifiToken)) {
     out.println(F("DENIED wifi_busy")); return;
   }
-  const String ssid = wifiPrefs.getString("ap_ssid", "");
-  const String pass = wifiPrefs.getString("ap_pass", "");
-  if (ssid.length() < 1 || ssid.length() > 32 ||
-      pass.length() < 16 || pass.length() > 63) {
+  char ssid[33] = {}, pass[64] = {};
+  const bool available = loadApCredentials(ssid, pass);
+  clearSecrets(ssid, sizeof(ssid));
+  clearSecrets(pass, sizeof(pass));
+  if (!available) {
     out.println(F("DENIED wifi_ap_unavailable")); return;
   }
   if (wifiApMode) {
@@ -3421,6 +3582,9 @@ void runCommand(const char* cmd) {
   if (!strncmp(cmd, "WIFI_AP_CONFIG ", sizeof("WIFI_AP_CONFIG ") - 1)) {
     processDirectApProvision(cmd); return;
   }
+  if (!strncmp(cmd, "WIFI_AP_REKEY ", sizeof("WIFI_AP_REKEY ") - 1)) {
+    processDirectApRekey(cmd); return;
+  }
   if (!strcmp(cmd, "WIFI_STA_MODE")) { selectStaMode(); return; }
   if (!strcmp(cmd, "WIFI_AP_MODE")) { selectApMode(); return; }
   if (!strcmp(cmd, "WIFI_STATUS")) { printWiFiStatus(); return; }
@@ -3449,10 +3613,12 @@ void runCommand(const char* cmd) {
     wifiPrefs.remove("pass");
     wifiPrefs.remove("ap_ssid");
     wifiPrefs.remove("ap_pass");
+    wifiPrefs.remove("ap_bundle");
     wifiPrefs.remove("ap_mode");
     if (wifiApMode) WiFi.softAPdisconnect(true);
     wifiApMode = false;
     wifiApReady = false;
+    clearSecrets(wifiApAuthToken, sizeof(wifiApAuthToken));
     WiFi.disconnect(true, true);
     WiFi.mode(WIFI_OFF);
     if (!generateToken()) out.println(F("DENIED wifi_unready"));
@@ -3515,7 +3681,7 @@ void runCommand(const char* cmd) {
     out.println(F("Candidate semantics are unverified on SME-105. Clear/mode/map/flow profiles can change ECU state; MEM address map and 22D3 vs 2293 parity remain hypotheses."));
     out.println(F("ACTIVE-MASTER: exact 4/4 local TX2_BENCH pass required per boot; READ_* additionally needs matching ARM_* within 15s."));
     out.println(F("No automatic TX; OBSERVE has a separate once-per-boot latch."));
-    out.println(F("WIFI USB_ONLY: WIFI_CONFIG <SSID_B64> <PASS_B64> | WIFI_AP_CONFIG <SSID_B64> <PASS_B64> | WIFI_STA_MODE WIFI_AP_MODE | WIFI_TOKEN | WIFI_FORGET"));
+    out.println(F("WIFI USB_ONLY: WIFI_CONFIG <SSID_B64> <PASS_B64> | WIFI_AP_CONFIG <SSID_B64> <PASS_B64> | WIFI_AP_REKEY <PASS_B64> | WIFI_STA_MODE WIFI_AP_MODE | WIFI_TOKEN | WIFI_FORGET"));
     out.println(F("WIFI read-only: WIFI_STATUS WIFI_DIAG WIFI_AP_STATUS; AP-only 10.77.13.1/24 WPA2 and authenticated TCP/8765"));
     out.println(F("OTA authenticated TCP: OTA_STATUS OTA_DIAG OTA_BEGIN2 <size> <sha256_lowerhex> <version> <P256_signature_DER_base64>; then 8192-byte windows plus OTA_PROGRESS received=<n>; final OTA_OK; OTA_CONFIRM after reboot"));
 #endif

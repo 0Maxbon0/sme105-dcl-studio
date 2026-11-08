@@ -192,17 +192,10 @@
           <section id="wifi-config-section" class="wifi-config" aria-labelledby="wifi-config-title">
             <div class="wifi-config-heading">
               <h4 id="wifi-config-title">Wi-Fi Bridge</h4>
-              <div class="wifi-auth-summary"><span>Authentication Status</span><span id="wifi-auth-status" class="token-status" role="status">Not configured</span></div>
             </div>
-            <label class="stack" for="wifi-mode">Connection mode
-              <select id="wifi-mode">
-                <option value="softap">Direct ESP32 SoftAP (Default)</option>
-                <option value="router">Existing Router (Advanced)</option>
-              </select>
-            </label>
             <div class="wifi-fields">
               <label class="stack" for="wifi-ssid">Configured bridge SSID
-                <input id="wifi-ssid" type="text" value="SME105_DCL" maxlength="32" autocomplete="off" spellcheck="false">
+                <input id="wifi-ssid" type="text" value="SME105-DIRECT-2BF8" maxlength="32" autocomplete="off" spellcheck="false">
               </label>
               <label class="stack" for="wifi-ip">Bridge IP
                 <input id="wifi-ip" type="text" value="10.77.13.1" inputmode="decimal" autocomplete="off" spellcheck="false">
@@ -211,27 +204,17 @@
                 <input id="wifi-port" type="number" value="8765" min="1" max="65535" inputmode="numeric">
               </label>
             </div>
-            <p id="wifi-mode-help" class="help">Connect your phone to the bridge’s direct Wi-Fi network before connecting.</p>
-            <div class="token-setup">
-              <label class="stack" for="wifi-token">Bridge Token · 32 hexadecimal characters
-                <input id="wifi-token" type="password" minlength="32" maxlength="32" pattern="[A-Fa-f0-9]{32}" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="Enter 32-character token">
-              </label>
-              <div class="token-actions">
-                <button id="wifi-token-save" type="button" class="primary">Save Token</button>
-                <button id="wifi-token-clear" type="button">Clear Token</button>
-              </div>
-              <p class="help">The token is stored for authenticated bridge access. It is never displayed after saving.</p>
-            </div>
-            <div class="password-setup">
-              <label class="stack" for="wifi-password">WPA2 Passphrase · 16–63 ASCII characters
-                <input id="wifi-password" type="password" minlength="16" maxlength="63" autocomplete="new-password" spellcheck="false" placeholder="Enter WPA2 password">
+            <p id="wifi-mode-help" class="help">The ESP32 creates this Wi-Fi network. Enter its passphrase once to connect without a router.</p>
+            <div id="wifi-password-setup" class="password-setup">
+              <label class="stack" for="wifi-password">ESP32 Wi-Fi Passphrase · 8–63 printable ASCII characters
+                <input id="wifi-password" type="password" minlength="8" maxlength="63" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="Enter the ESP32 Wi-Fi password">
               </label>
               <div class="password-actions">
-                <button id="wifi-password-save" type="button" class="primary">Save Password</button>
-                <button id="wifi-password-clear" type="button">Clear Password</button>
+                <button id="wifi-password-save" type="button" class="primary">Save Passphrase</button>
+                <button id="wifi-password-clear" type="button">Clear Saved Passphrase</button>
               </div>
-              <div class="wifi-auth-summary"><span>WPA2 Status</span><span id="wifi-password-status" class="token-status" role="status">Not configured</span></div>
-              <p class="help">The WPA2 password is encrypted in private keystore storage. It is never displayed or saved in plaintext.</p>
+              <div class="wifi-auth-summary"><span>Saved passphrase</span><span id="wifi-password-status" class="token-status" role="status">Not configured</span></div>
+              <p class="help">Use this one passphrase for the direct Wi-Fi connection and bridge authentication. Android stores it securely; no separate access token is needed.</p>
             </div>
           </section>
           <button id="connect-settings" type="button" class="primary full-width"></button>
@@ -298,7 +281,7 @@
             <h4>Local Storage &amp; Privacy</h4>
             <p class="help">Offline diagnostic data is private to this installed app. Chrome PWA recordings use separate storage: export them in the old app, then import or retain the files separately. Nothing migrates automatically.</p>
           </div>
-          <p class="about-version-line"><span data-str="aboutVersion"></span> <strong id="about-version">1.8.16</strong></p>
+          <p class="about-version-line"><span data-str="aboutVersion"></span> <strong id="about-version">1.8.17</strong></p>
           <details class="settings-subdetail">
             <summary>Demo Mode Simulation</summary>
             <label class="check"><input id="demo-toggle" type="checkbox"> <span data-str="demoOn"></span></label>

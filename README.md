@@ -1,198 +1,125 @@
-# SME-105 DCL Diagnostic Studio
+# SME105 DCL Studio
 
-**Made by Eng. Maxim Salib**
+**Offline Android diagnostics and evidence-led Ford EEC-IV DCL engineering**
+**Target:** Ford Escort 1998 · 1.6 Zetec-E · EEC-IV SME105 (`97AB-12A650-KA`)
+**Hardware:** ESP32 + MAX487 diagnostic bridge · **Maintainer:** MaximizoTech
 
-Evidence-first tooling and procedures for capturing and analysing the Ford
-EEC-IV Data Communications Link (DCL) on the SME-105 vehicle.
+> [!IMPORTANT]
+> **Experimental engineering software — not a validated ECU diagnostic product.** The direct Android↔ESP32 Wi-Fi bridge and isolated bench-output demonstration have been exercised; that does **not** prove vehicle bus polarity, ECU response, sensor mappings, actuator safety, or road-use readiness. This project is independent of Ford Motor Company.
 
-The project includes a professional offline local web application for Windows
-and Ubuntu plus the original command-line tools. It is an independent
-engineering tool and is not affiliated with Ford Motor Company.
+## Current release — 9 November 2026
 
-## Current status
+| Component | Current baseline | Evidence |
+| --- | --- | --- |
+| Android application | **v1.8.17**, build code **19**, native Capacitor/Android | Debug APK built and installed on Samsung Galaxy A52s with app data retained |
+| ESP32 bridge | **Firmware v29**, PlatformIO environment `esp32dev` | Flashed to `app0`, digest verified, USB `STATUS ... fw=29` and idle state checked |
+| Direct link | ESP32 **WPA2 SoftAP** → Android; **no router or Internet** | Owner confirmed direct phone pairing and bench-output indicator response with ECU disconnected |
+| Security | **One user-visible Wi-Fi passphrase**; no separate token field | Native Keystore storage; 16-byte PBKDF2-derived TCP `AUTH` still required by firmware |
+| Evidence and captures | Persistent Android IndexedDB; archived raw captures | `adb install -r` preserved existing WebView data; historical captures are untouched |
+| Vehicle ECU command behavior | **Not certified by this release** | Requires separately approved, timestamped, raw vehicle-session evidence |
 
-**Coordinated release (2026-11-07): firmware v25** (`esp32dev_ble`) with
-**Android app v1.8.12** (versionCode 14). See the
-[release report](artifacts/releases/2026-11-07-v25-release-report.md) for
-artifact hashes, recorded software verification, and hardware deployment
-pre-checks. The August situation report remains historical context; the
-[current status update](STATUS_REPORT.md#release-update-2026-11-07) and
-[project handoff](PROJECT_HANDOFF.md#coordinated-release-2026-11-07) describe
-the coordinated release.
+**Live link:** Existing bridge SSID `SME105-DIRECT-2BF8`; `10.77.13.1:8765`, WPA2, one client. The name is configurable on other boards; use the SSID shown by the actual ESP32. Never commit real Wi-Fi passwords, legacy authorization tokens, private NVS dumps, or Android backups.
 
-The complete A–R command matrix, parity notes, evidence levels, alternate
-variants, and bounded experiment sequence are in the
-[SME-105 DCL experiment plan](docs/sme105-dcl-experiment-plan-2026-11-07.md).
-Per-operation captures are stored in IndexedDB and can be exported with
-`exportExperimentArchive(id)` as a checksummed ZIP; see the [app README](app/README.md#durable-experiment-recordings)
-for the durable recording format.
-
-The project is experimental. No command, address, scaling formula, wiring
-polarity, baud rate, or SME-105 parameter mapping is treated as verified until
-it is reproduced on the target vehicle and recorded with an immutable capture.
-
-Every technical statement must carry one of these labels:
-
-- **Observed** — directly present in this project's unmodified capture or
-  repeatable bench/vehicle observation.
-- **Reference** — stated or implemented by a cited external source.
-- **Inferred** — a testable interpretation of observations and references.
-- **Unknown** — not established; do not silently substitute an assumption.
-
-Important corrections:
-
-- Passive receive will likely show no traffic. DCL is believed to be
-  request/response, so silence does not prove bad wiring, the wrong baud rate,
-  or absence of DCL.
-- Lines printed by an ESP or serial bridge are transport/debug text, not DCL
-  frames. ASCII line breaks do not define frame boundaries.
-- Public reference material uses 8N2 and contains 9600 and 19200 baud
-  candidates. Both remain candidates for SME-105 validation.
-- A referenced decoder describes each two-byte word as 12 data bits plus a
-  four-bit parity nibble. Byte order, parity handling, framing, commands, and
-  parameter meanings must still be validated on SME-105.
-
-No capture or document in this repository is a diagnosis.
+See the [November 9 direct-link bench release notes](docs/releases/2026-11-09-direct-softap-bench.md) for deployment/rollback boundaries. The owner-reported bench demonstration is a useful *bridge/output* acceptance milestone, not evidence that an actuator or vehicle ECU executed a command. The hardware's `DE=LOW`, `auto_tx=0`, idle state and fail-closed command gates remain the baseline. Android network lifetime on this device can be affected by Android's **no-Internet** Wi-Fi policy; long-duration stability and road-use were not separately certified.
 
 ## Architecture
 
-The intended data path is:
-
-1. The vehicle DCL pair and vehicle ground reach a protected transceiver.
-2. A receive-only adapter is used for initial electrical and passive checks.
-3. A separately approved active-master adapter controls driver enable and
-   sends bounded requests.
-4. The host CLI records timestamped raw bytes and explicit operator events.
-5. Inspection code derives candidate words and signals without modifying the
-   source capture.
-6. A human compares repeated events before promoting any claim to
-   **Observed**.
-
-Repository areas:
-
-- `src/ford_dcl/web/` — localhost-only GUI server and live services.
-- `scripts/` — Ubuntu and Windows launch/build commands.
-- `ROADMAP.md` — full updated phase roadmap and next physical gates.
-- `PROJECT_HANDOFF.md` — complete context for a new engineering session.
-- `docs/setup.md` — Ubuntu zero-state installation and serial access.
-- `docs/wiring-safety.md` — electrical limits and interface requirements.
-- `docs/protocol-notes.md` — evidence ledger and public references.
-- `docs/test-protocol.md` — repeatable vehicle session procedure.
-- `docs/high-idle-diagnosis.md` — evidence-led high-idle decision process.
-- `docs/implementation-status.md` — verified software state and external
-  vehicle blockers.
-- `captures/` — raw session artifacts when created; treat as append-only.
-- `profiles/` — candidate ECU definitions; never evidence by themselves.
-
-## Setup and commands
-
-Perform the complete setup in [docs/setup.md](docs/setup.md). The host captures
-the ESP USB stream at 115200 baud. The ESP-side DCL UART is separately
-configured for the candidate DCL rate and 8N2:
-
-Launch the guided application:
-
-```bash
-source .venv/bin/activate
-ford-dcl-gui
+```text
+Android SME105 DCL Studio (offline-capable native application)
+    │  Android Wi-Fi NetworkSpecifier (local-only WPA2; no router)
+    ▼
+ESP32 SoftAP  SME105-DIRECT-2BF8 / 10.77.13.1
+    │  TCP 8765, authenticated session, session-bound writes
+    ▼
+ESP32 v29 DCL bridge ── USB 115200 for trusted setup & status
+    │  TX2_BENCH + explicit ARM/READ gates; no auto vehicle transmission
+    ▼
+MAX487 interface → target vehicle DCL bus **only after electrical qualification**
 ```
 
-The application opens a token-protected localhost URL and provides guided
-safety/setup questions, serial discovery, bounded capture, live logs, session
-inspection, decode/framing tools, DTC lookup, high-idle evidence records,
-firmware build/upload controls, and embedded documentation. The Python
-capture GUI's legacy active-master upload remains locked. The separate v25
-ESP32 bridge exposes fixed named profiles after its per-boot electrical
-qualification gate and explicit arm command.
+Android uses a single passphrase for joining the ESP32 network and deriving the session's existing `AUTH` token internally (PBKDF2-HMAC-SHA256 with a device SSID-bound salt). The passphrase is protected using Android Keystore-backed private storage and is **never** a source constant or Git credential. Firmware NVS contains the current AP profile in one atomic bundle; the old AP credentials remain intact for physical rollback. **WPA2 and TCP authorization share a secret** in this one-password model: anyone with that passphrase may become an authenticated bridge client, so it must be kept private. `AUTH` does not bypass individual ECU arming requirements.
 
-Build or launch the Ubuntu portable bundle:
+Legacy BLE is available as a separate `esp32dev_ble` firmware build, **not** simultaneous Wi-Fi+BLE in the same image. Previous STA/router functionality remains in firmware for compatibility but is not the primary phone workflow.
 
-```bash
-./scripts/build_ubuntu.sh
-./scripts/launch_ubuntu.sh
-```
+## Build and run
 
-Windows bundles must be built natively with `scripts\build_windows.bat` and
-started with `scripts\launch_windows.bat`.
+### Prerequisites
 
-CLI use remains available:
+- Node.js **22**, Java **JDK 21**, Android SDK and platform tools (target SDK 36).
+- Python **3.12+** with `pyserial` and PlatformIO (supported project environment); an ESP32 development board with CP2102 and a suitable USB cable.
+- Physical USB access and an **isolated bench** for firmware provisioning. Do not attach the vehicle bus for the Wi-Fi acceptance checks.
+
+Clone the repository and run:
 
 ```bash
-ford-dcl capture /dev/ttyUSB0 \
-  --baudrate 115200 \
-  --output captures/SME105_KOEO_PASSIVE_DCL9600_20260822T030000Z \
-  --no-reconnect
-
-ford-dcl inspect \
-  captures/SME105_KOEO_PASSIVE_DCL9600_20260822T030000Z/<timestamped-session>
+npm ci
+npm test
+npm run android:sync
+cd android && ./gradlew :app:testDebugUnitTest :app:assembleDebug --offline
 ```
 
-The command's `--baudrate` is the USB link rate, not the DCL bus rate. Select
-the DCL candidate in firmware and identify it in the output-directory name.
-Use DCL 19200 only as a separately labelled candidate run. Do not switch DCL
-rates inside one session.
-
-For `firmware/passive_binary`, use its 460800 USB rate and fixed transport
-decoder:
+On Windows use `gradlew.bat` in place of `./gradlew`. The debug APK is produced at `android/app/build/outputs/apk/debug/app-debug.apk`. Upgrade an existing install **without erasing its data**:
 
 ```bash
-ford-dcl capture /dev/ttyUSB0 \
-  --format binary \
-  --baudrate 460800 \
-  --output captures/SME105_KOEO_BINARY_DCL9600_20260822T032000Z \
-  --no-reconnect
+adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Read-only protocol tools preserve uncertainty:
+Build the correct Wi-Fi firmware from the repository root:
 
 ```bash
-ford-dcl frame "FF 5F 00 A0" --json
-ford-dcl decode "<32-byte-live-response-hex>" --json
-ford-dcl dtc 0x116 0x121 0x551 --source continuous_memory --json
-ford-dcl diagnose examples/high_idle_evidence.example.json --json
+python -m pip install -e '.[firmware]'
+python -m platformio run -d firmware/sme105_usb_bridge -e esp32dev
 ```
 
-The legacy `firmware/dcl_master` shell contains no enabled DCL transaction.
-The separate v25 `firmware/sme105_usb_bridge` supports fixed named profiles
-behind a per-boot `TX2_BENCH` gate and explicit `ARM_*` / `READ_*` actions; it
-has no arbitrary-byte or opcode-scan path. The local pad gate does not qualify
-the vehicle-side A/B electrical path or prove ECU acceptance.
-
-## Immutable captures
-
-Raw captures are evidence. Never clean, edit, reformat, concatenate, or
-overwrite them. Corrections belong in a new derived file with a reference to
-the original SHA-256.
-
-After each session, set `SESSION_DIR` to the directory printed by
-`ford-dcl capture` when it exits:
+`./.venv/bin/pio` is equivalent when using the existing project venv. For an already-provisioned board, use the explicitly authorized physical-USB rekey workflow *only if changing its saved AP password*:
 
 ```bash
-SESSION_DIR="captures/SME105_KOEO_PASSIVE_DCL9600_20260822T030000Z/<timestamped-session>"
-(cd "$SESSION_DIR" && sha256sum metadata.json events.jsonl usb-*.bin > SHA256SUMS)
-chmod a-w \
-  "$SESSION_DIR"/metadata.json \
-  "$SESSION_DIR"/events.jsonl \
-  "$SESSION_DIR"/usb-*.bin \
-  "$SESSION_DIR"/SHA256SUMS
-(cd "$SESSION_DIR" && sha256sum --check SHA256SUMS)
+python scripts/sme105_wifi_setup.py --ap --ap-rekey --port /dev/ttyUSB0
 ```
 
-Copy captures before analysis. Preserve UTC timestamps, CLI version, adapter
-identity, serial settings, wiring state, ignition state, engine state, and
-operator event markers.
+The utility asks for the password privately; it must not be supplied on the command line. A plain `--ap` refuses to overwrite a saved profile. **Do not invoke `WIFI_FORGET`, erase NVS, or flash `esp32dev_ble` to fix a Wi-Fi password problem.** Follow [direct Wi-Fi setup and recovery](docs/wifi_bridge_architecture_and_setup.md) for backups, verification and first-time provisioning.
 
-## Safety
+### Connecting a phone
 
-This work connects a computer to a vehicle ECU. Wrong polarity, accidental
-transmission, ground faults, inappropriate termination, or use of an
-unprotected transceiver can damage the ECU, adapter, or computer and can cause
-unexpected engine operation.
+Open **Settings → Wi-Fi Bridge** in the installed Android app, confirm the actual AP SSID, and enter/save the one WPA2 passphrase. Press **Connect**, accept Android's local-network permission prompt if shown, and keep the phone connected to this **no-Internet** Wi-Fi network. The app checks `AUTH`, `HELLO`, `PINS` and `STATUS` before reporting the bridge ready. No extra token entry is necessary. Do not initiate a vehicle read as a Wi-Fi connectivity test.
 
-Read [docs/wiring-safety.md](docs/wiring-safety.md) before connection. Do not
-use OBD pin 16 as project power. With no test equipment available, limit work
-to the documented KOEO and bounded fail-safe procedure; do not commission an
-active DCL master. Stop on heat, smell, smoke, unstable idle, unexpected
-actuation, communication flooding, ground movement, or loss of operator
-control.
+## Repository map
 
+| Path | Responsibility |
+| --- | --- |
+| [`app/`](app/) | **Canonical Android application UI**: HTML/CSS/JavaScript assets bundled by Capacitor; **do not delete as an “old website”** |
+| [`android/`](android/) | Native Android integration and authenticated Wi-Fi transport, unit tests, APK build files |
+| [`firmware/sme105_usb_bridge/`](firmware/sme105_usb_bridge/) | ESP32 v29 Wi-Fi bridge firmware and hardware safety gates |
+| [`scripts/`](scripts/) | USB provisioning, command tools and engineering utilities |
+| [`src/ford_dcl/`](src/ford_dcl/) | Python capture/inspection CLI and offline analysis |
+| [`tests/`](tests/), [`app/tests/`](app/tests/) | Automated Python and JavaScript regression suites |
+| [`captures/`](captures/) | Preserved, immutable historical RAW evidence — **do not edit or delete** |
+| [`docs/`](docs/) | Engineering analysis, protocol notes, electrical safety, setup and evidence-based findings |
+| [`artifacts/`](artifacts/) | Historical reports and selected visual evidence (not a current installation channel) |
+
+The obsolete, separate Python localhost GUI is retired from the active project. `app/` remains essential to the native APK; removing it would break the current Android application. This repository does not currently publish an active GitHub Pages website.
+
+## Verification and evidence policy
+
+The November 9 source checks passed: JavaScript **273 passed / 3 skipped / 0 failed**; Python **296 passed / 10 skipped / 0 failed** (current tree, after retiring the obsolete GUI); Android JVM tests and APK assembly **passed**; PlatformIO `esp32dev` build **passed**. The APK's **105 bundled web assets** matched the source byte-for-byte at release verification. These counts describe the recorded acceptance run; repeat tests after modifying code.
+
+**Evidence levels must never be conflated:**
+
+- **Observed:** a preserved raw recording or directly witnessed bench/vehicle behavior with the stated setup.
+- **Reference:** an identified external source, *not* automatic support for this specific ECU.
+- **Inferred:** a testable hypothesis from patterns or comparisons.
+- **Unknown:** untested, ambiguous or not established on the target ECU.
+
+The command catalogue, DTC variants, MEM offsets, reverse-engineered words, PID/DMR maps, sensor conversions and active-control candidates must retain their own evidence status. The ability to build a command is **not** proof that the ECU accepts it. Historic raw material and metadata are append-only; corrections should be reproducible derivatives with source hashes.
+
+## Safety boundary
+
+There is **no generic “write arbitrary ECU bytes” API**, and no automatic ECU transmission at boot, Wi-Fi connection or recovery. Named `ARM_*` and `READ_*` transactions are bounded and require the documented per-boot `TX2_BENCH` pad verification; `DE` defaults LOW. No KOEO, KOER, live, MEM, clear-DTC, idle/actuator or output commands should be dispatched without an explicit, appropriate vehicle test procedure and operator authorization. A local LED lighting during a bridge-only test does not establish electrical compatibility with the vehicle.
+
+Start with [wiring and electrical safety](docs/wiring-safety.md), [experiment matrix](docs/sme105-dcl-experiment-plan-2026-11-07.md), [protocol notes](docs/protocol-notes.md), and [reference index](docs/REFERENCES.md). The [technical Wi-Fi setup](docs/wifi_bridge_architecture_and_setup.md) documents the current one-password architecture, USB-only rekey and rollback boundaries. Historical delivery reports are retained as dated records; **they do not supersede the current release table**.
+
+## Project governance
+
+Reports about protocol behavior should include the exact ECU, firmware/app versions, USB or radio mode, safety state, original capture identifier, clock settings, raw digest, and steps to reproduce. Keep sensitive phone, vehicle, Wi-Fi and NVS data out of public issues. See [contributing](CONTRIBUTING.md), [security](SECURITY.md) and the [references](docs/REFERENCES.md).
+
+**License:** No open-source license has been granted in this repository. Public visibility does not grant permission to redistribute the code; contact the repository owner for licensing requests.

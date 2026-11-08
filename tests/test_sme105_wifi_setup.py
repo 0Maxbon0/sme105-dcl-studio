@@ -156,18 +156,21 @@ class FakeApSetupPort(FakeSetupPort):
     def __init__(self, *, rejected: bool = False,
                  already_configured: bool = False,
                  ap_mode_reply: bytes = b"WIFI_AP_MODE OK starting=1\n",
+                 rekey_reply: bytes = b"WIFI_AP_REKEY OK saved=1 starting=1\n",
                  status_reply: bytes | None = None,
                  status_replies: list[bytes] | None = None):
         super().__init__()
         self.rejected = rejected
         self.already_configured = already_configured
         self.ap_mode_reply = ap_mode_reply
+        self.rekey_reply = rekey_reply
         default_status = (
             b"WIFI_AP_STATUS mode=AP state=ACTIVE ip=10.77.13.1 "
             b"stations=0 channel=6 port=8765 wpa2=1\n"
         )
         self.status_replies = status_replies or [status_reply or default_status]
         self.config_payload: bytes | None = None
+        self.rekey_payload: bytes | None = None
         self.ap_status_queries = 0
 
     def __enter__(self):
@@ -191,6 +194,11 @@ class FakeApSetupPort(FakeSetupPort):
         if data == b"WIFI_AP_MODE\n":
             self.writes.append(data)
             self._emit(self.ap_mode_reply)
+            return len(data)
+        if data.startswith(b"WIFI_AP_REKEY "):
+            self.writes.append(b"WIFI_AP_REKEY <private>\n")
+            self.rekey_payload = data
+            self._emit(self.rekey_reply)
             return len(data)
         if data == b"WIFI_AP_STATUS\n":
             self.writes.append(data)
@@ -238,12 +246,12 @@ class CredentialsAndStorageTests(unittest.TestCase):
 
     def test_ap_credential_validation_and_command_encoding(self):
         minimum_ssid, minimum_password = setup.validate_ap_credentials(
-            "a", "1" * 16
+            "a", "1" * 8
         )
         maximum_ssid, maximum_password = setup.validate_ap_credentials(
             "s" * 32, "p" * 63
         )
-        self.assertEqual((len(minimum_ssid), len(minimum_password)), (1, 16))
+        self.assertEqual((len(minimum_ssid), len(minimum_password)), (1, 8))
         self.assertEqual((len(maximum_ssid), len(maximum_password)), (32, 63))
         ssid, password = setup.validate_ap_credentials(
             "SME105_DCL", "a secure AP password"
@@ -256,16 +264,37 @@ class CredentialsAndStorageTests(unittest.TestCase):
         )
         self.assertNotIn(ssid, command)
         self.assertNotIn(password, command)
+        self.assertEqual(setup.wifi_ap_rekey_command(password),
+                         b"WIFI_AP_REKEY " + base64.b64encode(password) + b"\n")
         for invalid in (
-                ("", "1" * 16), ("x" * 33, "1" * 16),
-                ("bad\nssid", "1" * 16), ("wifi-é", "1" * 16),
-                ("SME105_DCL", "p" * 15), ("SME105_DCL", "p" * 64),
+                ("", "1" * 8), ("x" * 33, "1" * 8),
+                ("bad\nssid", "1" * 8), ("wifi-é", "1" * 8),
+                ("SME105_DCL", "p" * 7), ("SME105_DCL", "p" * 64),
                 ("SME105_DCL", "tab\tpassword"),
                 ("SME105_DCL", "pässword123")):
             with self.subTest(ssid_length=len(invalid[0]),
                               password_length=len(invalid[1])), self.assertRaises(
                     setup.ProvisioningError):
                 setup.validate_ap_credentials(*invalid)
+
+    def test_ap_pbkdf2_cross_language_contract(self):
+        """Independent published vector; no real AP secret in the repository."""
+        ssid = "SME105-DIRECT-2BF8"
+        sample_password = "ExamplePass9"
+        derived = hashlib.pbkdf2_hmac(
+            "sha256", sample_password.encode("ascii"),
+            ("SME105-DCL-AUTH-V1:" + ssid).encode("utf-8"),
+            10000, dklen=16,
+        )
+        self.assertEqual(derived.hex(), "cbb4d68a0c00de650a1a307ef12b091a")
+        firmware = (Path(__file__).resolve().parents[1] /
+                    "firmware/sme105_usb_bridge/sme105_usb_bridge.ino").read_text()
+        self.assertIn('kApAuthSaltPrefix[] = "SME105-DCL-AUTH-V1:"', firmware)
+        self.assertIn("kApAuthIterations = 10000", firmware)
+        self.assertIn("mbedtls_pkcs5_pbkdf2_hmac(", firmware)
+        self.assertIn("uint8_t derived[16]", firmware)
+        self.assertIn("wifiApMode ? wifiApAuthToken : wifiToken", firmware)
+        self.assertIn("kUsbInstalledBuildVersion = 29", firmware)
 
     def test_ap_status_parser_accepts_firmware_and_documented_shapes(self):
         firmware_reply = setup.parse_wifi_ap_status(
@@ -407,7 +436,7 @@ class CredentialsAndStorageTests(unittest.TestCase):
             self.assertEqual(port.writes.count(b"WIFI_CONFIG <private>\n"), 1)
             self.assertNotIn("valid ascii pass", "\n".join(output))
 
-    def test_usb_ap_mode_provisions_waits_retrieves_and_saves_token_privately(self):
+    def test_usb_ap_mode_provisions_without_tcp_token(self):
         with tempfile.TemporaryDirectory() as folder:
             port = FakeApSetupPort(status_replies=[
                 b"WIFI_AP_STATUS mode=AP state=INACTIVE ip=0.0.0.0 "
@@ -437,19 +466,18 @@ class CredentialsAndStorageTests(unittest.TestCase):
             self.assertEqual(port.writes.count(b"WIFI_AP_CONFIG <private>\n"), 1)
             self.assertNotIn(b"WIFI_AP_MODE\n", port.writes)
             self.assertIn(b"WIFI_AP_STATUS\n", port.writes)
-            self.assertIn(b"WIFI_TOKEN\n", port.writes)
-            self.assertEqual(stat.S_IMODE(token_path.stat().st_mode), 0o600)
-            self.assertEqual(bridge.load_wifi_token(token_path), TOKEN)
+            self.assertNotIn(b"WIFI_TOKEN\n", port.writes)
+            self.assertFalse(token_path.exists())
             self.assertTrue(port.closed)
             shown = "\n".join(output)
             self.assertIn("SSID: SME105_DCL", shown)
             self.assertIn("10.77.13.1", shown)
             self.assertIn("TCP port: 8765", shown)
-            self.assertIn("private 0600 file", shown)
+            self.assertIn("no separate token", shown)
             self.assertNotIn(password, shown)
             self.assertNotIn(TOKEN.decode(), shown)
 
-    def test_ap_existing_configuration_is_safely_reused_without_nvs_rotation(self):
+    def test_ap_existing_configuration_requires_explicit_rekey(self):
         with tempfile.TemporaryDirectory() as folder:
             port = FakeApSetupPort(
                 already_configured=True,
@@ -467,20 +495,74 @@ class CredentialsAndStorageTests(unittest.TestCase):
                     display=output.append,
                 )
 
-            self.assertEqual(result, 0, output)
+            self.assertEqual(result, 2, output)
             self.assertEqual(port.writes.count(b"WIFI_AP_CONFIG <private>\n"), 1)
-            self.assertEqual(port.writes.count(b"WIFI_AP_MODE\n"), 1)
-            self.assertEqual(port.ap_status_queries, 1)
-            self.assertIn(b"WIFI_TOKEN\n", port.writes)
-            self.assertEqual(bridge.load_wifi_token(token_path), TOKEN)
-            self.assertEqual(stat.S_IMODE(token_path.stat().st_mode), 0o600)
+            self.assertNotIn(b"WIFI_AP_MODE\n", port.writes)
+            self.assertNotIn(b"WIFI_AP_REKEY <private>\n", port.writes)
+            self.assertEqual(port.ap_status_queries, 0)
+            self.assertNotIn(b"WIFI_TOKEN\n", port.writes)
+            self.assertFalse(token_path.exists())
             shown = "\n".join(output)
-            self.assertIn("Existing SoftAP configuration was safely reused", shown)
-            self.assertIn("NVS was not erased or rotated", shown)
-            self.assertIn("no vehicle command was sent", shown)
+            self.assertIn("Existing SoftAP was not changed", shown)
+            self.assertIn("--ap-rekey", shown)
             self.assertNotIn(password, shown)
             self.assertNotIn(TOKEN.decode(), shown)
             self.assertTrue(port.closed)
+
+    def test_explicit_usb_ap_rekey_accepts_new_password_and_no_token(self):
+        with tempfile.TemporaryDirectory() as folder:
+            port = FakeApSetupPort(already_configured=True)
+            password = "ExamplePass9"
+            token_path = Path(folder) / "bridge-token"
+            # A preexisting local STA token must neither block nor be touched
+            # by a direct AP migration.
+            token_path.write_bytes(TOKEN + b"\n")
+            token_path.chmod(0o600)
+            output: list[str] = []
+            with patch.object(setup.serial, "Serial", return_value=port):
+                result = setup.main(
+                    ["--ap", "--ap-rekey", "--port", "FAKE", "--token-file",
+                     str(token_path), "--startup-seconds", "0"],
+                    ask_password=lambda _: password,
+                    display=output.append,
+                )
+            self.assertEqual(result, 0, output)
+            self.assertIsNone(port.config_payload)
+            self.assertEqual(port.rekey_payload,
+                             setup.wifi_ap_rekey_command(password.encode()))
+            self.assertEqual(port.writes.count(b"WIFI_AP_REKEY <private>\n"), 1)
+            self.assertNotIn(b"WIFI_AP_CONFIG <private>\n", port.writes)
+            self.assertNotIn(b"WIFI_TOKEN\n", port.writes)
+            self.assertEqual(port.ap_status_queries, 1)
+            self.assertEqual(token_path.read_bytes(), TOKEN + b"\n")
+            shown = "\n".join(output)
+            self.assertIn("password updated", shown)
+            self.assertIn("legacy NVS credentials were preserved", shown)
+            self.assertNotIn(password, shown)
+            self.assertNotIn(TOKEN.decode(), shown)
+
+    def test_ap_rekey_denied_ack_and_inactive_ap_cannot_report_success(self):
+        cases = (
+            FakeApSetupPort(rekey_reply=b"DENIED wifi_ap_busy\n"),
+            FakeApSetupPort(rekey_reply=b"WIFI_AP_REKEY OK changed=0\n"),
+            FakeApSetupPort(status_reply=(
+                b"WIFI_AP_STATUS mode=AP state=INACTIVE ip=0.0.0.0 "
+                b"stations=0 channel=6 port=8765 wpa2=1\n")),
+        )
+        for port in cases:
+            with self.subTest(reply=port.rekey_reply):
+                output: list[str] = []
+                with patch.object(setup.serial, "Serial", return_value=port):
+                    result = setup.main(
+                        ["--ap", "--ap-rekey", "--port", "FAKE",
+                         "--startup-seconds", "0", "--ap-timeout-seconds", "0"],
+                        ask_password=lambda _: "ExamplePass9",
+                        display=output.append,
+                    )
+                self.assertEqual(result, 2)
+                self.assertNotIn(b"WIFI_TOKEN\n", port.writes)
+                self.assertNotIn("password updated", "\n".join(output))
+                self.assertNotIn("ExamplePass9", "\n".join(output))
 
     def test_ap_rejection_and_malformed_status_never_retrieve_token(self):
         cases = (

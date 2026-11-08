@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { JSDOM } from "jsdom";
-import { MEM_EXPERIMENTS, EXPERIMENT_CATALOGUE } from "../js/protocol.js";
+import { APP_VERSION, MEM_EXPERIMENTS, EXPERIMENT_CATALOGUE } from "../js/protocol.js";
 import { renderDclCommandExplorer, wireDclCommandExplorer, applyStaticStrings, showView, render } from "../js/ui.js";
 
 test("Settings structure has exactly four compact groups plus Engineering Lab entry", async () => {
@@ -30,16 +30,15 @@ test("Settings structure has exactly four compact groups plus Engineering Lab en
   ], "Wi-Fi is the recommended default transport and BLE remains available");
   assert.equal(doc.getElementById("transport-select").value, "wifi");
   assert.ok(doc.getElementById("wifi-config-section"), "Wi-Fi settings must be grouped in Connection & Bridge");
-  assert.deepEqual([...doc.getElementById("wifi-mode").options].map(option => option.value), ["softap", "router"]);
-  assert.equal(doc.getElementById("wifi-ssid").value, "SME105_DCL");
+  assert.equal(doc.getElementById("wifi-mode"), null, "Direct Wi-Fi requires no router mode selection");
+  assert.equal(doc.getElementById("wifi-ssid").value, "SME105-DIRECT-2BF8");
   assert.equal(doc.getElementById("wifi-ip").value, "10.77.13.1");
   assert.equal(doc.getElementById("wifi-port").value, "8765");
-  assert.equal(doc.getElementById("wifi-token").type, "password");
-  assert.equal(doc.getElementById("wifi-token").getAttribute("value"), null, "Saved bridge tokens must never be embedded in markup");
-  assert.ok(doc.getElementById("wifi-token-save"));
-  assert.ok(doc.getElementById("wifi-token-clear"));
+  assert.equal(doc.getElementById("wifi-token"), null, "Direct mode must never ask for a separate TCP token");
+  assert.equal(doc.getElementById("wifi-token-save"), null);
+  assert.equal(doc.getElementById("wifi-token-clear"), null);
   assert.equal(doc.getElementById("wifi-password").type, "password");
-  assert.equal(doc.getElementById("wifi-password").minLength, 16);
+  assert.equal(doc.getElementById("wifi-password").minLength, 8);
   assert.equal(doc.getElementById("wifi-password").maxLength, 63);
   assert.equal(doc.getElementById("wifi-password").getAttribute("value"), null, "WPA2 passwords must never be embedded in markup");
   assert.ok(doc.getElementById("wifi-password-save"));
@@ -60,7 +59,7 @@ test("Settings structure has exactly four compact groups plus Engineering Lab en
 
   // Data & About elements
   assert.ok(doc.getElementById("about-version"), "about-version must exist");
-  assert.equal(doc.getElementById("about-version").textContent, "1.8.16");
+  assert.equal(doc.getElementById("about-version").textContent, APP_VERSION);
   assert.ok(doc.getElementById("demo-toggle"), "demo-toggle must exist");
   assert.ok(doc.getElementById("play-demo"), "play-demo must exist");
   assert.ok(doc.getElementById("demo-capture"), "demo-capture must exist");

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { WifiTransport, wifiAvailable } from '../js/wifi.js';
 
-const AP_PASSWORD = 'abcdefghijklmnop';
+const AP_PASSWORD = 'ExamplePass9';
 
 function harness({ connectError = null, hasPasswordResult = false } = {}) {
   const calls = [];
@@ -84,22 +84,26 @@ function harness({ connectError = null, hasPasswordResult = false } = {}) {
   };
 }
 
-test('connects in AP mode with a valid 16-character password and delivers framed plugin lines', async () => {
+test('direct AP securely saves one passphrase, sends no token, and delivers framed lines', async () => {
   const h = harness();
   const result = await h.transport.connect({ password: AP_PASSWORD });
   assert.deepEqual(result, {
     name: 'ESP32 Wi-Fi (10.77.13.1:8765)', host: '10.77.13.1', port: 8765, mode: 'ap',
   });
-  assert.deepEqual(h.calls[0], ['connect', {
-    mode: 'ap', ssid: 'SME105_DCL', password: AP_PASSWORD, host: '10.77.13.1', port: 8765, token: undefined,
+  assert.deepEqual(h.calls[0], ['savePassword', AP_PASSWORD]);
+  assert.deepEqual(h.calls[1], ['connect', {
+    mode: 'ap', ssid: 'SME105-DIRECT-2BF8', password: '', host: '10.77.13.1', port: 8765,
   }]);
+  assert.deepEqual(h.transport.remembered, {
+    mode: 'ap', ssid: 'SME105-DIRECT-2BF8', host: '10.77.13.1', port: 8765,
+  }, 'long-lived reconnect state cannot retain the passphrase or token');
   assert.equal(h.transport.connected, true);
   assert.equal(h.transport.authenticated, true);
   h.emit('line', { line: 'AUTH OK transport=WIFI' });
   assert.deepEqual(h.lines, ['AUTH OK transport=WIFI']);
 });
 
-test('AP mode fails closed when the password is missing, empty, or shorter than 16 characters', async () => {
+test('AP mode fails closed when the password is missing, empty, or shorter than 8 characters', async () => {
   const missing = harness();
   await assert.rejects(missing.transport.connect(), /SoftAP WPA2 password/);
   assert.equal(missing.calls.some(call => call[0] === 'connect'), false);
@@ -109,15 +113,34 @@ test('AP mode fails closed when the password is missing, empty, or shorter than 
   assert.equal(empty.calls.some(call => call[0] === 'connect'), false);
 
   const short = harness();
-  await assert.rejects(short.transport.connect({ password: '123456789012345' }), /SoftAP WPA2 password/);
+  await assert.rejects(short.transport.connect({ password: '1234567' }), /SoftAP WPA2 password/);
   assert.equal(short.calls.some(call => call[0] === 'connect'), false);
+});
+
+test('AP accepts eight ASCII chars and ignores any supplied legacy token', async () => {
+  const h = harness();
+  await h.transport.connect({ password: 'Eight888', token: '0123456789abcdef0123456789abcdef' });
+  const nativeConnect = h.calls.find(call => call[0] === 'connect')[1];
+  assert.equal(Object.hasOwn(nativeConnect, 'token'), false);
+  assert.equal(Object.hasOwn(h.transport.remembered, 'token'), false);
+  assert.equal(Object.hasOwn(h.transport.remembered, 'password'), false);
+});
+
+test('AP refuses network and TCP when native secure credential storage fails', async () => {
+  const h = harness();
+  h.WifiBridge.savePassword = async () => { throw new Error('Keystore unavailable'); };
+  await assert.rejects(h.transport.connect({ password: AP_PASSWORD }), /Keystore unavailable/);
+  assert.equal(h.calls.some(call => call[0] === 'connect'), false);
+  assert.equal(h.transport.connected, false);
+  assert.equal(h.transport.authenticated, false);
+  assert.equal(JSON.stringify(h.transport.remembered).includes(AP_PASSWORD), false);
 });
 
 test('AP mode can use a password stored by the native secure password API', async () => {
   const h = harness({ hasPasswordResult: { hasPassword: true } });
   await h.transport.connect();
   assert.deepEqual(h.calls[0], ['connect', {
-    mode: 'ap', ssid: 'SME105_DCL', password: '', host: '10.77.13.1', port: 8765, token: undefined,
+    mode: 'ap', ssid: 'SME105-DIRECT-2BF8', password: '', host: '10.77.13.1', port: 8765,
   }]);
 });
 
@@ -312,8 +335,9 @@ test('validates and delegates token management', async () => {
 
 test('validates and delegates secure password management', async () => {
   const h = harness();
-  await assert.rejects(h.transport.savePassword('short'), /between 8 and 63 characters/);
-  await assert.rejects(h.transport.savePassword('x'.repeat(64)), /between 8 and 63 characters/);
+  await assert.rejects(h.transport.savePassword('short'), /8–63 printable ASCII/);
+  await assert.rejects(h.transport.savePassword('x'.repeat(64)), /8–63 printable ASCII/);
+  await assert.rejects(h.transport.savePassword('bad\npass'), /8–63 printable ASCII/);
   const password = 'secure-pass-1234';
   await h.transport.savePassword(password);
   assert.equal(await h.transport.hasPassword(), true);
