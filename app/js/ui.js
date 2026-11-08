@@ -620,14 +620,23 @@ export function renderDclCommandExplorer(state) {
       button.className = "dcl-command-card";
       button.setAttribute("role", "listitem");
       button.setAttribute("aria-pressed", String(item.id === dclSelectedId));
+
+      const codeWrap = document.createElement("div");
+      codeWrap.className = "dcl-card-code-wrap";
       const word = document.createElement("span");
       word.className = "mono";
       word.textContent = item.commandWord;
+      codeWrap.append(word);
+
+      const textWrap = document.createElement("div");
+      textWrap.className = "dcl-card-text";
       const heading = document.createElement("strong");
       heading.textContent = item.name;
       const status = document.createElement("small");
       status.textContent = DCL_CLASS_LABELS[item.classification] || item.classification;
-      button.append(word, heading, status);
+      textWrap.append(heading, status);
+
+      button.append(codeWrap, textWrap);
       button.addEventListener("click", () => {
         dclSelectedId = item.id;
         renderDclCommandExplorer(dclState);
