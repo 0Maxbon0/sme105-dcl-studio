@@ -6,6 +6,7 @@ export const STR = {
   tabs: {
     codes: "Faults",
     live: "Dashboard",
+    lab: "Lab",
     tools: "Settings",
     log: "History",
     kline: "K-Line",

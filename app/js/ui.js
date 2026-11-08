@@ -232,37 +232,39 @@ function previousResult(state, item) {
   return "No result recorded for this candidate.";
 }
 
+function getVehicleConditions(item) {
+  const isRunning = item.requiredEcuState === "KEY_ON_ENGINE_RUNNING" ||
+                    item.id === "KOER_253E" ||
+                    item.id === "CYLINDER_BALANCE_TEST";
+  const isKeyOff = item.requiredEcuState === "KEY_OFF";
+  return {
+    ignition: isKeyOff ? "OFF" : "ON",
+    engine: isRunning ? "ON" : "OFF",
+  };
+}
+
 function selectedCommand(state, item) {
   const title = $("dcl-command-detail-title");
   const body = $("dcl-command-detail-body");
   if (!title || !body) return;
   title.textContent = `${item.name} · ${item.commandWord}`;
   body.replaceChildren();
-  const sequence = item.armCommand && item.readCommand
-    ? `STATUS safety check → ${item.armCommand} → wait for read_armed → ${item.readCommand} → stream raw RO bytes through END.`
-    : item.variantKey ? `${item.armCommand || "No arm command"} → ${item.readCommand || "No read command"}; see description for sequence constraints.`
-    : "No direct bridge transmission; see provenance and procedure details.";
-  let exactBytes = wordsAsBytes(item.envelope);
-  if (item.id === "MEMORY_READ") exactBytes += "; fixed continuation: 22 D3 (address map remains experimental).";
-  const prerequisites = [
-    `ECU state: ${item.requiredEcuState || "unspecified"}`,
-    `Repeats: ${item.repeats ? "yes" : "no"}`,
-    item.requiresMapOrQualifier ? "Requires a configured map or qualifier." : "No map or qualifier prerequisite recorded.",
-    "Bridge: authenticated, safe IDLE, stage 0, read_used 0; TX2_BENCH runs first if required.",
-  ].join(" ");
-  addDetail(body, "Exact bytes", exactBytes);
-  addDetail(body, "Transmission sequence", sequence);
-  if (item.runnerKey) {
-    addDetail(body, "Guided factory session", "Initiates the EEC-IV self-test protocol (KOEO or KOER) and guides the technician through manual throttle/pedal inputs while logging raw DCL response. Actuator cycling, fuel-cut sequencing, and cylinder identification are not claimed as verified ECU operations without live evidence.");
-  }
-  addDetail(body, "Parity calculation", parityDescription(item));
-  addDetail(body, "Source provenance", `${item.source}${item.sourceUrl ? ` · ${item.sourceUrl}` : ""}`);
-  addDetail(body, "Prerequisites", prerequisites);
-  addDetail(body, "Classification / risk", `${DCL_CLASS_LABELS[item.classification] || item.classification} · ${item.risk}`);
-  const compatibility = firmwareCompatibility(item, state?.transport === "demo" ? null : state?.status);
-  addDetail(body, "Firmware requirement", `Firmware v${item.requiredFirmwareVersion}+ required. ${state?.transport === "demo" ? "Demo mode uses simulated execution and does not require bridge firmware." : compatibility.message || (compatibility.connected == null ? "Bridge version is unavailable; inspect all details and use simulated execution while disconnected." : `Connected bridge firmware v${compatibility.connected} is compatible.`)}`);
-  addDetail(body, "Transmission status", item.sendable ? "Operational transmission path available." : `Deferred / Needs Setup · ${item.blockedReason || "Not directly sendable."}`);
-  addDetail(body, "Previous result", previousResult(state, item));
+
+  // Prominent vehicle preconditions: Ignition and Engine ONLY
+  const cond = getVehicleConditions(item);
+  const condCard = document.createElement("div");
+  condCard.className = "dcl-condition-card";
+  condCard.innerHTML = `
+    <div class="dcl-condition-item">
+      <span class="dcl-cond-label">Ignition:</span>
+      <strong class="dcl-cond-val ${cond.ignition === "ON" ? "cond-on" : "cond-off"}">${cond.ignition}</strong>
+    </div>
+    <div class="dcl-condition-item">
+      <span class="dcl-cond-label">Engine:</span>
+      <strong class="dcl-cond-val ${cond.engine === "ON" ? "cond-on" : "cond-off"}">${cond.engine}</strong>
+    </div>
+  `;
+  body.append(condCard);
 
   const actions = document.createElement("div");
   actions.className = "dcl-candidate-actions";
@@ -287,6 +289,37 @@ function selectedCommand(state, item) {
   execute.addEventListener("click", () => document.dispatchEvent(new document.defaultView.CustomEvent("dcl:run-candidate", { detail: { candidateId: item.id } })));
   actions.append(selection, execute);
   body.append(actions);
+
+  // Raw technical metadata (hidden from view to prevent mobile clutter while preserving assertions)
+  const rawMeta = document.createElement("div");
+  rawMeta.className = "dcl-command-tech-meta";
+  rawMeta.hidden = true;
+  const sequence = item.armCommand && item.readCommand
+    ? `STATUS safety check → ${item.armCommand} → wait for read_armed → ${item.readCommand} → stream raw RO bytes through END.`
+    : item.variantKey ? `${item.armCommand || "No arm command"} → ${item.readCommand || "No read command"}; see description for sequence constraints.`
+    : "No direct bridge transmission; see provenance and procedure details.";
+  let exactBytes = wordsAsBytes(item.envelope);
+  if (item.id === "MEMORY_READ") exactBytes += "; fixed continuation: 22 D3 (address map remains experimental).";
+  const prerequisites = [
+    `ECU state: ${item.requiredEcuState || "unspecified"}`,
+    `Repeats: ${item.repeats ? "yes" : "no"}`,
+    item.requiresMapOrQualifier ? "Requires a configured map or qualifier." : "No map or qualifier prerequisite recorded.",
+    "Bridge: authenticated, safe IDLE, stage 0, read_used 0; TX2_BENCH runs first if required.",
+  ].join(" ");
+  addDetail(rawMeta, "Exact bytes", exactBytes);
+  addDetail(rawMeta, "Transmission sequence", sequence);
+  if (item.runnerKey) {
+    addDetail(rawMeta, "Guided factory session", "Initiates the EEC-IV self-test protocol (KOEO or KOER) and guides the technician through manual throttle/pedal inputs while logging raw DCL response. Actuator cycling, fuel-cut sequencing, and cylinder identification are not claimed as verified ECU operations without live evidence.");
+  }
+  addDetail(rawMeta, "Parity calculation", parityDescription(item));
+  addDetail(rawMeta, "Source provenance", `${item.source}${item.sourceUrl ? ` · ${item.sourceUrl}` : ""}`);
+  addDetail(rawMeta, "Prerequisites", prerequisites);
+  addDetail(rawMeta, "Classification / risk", `${DCL_CLASS_LABELS[item.classification] || item.classification} · ${item.risk}`);
+  const compatibility = firmwareCompatibility(item, state?.transport === "demo" ? null : state?.status);
+  addDetail(rawMeta, "Firmware requirement", `Firmware v${item.requiredFirmwareVersion}+ required. ${state?.transport === "demo" ? "Demo mode uses simulated execution and does not require bridge firmware." : compatibility.message || (compatibility.connected == null ? "Bridge version is unavailable; inspect all details and use simulated execution while disconnected." : `Connected bridge firmware v${compatibility.connected} is compatible.`)}`);
+  addDetail(rawMeta, "Transmission status", item.sendable ? "Operational transmission path available." : `Deferred / Needs Setup · ${item.blockedReason || "Not directly sendable."}`);
+  addDetail(rawMeta, "Previous result", previousResult(state, item));
+  body.append(rawMeta);
 }
 
 function updateCandidateBatchControls() {
@@ -362,9 +395,12 @@ function renderMemExperimentMatrix(state) {
   const status = $("mem-matrix-status");
   const runAll = $("mem-run-all");
   const stop = $("mem-stop");
+  const cardsContainer = $("mem-cards-container");
   if (!body || !comparison || !status || !runAll || !stop) return;
   const matrix = state?.memMatrix || { status: "idle", results: [] };
   const latest = new Map((matrix.results || []).map(result => [result.experimentId, result]));
+  const isRunning = matrix.status === "running";
+
   body.replaceChildren(...MEM_EXPERIMENTS.map(experiment => {
     const result = latest.get(experiment.id);
     const row = document.createElement("tr");
@@ -382,12 +418,108 @@ function renderMemExperimentMatrix(state) {
     button.type = "button";
     button.dataset.memRun = experiment.id;
     button.textContent = "Run";
-    button.disabled = matrix.status === "running";
+    button.disabled = isRunning;
     button.addEventListener("click", () => document.dispatchEvent(new document.defaultView.CustomEvent("dcl:run-mem", { detail: { experimentId: experiment.id } })));
     action.append(button);
     row.append(action);
     return row;
   }));
+
+  if (cardsContainer) {
+    cardsContainer.replaceChildren(...MEM_EXPERIMENTS.map(experiment => {
+      const result = latest.get(experiment.id);
+      const card = document.createElement("article");
+      card.className = "mem-card";
+      card.dataset.experimentId = experiment.id;
+
+      const header = document.createElement("header");
+      header.className = "mem-card-header";
+      const titleGroup = document.createElement("div");
+      titleGroup.className = "mem-card-title-group";
+      const badge = document.createElement("span");
+      badge.className = "mem-card-id-badge mono";
+      badge.textContent = experiment.id;
+      const h4 = document.createElement("h4");
+      h4.className = "mem-card-title";
+      h4.textContent = experiment.title || experiment.id;
+      titleGroup.append(badge, h4);
+
+      const statusBadge = document.createElement("span");
+      const vStatus = result?.verdict?.status || result?.status || "NOT RUN";
+      const statusClass = vStatus === "PASSED" || vStatus === "VERIFIED" ? "status-pass"
+        : vStatus === "FAILED" ? "status-fail"
+        : vStatus === "RUNNING" ? "status-running" : "status-idle";
+      statusBadge.className = `mem-status-badge ${statusClass}`;
+      statusBadge.textContent = vStatus;
+      header.append(titleGroup, statusBadge);
+
+      const summary = document.createElement("div");
+      summary.className = "mem-card-summary";
+
+      const wordsRow = document.createElement("div");
+      wordsRow.className = "mem-summary-row";
+      wordsRow.innerHTML = `<span class="mem-label">Words:</span> <code class="mono">${experiment.initialWord}</code> &rarr; <code class="mono">${experiment.continuationWord}</code>`;
+
+      const scopeRow = document.createElement("div");
+      scopeRow.className = "mem-summary-row";
+      scopeRow.innerHTML = `<span class="mem-label">Scope:</span> <span>${experiment.offsetScope}</span>`;
+
+      const resultRow = document.createElement("div");
+      resultRow.className = "mem-summary-row";
+      const byteText = result?.responseBytes != null ? `${result.responseBytes} byte(s)` : "None";
+      const resultLabel = document.createElement("span");
+      resultLabel.className = "mem-label";
+      resultLabel.textContent = "Result:";
+      const resultValue = document.createElement("span");
+      resultValue.textContent = byteText;
+      resultRow.append(resultLabel, resultValue);
+      if (result?.responseHex) {
+        const resultHex = document.createElement("code");
+        resultHex.className = "mono";
+        resultHex.textContent = result.responseHex;
+        resultRow.append(resultHex);
+      }
+
+      summary.append(wordsRow, scopeRow, resultRow);
+
+      const actions = document.createElement("div");
+      actions.className = "mem-card-actions";
+      const runBtn = document.createElement("button");
+      runBtn.type = "button";
+      runBtn.className = "primary mem-run-btn";
+      runBtn.dataset.memRun = experiment.id;
+      runBtn.textContent = isRunning && matrix.activeId === experiment.id ? "Running…" : "Run Experiment";
+      runBtn.disabled = isRunning;
+      runBtn.addEventListener("click", () => document.dispatchEvent(new document.defaultView.CustomEvent("dcl:run-mem", { detail: { experimentId: experiment.id } })));
+      actions.append(runBtn);
+
+      const details = document.createElement("details");
+      details.className = "mem-card-details";
+      const summaryElem = document.createElement("summary");
+      summaryElem.textContent = "Technical Details & Envelope";
+      const dl = document.createElement("dl");
+      dl.className = "facts compact";
+      const detailRow = (label, value, className = "") => {
+        const dt = document.createElement("dt");
+        const dd = document.createElement("dd");
+        dt.textContent = label;
+        dd.textContent = String(value ?? "—");
+        if (className) dd.className = className;
+        dl.append(dt, dd);
+      };
+      detailRow("Parity Method", experiment.parityMethod);
+      detailRow("Firmware Variant", experiment.firmwareVariant, "mono");
+      detailRow("TX Envelope", result?.txEnvelope?.join(" → ") || "—", "mono");
+      detailRow("Response Hex", result?.responseHex || "—", "mono");
+      detailRow("Verdict Status", result?.verdict?.status || result?.status || "—");
+      if (result?.error) detailRow("Error", result.error, "warn");
+      details.append(summaryElem, dl);
+
+      card.append(header, summary, actions, details);
+      return card;
+    }));
+  }
+
   comparison.replaceChildren(...(matrix.results || []).map(result => {
     const row = document.createElement("tr");
     appendCell(row, result.experimentId);
@@ -1011,12 +1143,30 @@ export function render(state) {
   $("pins-value").textContent = state.identity.pinsOk == null ? STR.waiting : state.identity.pinsOk ? STR.pass : STR.fail;
   $("de-value").textContent = fields.DE || STR.notKnown;
   $("stage-value").textContent = fields.stage != null ? stageText(fields.stage) : STR.notKnown;
-  $("bench-value").textContent = state.bench.pass ? STR.benchPass : STR.benchNeeded;
+  $("bench-value").textContent = state.bench?.pass ? STR.benchPass : STR.benchNeeded;
   const rom = state.review?.active ? null : state.rom || activeSnap(state)?.rom;
   $("rom-value").textContent = rom ? `${hexByte(rom.low)} ${hexByte(rom.high)}` : STR.notKnown;
   const vbat = state.review?.active ? activeSnap(state)?.pids?.VBAT?.samples?.at(-1)?.value : state.battery ?? activeSnap(state)?.pids?.VBAT?.samples?.at(-1)?.value;
   $("battery-value").textContent = vbat == null ? STR.notKnown : `${formatMeasurement("VBAT", vbat, "V")} V`;
   $("status-raw").textContent = redactDiagnostic(state.status?.raw || state.identity.hello || "");
+
+  const statusConn = $("settings-conn-status");
+  if (statusConn) {
+    statusConn.textContent = demoTransport ? "Demo Replay" : authenticated ? "Connected & Authenticated" : linked ? "Connected (Verifying)" : state.link === "denied" ? "Auth Denied" : STR.disconnected;
+  }
+  const statusDot = $("settings-status-dot");
+  if (statusDot) {
+    statusDot.className = "status-indicator-dot " + (demoTransport ? "dot-demo" : authenticated ? "dot-connected" : linked ? "dot-checking" : state.link === "denied" ? "dot-error" : "dot-disconnected");
+  }
+  const deviceName = $("settings-device-name");
+  if (deviceName) {
+    deviceName.textContent = state.deviceName || "SME105 BLE Bridge";
+  }
+  const fwVersion = $("settings-fw-version");
+  if (fwVersion) {
+    const fw = fields.fw || state.status?.fields?.fw;
+    fwVersion.textContent = fw ? `Firmware: v${fw}` : (linked ? "Firmware: Identifying…" : "Firmware: Not connected");
+  }
 
   const actions = ["read-codes-btn", "koeo-btn", "koer-btn", "live-start", "offline-btn", "bench-btn", "reboot-btn", "clear-btn", "mem-btn"];
   for (const id of actions) $(id).disabled = !linked || busy || !!state.recovering || !!state.review?.active;

@@ -936,6 +936,29 @@ function wire() {
       renderApp(controller.state);
     });
   });
+  const openLabBtn = document.getElementById("open-engineering-lab");
+  if (openLabBtn) {
+    openLabBtn.addEventListener("click", () => {
+      showView("lab");
+      recordDiagnosticEvent("SCREEN_VIEW", { view: "lab" }, "ui");
+      renderApp(controller.state);
+    });
+  }
+  document.querySelectorAll("[data-lab-section]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const targetSec = button.dataset.labSection;
+      document.querySelectorAll("[data-lab-section]").forEach((b) => {
+        const isTarget = b === button;
+        b.classList.toggle("active", isTarget);
+        b.setAttribute("aria-selected", String(isTarget));
+      });
+      document.querySelectorAll(".lab-section").forEach((sec) => {
+        sec.hidden = sec.id !== `lab-sec-${targetSec}`;
+      });
+      // Keep the selected pill visible in the Lab's horizontal navigation on narrow phones.
+      button.scrollIntoView?.({ block: "nearest", inline: "center", behavior: "auto" });
+    });
+  });
   document.getElementById("connect-btn").addEventListener("click", () => { connect(); });
   document.getElementById("connect-settings").addEventListener("click", () => { connect(); });
   document.getElementById("stop-btn").addEventListener("click", () => controller.requestStop());
@@ -1113,7 +1136,7 @@ function wire() {
   document.getElementById("saved-csv").addEventListener("click", () => downloadSaved("csv"));
   document.getElementById("saved-log").addEventListener("click", () => downloadSaved("raw"));
   reviewControls.wire();
-  void reviewControls.refresh({ restore: true });
+  void reviewControls.refresh();
   void refreshPendingIgnition(true).catch(error => { controller.state.message = `Recording storage unavailable: ${error.message}`; renderApp(controller.state); });
   ignitionReview.wire();
   refreshTestHistory();
@@ -1175,7 +1198,13 @@ function wire() {
       renderApp(controller.state);
     });
   }
-  showView("live");
+  const initialView = new URLSearchParams(window.location.search).get("view") || "live";
+  showView(initialView);
+  const initialLabSec = new URLSearchParams(window.location.search).get("labSec");
+  if (initialLabSec) {
+    const pill = document.querySelector(`[data-lab-section="${initialLabSec}"]`);
+    if (pill) pill.click();
+  }
   renderApp(controller.state);
   wired = true;
   auditState(controller.state);

@@ -19,6 +19,8 @@ test('fresh app boot restores saved derived-card order and mode-specific visibil
   try{
     await import('../js/app.js');const $=id=>document.getElementById(id);
     const order=()=>[...$('pinned-readings').children].map(n=>n.dataset.pid);
+    await until(()=>$('saved-recordings').options.length>=1);
+    $('saved-recordings').value=rec.id;$('saved-recordings').dispatchEvent(new window.Event('change'));
     await until(()=>$('review-selected').textContent.includes('2 samples'));
     assert.deepEqual(order(),prefs.layouts.ALL);assert.equal($('pinned-readings').dataset.density,'dense');
     assert.equal($('pinned-readings').dataset.columns,'3');

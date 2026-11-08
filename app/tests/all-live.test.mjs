@@ -122,7 +122,7 @@ test("the Live overview labels the four exact request scopes and six reading gro
   const html = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
   const { LIVE_GROUP_TITLES } = await import("../js/live-dashboard.js");
   const nav = html.match(/<nav>([^]*?)<\/nav>/)?.[1] || "";
-  assert.equal((nav.match(/data-view=/g) || []).length, 5);
+  assert.equal((nav.match(/data-view=/g) || []).length, 6);
   assert.match(nav, /data-view="live" aria-current="page"/);
   assert.match(html, /id="live-set"/);
   assert.match(html, /value="LIVE">Engine/);
