@@ -3,6 +3,13 @@ import { rowsToCsv } from "./pids.js";
 
 const HEADER = rowsToCsv([]);
 const activeRecordings = new Map();
+const DEFAULT_EXPERIMENT_NOTES = Object.freeze({
+  ignition: "UNKNOWN",
+  engine: "UNKNOWN",
+  operatingConditions: "",
+  operatorObservations: "",
+  comments: "",
+});
 
 /** `navigator` is absent in Node 18 and some headless runners; never reference it directly. */
 function storageManager() {
@@ -33,9 +40,113 @@ export async function listRecordings() {
   const database = await db();
   return new Promise((resolve, reject) => {
     const request = database.transaction("captures").objectStore("captures").getAll();
-    request.onsuccess = () => resolve(request.result.sort((a,b) => (b.started || Date.parse(b.id) || 0) - (a.started || Date.parse(a.id) || 0) || b.id.localeCompare(a.id)));
+    request.onsuccess = () => resolve(request.result.map(capture => ({
+      ...capture,
+      notes: capture.notes ?? { ...DEFAULT_EXPERIMENT_NOTES },
+      analysis: capture.analysis ?? null,
+    })).sort((a,b) => (b.started || Date.parse(b.id) || 0) - (a.started || Date.parse(a.id) || 0) || b.id.localeCompare(a.id)));
     request.onerror = () => reject(request.error);
   });
+}
+
+function normalizeNotes(input = {}, existing = DEFAULT_EXPERIMENT_NOTES) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new TypeError("Experiment notes must be an object");
+  const notes = {};
+  for (const field of Object.keys(DEFAULT_EXPERIMENT_NOTES)) {
+    const value = Object.prototype.hasOwnProperty.call(input, field) ? input[field] : existing[field];
+    if (field === "ignition" || field === "engine") {
+      if (!["ON", "OFF", "UNKNOWN"].includes(value)) throw new TypeError(`${field} must be ON, OFF, or UNKNOWN`);
+      notes[field] = value;
+    } else {
+      if (typeof value !== "string") throw new TypeError(`${field} must be a string`);
+      notes[field] = value;
+    }
+  }
+  return notes;
+}
+
+function copyAnalysis(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("Recording analysis must be a JSON object");
+  let copy;
+  try { copy = JSON.parse(JSON.stringify(value)); }
+  catch { throw new TypeError("Recording analysis must contain only JSON data"); }
+  return copy;
+}
+
+async function updateRecordingAnnotations(recordingId, update) {
+  const database = await db();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction("captures", "readwrite");
+    const store = transaction.objectStore("captures");
+    const captureRequest = store.get(recordingId);
+    let updated, failure;
+    const fail = error => {
+      reject(error);
+    };
+    captureRequest.onsuccess = () => {
+      const capture = captureRequest.result;
+      if (!capture) {
+        failure = new Error(`Recording ${recordingId} not found`);
+        transaction.abort();
+        return;
+      }
+      try {
+        updated = update({
+          ...capture,
+          notes: capture.notes ?? { ...DEFAULT_EXPERIMENT_NOTES },
+          analysis: capture.analysis ?? null,
+        });
+        store.put(updated);
+      } catch (error) {
+        failure = error;
+        transaction.abort();
+      }
+    };
+    captureRequest.onerror = () => { failure = transaction.error; transaction.abort(); };
+    transaction.oncomplete = () => resolve(updated);
+    transaction.onabort = transaction.onerror = () => fail(failure || transaction.error || new Error("Could not save recording annotations"));
+  });
+}
+
+/** Return notes and attached analysis without changing the capture record or its raw chunks. */
+export async function getRecordingAnnotations(recordingId) {
+  const database = await db();
+  return new Promise((resolve, reject) => {
+    const request = database.transaction("captures").objectStore("captures").get(recordingId);
+    request.onsuccess = () => resolve({
+      recordingId,
+      notes: request.result?.notes ?? { ...DEFAULT_EXPERIMENT_NOTES },
+      analysis: request.result?.analysis ?? null,
+      analysisAttachedAt: request.result?.analysisAttachedAt ?? null,
+      updatedAt: request.result?.annotationsUpdatedAt ?? null,
+    });
+    request.onerror = () => reject(request.error || new Error("Could not load recording annotations"));
+  });
+}
+
+export async function getRecordingNotes(recordingId) {
+  return (await getRecordingAnnotations(recordingId)).notes;
+}
+
+/** Update only the selected experiment-note fields; capture metadata and raw timestamps remain untouched. */
+export async function saveRecordingNotes(recordingId, notes) {
+  return updateRecordingAnnotations(recordingId, current => ({
+    ...current,
+    notes: normalizeNotes(notes, current.notes || DEFAULT_EXPERIMENT_NOTES),
+    annotationsUpdatedAt: Date.now(),
+  }));
+}
+
+/** Attach JSON comparison or other analysis separately from immutable capture evidence. */
+export async function attachRecordingAnalysis(recordingId, analysis) {
+  const copy = copyAnalysis(analysis);
+  const attachedAt = Date.now();
+  return updateRecordingAnnotations(recordingId, current => ({
+    ...current,
+    analysis: copy,
+    analysisAttachedAt: attachedAt,
+    annotationsUpdatedAt: attachedAt,
+  }));
 }
 
 export async function recordingBlob(id, kind, extras = []) {
@@ -261,6 +372,9 @@ export async function createRecording(variant, onError = () => {}, unitSystem = 
       const extras = queue.map(chunk => chunk[kind]);
       return recordingBlob(id, kind, extras);
     },
+    getNotes() { return getRecordingNotes(id); },
+    updateNotes(notes) { return saveRecordingNotes(id, notes); },
+    attachAnalysis(analysis) { return attachRecordingAnalysis(id, analysis); },
     get closed() { return closed; },
   };
   const activeEntry = { recording, get finishPromise() { return finishPromise; } };
@@ -340,6 +454,26 @@ async function getJSZip() {
   }
 }
 
+function addAnnotationFiles(files, folder, annotation) {
+  const notesPath = `${folder}notes.json`;
+  files.set(notesPath, new TextEncoder().encode(`${JSON.stringify({ recordingId: annotation.recordingId, notes: annotation.notes }, null, 2)}\n`));
+  let analysisPath = null;
+  if (annotation.analysis != null) {
+    analysisPath = `${folder}analysis.json`;
+    files.set(analysisPath, new TextEncoder().encode(`${JSON.stringify({
+      recordingId: annotation.recordingId,
+      attachedAt: annotation.analysisAttachedAt ?? null,
+      analysis: annotation.analysis,
+    }, null, 2)}\n`));
+  }
+  return { notes: notesPath, ...(analysisPath ? { analysis: analysisPath } : {}) };
+}
+
+function captureMetadataForExport(capture) {
+  const { notes, analysis, analysisAttachedAt, annotationsUpdatedAt, ...metadata } = capture;
+  return metadata;
+}
+
 /** Build an independent export archive for a single durable recording with verified SHA256SUMS. */
 export async function exportExperimentArchive(id) {
   const active = activeRecordings.get(id);
@@ -357,6 +491,7 @@ export async function exportExperimentArchive(id) {
   if (!capture.ended) throw new Error("Cannot export active or unfinalized recording " + id);
   if (!capture.verdict) throw new Error("Cannot export recording without finalized verdict " + id);
 
+  const annotations = await getRecordingAnnotations(id);
   const rawBlob = await recordingBlob(id, "raw");
   const rawBytes = new Uint8Array(await rawBlob.arrayBuffer());
   const rawText = new TextDecoder().decode(rawBytes);
@@ -406,7 +541,7 @@ export async function exportExperimentArchive(id) {
   }
 
   const roBin = new Uint8Array(roBytesList);
-  const metadataText = JSON.stringify(capture, null, 2) + "\n";
+  const metadataText = JSON.stringify(captureMetadataForExport(capture), null, 2) + "\n";
   const eventsText = eventLines.map(l => JSON.stringify({ line: l })).join("\n") + (eventLines.length ? "\n" : "");
   const txPadText = padLines.map(l => JSON.stringify({ line: l })).join("\n") + (padLines.length ? "\n" : "");
   const roTimestampsText = roTimestampsList.join("\n") + "\n";
@@ -418,6 +553,7 @@ export async function exportExperimentArchive(id) {
   files.set("ro.bin", roBin);
   files.set("ro-timestamps.csv", new TextEncoder().encode(roTimestampsText));
   files.set("tx-pad.jsonl", new TextEncoder().encode(txPadText));
+  const annotationPaths = addAnnotationFiles(files, "", annotations);
 
   const shaLines = [];
   const checksumMap = new Map();
@@ -457,7 +593,7 @@ export async function exportExperimentArchive(id) {
   const shaDigest = await crypto.subtle.digest("SHA-256", await zipBlob.arrayBuffer());
   const archiveSha = [...new Uint8Array(shaDigest)].map(b => b.toString(16).padStart(2, "0")).join("");
 
-  return { blob: zipBlob, sha256Sums: shaText, archiveSha, id, capture };
+  return { blob: zipBlob, sha256Sums: shaText, archiveSha, id, capture, annotations, annotationPaths };
 }
 
 /** Bundle every finalized capture from one discovery pass with a verified manifest and checksums. */
@@ -479,9 +615,11 @@ export async function exportDiscoveryPassArchive(pass, { appVersion = "", firmwa
       const folder = `captures/${String(index + 1).padStart(2, "0")}-${String(result.candidateId || "candidate").replace(/[^A-Za-z0-9_-]/g, "_")}`;
       const rawPath = `${folder}/raw.txt`;
       const metadataPath = `${folder}/recording-metadata.json`;
+      const annotation = await getRecordingAnnotations(recordingId);
+      const annotationPaths = addAnnotationFiles(files, `${folder}/`, annotation);
       files.set(rawPath, new Uint8Array(await (await recordingBlob(recordingId, "raw")).arrayBuffer()));
-      files.set(metadataPath, new TextEncoder().encode(`${JSON.stringify(capture, null, 2)}\n`));
-      paths = { rawCapture: rawPath, recordingMetadata: metadataPath };
+      files.set(metadataPath, new TextEncoder().encode(`${JSON.stringify(captureMetadataForExport(capture), null, 2)}\n`));
+      paths = { rawCapture: rawPath, recordingMetadata: metadataPath, ...annotationPaths };
     }
     manifestCandidates.push({
       ...result,
@@ -562,8 +700,10 @@ export async function exportAllExperimentsArchive({ appVersion = "", firmwareIde
     const folder = `captures/${String(index + 1).padStart(2, "0")}-${String(capture.variant || "experiment").replace(/[^A-Za-z0-9_-]/g, "_")}`;
     const rawPath = `${folder}/raw.txt`;
     const metadataPath = `${folder}/recording-metadata.json`;
+    const annotation = await getRecordingAnnotations(recordingId);
+    const annotationPaths = addAnnotationFiles(files, `${folder}/`, annotation);
     files.set(rawPath, new Uint8Array(await (await recordingBlob(recordingId, "raw")).arrayBuffer()));
-    files.set(metadataPath, new TextEncoder().encode(`${JSON.stringify(capture, null, 2)}\n`));
+    files.set(metadataPath, new TextEncoder().encode(`${JSON.stringify(captureMetadataForExport(capture), null, 2)}\n`));
     manifestCandidates.push({
       recordingId,
       variant: capture.variant,
@@ -571,7 +711,7 @@ export async function exportAllExperimentsArchive({ appVersion = "", firmwareIde
       responseByteCount: Number(capture.verdict?.end?.ro_bytes ?? 0),
       executionStartedAt: capture.startedAt ?? null,
       executionCompletedAt: capture.endedAt ?? null,
-      files: { rawCapture: rawPath, recordingMetadata: metadataPath },
+      files: { rawCapture: rawPath, recordingMetadata: metadataPath, ...annotationPaths },
     });
   }
 

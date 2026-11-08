@@ -334,7 +334,7 @@
             <button id="dcl-toggle-multiselect" type="button" class="secondary" aria-pressed="false">Select multiple</button>
             <button id="dcl-run-action" type="button" class="primary" disabled>Run candidate</button>
           </div>
-          <div class="dcl-batch-controls">
+          <div class="dcl-batch-controls" hidden>
             <h4>Batch Runner</h4>
             <p class="help">Choose candidates in the list, review their order, then run the batch. Read-only candidates require bridge pre-flight; other commands require separate operator confirmation and the stated vehicle conditions.</p>
             <div class="dcl-batch-actions">
@@ -453,24 +453,7 @@
                   <p class="help" data-str="offlineHelp"></p>
                   <button id="offline-btn" type="button" class="primary" data-str="offline"></button>
                 </div>
-                <div class="bridge-action-card">
-                  <h4>Experimental ECU Memory Read (42F3)</h4>
-                  <p class="help">Sends the separately confirmed MEM request sequence. 00A0 is the envelope terminator, not an independent ECU inquiry.</p>
-                  <button id="mem-btn" type="button" class="primary" data-str="readIdentity"></button>
-                  <pre id="identity-out" class="mono"></pre>
-                </div>
               </div>
-              <details class="bridge-probe-details">
-                <summary>Single Candidate Probe Runner</summary>
-                <label class="stack" for="dcl-probe-select">Sendable command candidate
-                  <select id="dcl-probe-select"></select>
-                </label>
-                <p id="dcl-probe-description" class="help"></p>
-                <button id="dcl-probe-run" type="button" class="primary" disabled>Send one candidate request</button>
-                <p id="dcl-probe-summary" class="banner" role="status">No DCL discovery probe has been recorded yet.</p>
-                <button id="dcl-probe-export" type="button" disabled>Export finalized probe evidence</button>
-                <pre id="dcl-probe-raw" class="mono">The selected command will be sent once after bridge prechecks. All received bytes are retained in the diagnostic journal.</pre>
-              </details>
             </div>
           </section>
           <section id="lab-sec-reference" class="lab-section" aria-labelledby="protocol-framing-title">
@@ -490,6 +473,55 @@
     </section>
     <section id="view-log" class="view" hidden>
       <h2>History and diagnostics</h2>
+      <details class="history-panel" id="analysis-panel" open>
+        <summary>Analysis &amp; Reverse Engineering</summary>
+        <p class="help">History → Select Recording → Inspect Frames → Compare → Export Analysis. Inspection and notes are stored separately from the raw recording.</p>
+        <label class="stack" for="analysis-recording-select">Saved recording<select id="analysis-recording-select"><option value="">Select a saved recording…</option></select></label>
+        <section id="analysis-notes-card" class="recording-panel" aria-label="Editable recording notes">
+          <h3>Recording notes</h3>
+          <div class="row">
+            <label>Ignition<select id="note-ignition"><option value="UNKNOWN">UNKNOWN</option><option value="ON">ON</option><option value="OFF">OFF</option></select></label>
+            <label>Engine<select id="note-engine"><option value="UNKNOWN">UNKNOWN</option><option value="ON">ON</option><option value="OFF">OFF</option></select></label>
+          </div>
+          <label class="stack">Operating conditions<input id="note-conditions" type="text"></label>
+          <label class="stack">Operator observations<input id="note-observations" type="text"></label>
+          <label class="stack">Comments<textarea id="note-comments" rows="3"></textarea></label>
+          <div class="row"><button id="btn-save-notes" type="button" disabled>Save notes</button><span id="note-status-msg" role="status" aria-live="polite"></span></div>
+        </section>
+        <div class="row">
+          <button id="btn-inspect-frames" type="button" disabled>Inspect frames</button>
+          <button id="btn-toggle-comparison" type="button">Compare recordings</button>
+        </div>
+        <section id="inspector-output-area" class="recording-panel" aria-label="Frame inspector results" hidden>
+          <div class="row">
+            <h3>Frame inspector</h3>
+            <label>Filter<select id="inspector-filter"><option value="ALL">ALL</option><option value="TX">TX</option><option value="ECHO">ECHO</option><option value="RESPONSE_CANDIDATE">RESPONSE_CANDIDATE</option><option value="CHANGED">CHANGED</option><option value="PARITY_FAILURE">PARITY_FAILURE</option><option value="UNRESOLVED">UNRESOLVED</option></select></label>
+          </div>
+          <span id="inspector-stats" class="help" role="status"></span>
+          <div id="inspector-self-test-box" class="banner" hidden></div>
+          <div id="inspector-mem-cycles-box" class="banner" hidden></div>
+          <div id="inspector-cards-container"></div>
+        </section>
+        <section id="comparison-section-area" class="recording-panel" aria-label="Recording comparison" hidden>
+          <h3>Comparison</h3>
+          <label class="stack" for="compare-second-recording">Second saved recording<select id="compare-second-recording"><option value="">Select a second recording…</option></select></label>
+          <label class="stack" for="compare-reference-pair">Reference regression pair<select id="compare-reference-pair">
+            <option value="">Custom recording comparison</option>
+            <option value="260E-vs-26A4">260E-vs-26A4</option>
+            <option value="005E-vs-004E">005E-vs-004E</option>
+            <option value="MEM-vs-MEM_OFF0">MEM-vs-MEM_OFF0</option>
+            <option value="MEM-vs-MEM_SINGLE">MEM-vs-MEM_SINGLE</option>
+            <option value="MEM-vs-MEM_PARITY">MEM-vs-MEM_PARITY</option>
+            <option value="KOEO-vs-KOER">KOEO-vs-KOER</option>
+          </select></label>
+          <div class="row">
+            <button id="btn-run-comparison" type="button" disabled>Run comparison</button>
+            <button id="btn-export-comparison-json" type="button" disabled>Export JSON</button>
+            <button id="btn-export-comparison-csv" type="button" disabled>Export CSV</button>
+          </div>
+          <div id="comparison-results-box" class="banner" role="region" aria-label="Comparison results" hidden></div>
+        </section>
+      </details>
       <section class="history-panel">
         <div class="section-heading"><h3>Warnings</h3></div>
         <div class="warning-filters">
@@ -557,6 +589,6 @@
     <button id="ignition-review" type="button" hidden>Ignition confirmation pending · Review</button>
   </div>
   <script src="vendor/jszip.min.js"></script>
-  <script type="module" src="js/app.js?v=18"></script>
+  <script type="module" src="js/app.js?v=19"></script>
 </body>
 </html>

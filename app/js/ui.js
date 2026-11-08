@@ -6,7 +6,7 @@ import { dashboardReading } from "./throttle-display.js";
 import { lookupCode } from "./codes-db.js";
 import { AUTOMATIC_PIDS, judgeReading, PID_TEXT, PIDS, rowsToCsv, summarizeSeries } from "./pids.js";
 import { combinedSnapshot } from "./combined.js";
-import { COMMAND_CATALOGUE, EXPERIMENT_CATALOGUE, MEM_EXPERIMENTS, dclVParityByte, firmwareCompatibility, reasonText, stageText, VARIANTS } from "./protocol.js";
+import { EXPERIMENT_CATALOGUE, MEM_EXPERIMENTS, dclVParityByte, firmwareCompatibility, reasonText, stageText, VARIANTS } from "./protocol.js";
 import * as PROTOCOL from "./protocol.js";
 import { STR } from "./strings.js";
 import { readingReference, VEHICLE_PROFILE } from "./reference.js";
@@ -271,6 +271,10 @@ function selectedCommand(state, item) {
       <span class="dcl-cond-label">Engine:</span>
       <strong class="dcl-cond-val ${cond.engine === "ON" ? "cond-on" : cond.engine === "OFF" ? "cond-off" : "cond-any"}">${cond.engine}</strong>
     </div>
+    <div class="dcl-condition-item">
+      <span class="dcl-cond-label">Evidence:</span>
+      <span class="dcl-cond-val cond-any">${item.evidenceLevel || "1: Not Tested"}</span>
+    </div>
   `;
   body.append(condCard);
 
@@ -322,6 +326,7 @@ function selectedCommand(state, item) {
     addDetail(rawMeta, "Guided factory session", "Initiates the EEC-IV self-test protocol (KOEO or KOER) and guides the technician through manual throttle/pedal inputs while logging raw DCL response. Actuator cycling, fuel-cut sequencing, and cylinder identification are not claimed as verified ECU operations without live evidence.");
   }
   addDetail(rawMeta, "Parity calculation", parityDescription(item));
+  addDetail(rawMeta, "Evidence status", `${item.evidenceLevel} (level ${item.evidenceNumericLevel || 1})`);
   addDetail(rawMeta, "Source provenance", `${item.source}${item.sourceUrl ? ` · ${item.sourceUrl}` : ""}`);
   addDetail(rawMeta, "Prerequisites", prerequisites);
   addDetail(rawMeta, "Classification / risk", `${DCL_CLASS_LABELS[item.classification] || item.classification} · ${item.risk}`);
@@ -342,6 +347,12 @@ function updateCandidateBatchControls() {
   const runAction = $("dcl-run-action");
   const batchOrder = $("dcl-batch-order");
   const toggle = $("dcl-toggle-multiselect");
+  const batchControls = document.querySelector(".dcl-batch-controls");
+  const isRunning = dclState?.candidateBatch?.status === "running";
+  const hasResults = !!(dclState?.candidateBatch?.results?.length);
+  if (batchControls) {
+    batchControls.hidden = !(dclMultiSelectActive || isRunning || hasResults);
+  }
   if (toggle) {
     toggle.textContent = dclMultiSelectActive ? "Single selection" : "Select multiple";
     toggle.setAttribute("aria-pressed", String(dclMultiSelectActive));
@@ -1279,9 +1290,8 @@ export function render(state) {
     fwVersion.textContent = fw ? `Firmware: v${fw}` : (linked ? "Firmware: Identifying…" : "Firmware: Not connected");
   }
 
-  const actions = ["read-codes-btn", "koeo-btn", "koer-btn", "live-start", "offline-btn", "bench-btn", "reboot-btn", "clear-btn", "mem-btn"];
+  const actions = ["read-codes-btn", "koeo-btn", "koer-btn", "live-start", "offline-btn", "bench-btn", "reboot-btn", "clear-btn"];
   for (const id of actions) $(id).disabled = !linked || busy || !!state.recovering || !!state.review?.active;
-  if (COMMAND_CATALOGUE.MEM_READ.sendable === false) $("mem-btn").disabled = true;
   $("stored-code-mode").disabled = busy;
   $("live-set").disabled = busy || !!state.recovering;
 
@@ -1394,10 +1404,13 @@ export function render(state) {
 
   const mem = snap?.mem || result?.mem || {};
   const memLines = Object.keys(mem).sort((a, b) => a - b).map((key) => `byte ${key}: ${mem[key].toString(16).toUpperCase().padStart(2, "0")}`);
-  $("identity-out").textContent = [
-    rom ? `ECU software ID: ${hexByte(rom.low)} ${hexByte(rom.high)}` : "ECU software ID: no reading yet",
-    memLines.length ? `Memory bytes (addresses 1–15):\n${memLines.join("\n")}` : "Memory bytes: no reading yet",
-  ].join("\n");
+  const identityOut = $("identity-out");
+  if (identityOut) {
+    identityOut.textContent = [
+      rom ? `ECU software ID: ${hexByte(rom.low)} ${hexByte(rom.high)}` : "ECU software ID: no reading yet",
+      memLines.length ? `Memory bytes (addresses 1–15):\n${memLines.join("\n")}` : "Memory bytes: no reading yet",
+    ].join("\n");
+  }
 
   if (activeView === "log") {
     const verdict = result?.verdict;

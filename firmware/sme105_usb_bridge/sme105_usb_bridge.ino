@@ -101,7 +101,7 @@ constexpr uint32_t kOtaCurrentVersion = 1;
 // still be able to boot PENDING_VERIFY from an older accepted version and
 // prove their manifest before promoting ota_ver. On a VALID app with NO pending
 // ledger, a supervised physical USB flash may adopt this build baseline.
-constexpr uint32_t kUsbInstalledBuildVersion = 27;
+constexpr uint32_t kUsbInstalledBuildVersion = 28;
 // This field build permits active-master commands only after the required
 // per-boot TX2_BENCH passes and each fixed profile is explicitly armed.
 constexpr bool kActiveMasterQualified = true;
@@ -1780,7 +1780,8 @@ bool IRAM_ATTR memMapFrame(uint8_t frame) {
   // Offset 0 means "send nothing" in Ford's map, so addresses start at 1.
   return isMemMapVariant(variant) && dpsBlocks == 1 && frame <= 15 &&
          (frame >= 1 || variant == kVariantMemOff0) &&
-         nearUs(framePeriodUs, 15000, 1200);
+         (frame == 0 ? (framePeriodUs == 0 || nearUs(framePeriodUs, 15000, 1200))
+                     : nearUs(framePeriodUs, 15000, 1200));
 }
 constexpr CmdWord IRAM_ATTR offsetWord(uint8_t offset) {
   return CmdWord{offset, static_cast<uint8_t>(((offset >> 4) ^ (offset & 15) ^ 0x0A) << 4)};
@@ -2992,7 +2993,7 @@ void printStatus() {
     out.print(variantName(armedVariant));
   else out.print(F("NONE"));
   out.print(F(" fault=")); out.print(static_cast<unsigned>(failure));
-  out.print(F(" live_all=1 rx_batch=1 pad_evidence=2 kline_hw=0 kline_tx=0 kline_rx_backend=NONE"));
+  out.print(F(" live_all=1 rx_batch=1 pad_evidence=2 mem_off0=1 kline_hw=0 kline_tx=0 kline_rx_backend=NONE"));
   out.print(F(" fw=")); out.println(kUsbInstalledBuildVersion);
 }
 void printPins() {
@@ -3502,7 +3503,7 @@ void runCommand(const char* cmd) {
     out.println(F("BLE build: Nordic UART transport active. Wi-Fi transport disabled."));
     out.println(F("DCL single-shot reads capture raw RO for 10s: ECU_STATUS=0381 PIDMAP=005E PIDMAP_ALT=004E DMRMAP=242E DMR=22C6 BOTH=271E."));
     out.println(F("Fixed candidates: PIDMAP_TX=4196 5s raw; PID_VALUES=21F6 10s raw; KOEO_ALT=2594; CLEAR_A1=01A1 CLEAR_F4=01F4; CHANGE_BAUD=8174 DMRMAP_TX=42A6 STOP_PID_FLOW=411E."));
-    out.println(F("MEM profiles: 42F3 then 22D3 + offsets 1..15; MEM_OFF0 adds offset 0; MEM_SINGLE sends only 42F3; MEM_PARITY uses 2293. Hard limit 10s."));
+    out.println(F("MEM profiles: 42F3 then 22D3 + offsets 1..15; MEM_OFF0 adds offset 0 (bench-tested only); MEM_SINGLE sends only 42F3; MEM_PARITY uses 2293. Hard limit 10s."));
     out.println(F("Candidate semantics are unverified on SME-105. Clear/mode/map/flow profiles can change ECU state; MEM address map and 22D3 vs 2293 parity remain hypotheses."));
     out.println(F("ACTIVE-MASTER: exact 4/4 local TX2_BENCH pass required per boot; READ_* additionally needs matching ARM_* within 15s."));
     out.println(F("No automatic TX; OBSERVE has a separate once-per-boot latch."));
@@ -3510,7 +3511,7 @@ void runCommand(const char* cmd) {
     out.println(F("COMMANDS HELLO HELP STATUS PINS TX2_BENCH LISTEN_9600 OBSERVE ARM_A4 READ_A4 ARM_0E READ_0E ARM_KOEO READ_KOEO ARM_KOEO_ALT READ_KOEO_ALT ARM_KOER READ_KOER ARM_LIVE READ_LIVE ARM_LIVE2 READ_LIVE2 ARM_LIVE3 READ_LIVE3 ARM_ALL READ_ALL ARM_CLR READ_CLR ARM_CLEAR_A1 READ_CLEAR_A1 ARM_CLEAR_F4 READ_CLEAR_F4 ARM_OFF READ_OFF ARM_ECU_STATUS READ_ECU_STATUS ARM_PIDMAP READ_PIDMAP ARM_PIDMAP_ALT READ_PIDMAP_ALT ARM_DMRMAP READ_DMRMAP ARM_DMR READ_DMR ARM_BOTH READ_BOTH ARM_CHANGE_BAUD READ_CHANGE_BAUD ARM_DMRMAP_TX READ_DMRMAP_TX ARM_STOP_PID_FLOW READ_STOP_PID_FLOW ARM_PIDMAP_TX READ_PIDMAP_TX ARM_PID_VALUES READ_PID_VALUES ARM_MEM READ_MEM ARM_MEM_OFF0 READ_MEM_OFF0 ARM_MEM_SINGLE READ_MEM_SINGLE ARM_MEM_PARITY READ_MEM_PARITY DE_BENCH RMT_DUMP STOP RESET_IDLE REBOOT"));
     out.println(F("DCL single-shot reads capture raw RO for 10s: ECU_STATUS=0381 PIDMAP=005E PIDMAP_ALT=004E DMRMAP=242E DMR=22C6 BOTH=271E."));
     out.println(F("Fixed candidates: PIDMAP_TX=4196 5s raw; PID_VALUES=21F6 10s raw; KOEO_ALT=2594; CLEAR_A1=01A1 CLEAR_F4=01F4; CHANGE_BAUD=8174 DMRMAP_TX=42A6 STOP_PID_FLOW=411E."));
-    out.println(F("MEM profiles: 42F3 then 22D3 + offsets 1..15; MEM_OFF0 adds offset 0; MEM_SINGLE sends only 42F3; MEM_PARITY uses 2293. Hard limit 10s."));
+    out.println(F("MEM profiles: 42F3 then 22D3 + offsets 1..15; MEM_OFF0 adds offset 0 (bench-tested only); MEM_SINGLE sends only 42F3; MEM_PARITY uses 2293. Hard limit 10s."));
     out.println(F("Candidate semantics are unverified on SME-105. Clear/mode/map/flow profiles can change ECU state; MEM address map and 22D3 vs 2293 parity remain hypotheses."));
     out.println(F("ACTIVE-MASTER: exact 4/4 local TX2_BENCH pass required per boot; READ_* additionally needs matching ARM_* within 15s."));
     out.println(F("No automatic TX; OBSERVE has a separate once-per-boot latch."));

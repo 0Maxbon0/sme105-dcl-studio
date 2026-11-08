@@ -7,15 +7,16 @@ import { wireKline } from "./kline-ui.js";
 import { createKoerGuide } from "./koer-guide.js";
 import { BleTransport, bluetoothAvailable } from "./ble.js";
 import { createController, candidateRequiresOperatorConfirmation, candidateRequiredStateText } from "./controller.js";
-import { APP_VERSION, createLineBuffer, COMMAND_CATALOGUE, DCL_PROBE_VARIANTS, DCL_BLOCKED_CANDIDATES, EXPERIMENT_CATALOGUE, MEM_EXPERIMENTS, firmwareCompatibility } from "./protocol.js";
+import { APP_VERSION, createLineBuffer, DCL_BLOCKED_CANDIDATES, EXPERIMENT_CATALOGUE, MEM_EXPERIMENTS, firmwareCompatibility } from "./protocol.js";
 import { createMockTransport, createReplay } from "./mock-transport.js";
 import { STR } from "./strings.js";
-import { createRecording, exportExperimentArchive, exportDiscoveryPassArchive, exportAllExperimentsArchive, listRecordings, recordingBlob, recoverInterruptedRecordings } from "./recording.js";
+import { createRecording, exportDiscoveryPassArchive, exportAllExperimentsArchive, listRecordings, recordingBlob, recoverInterruptedRecordings } from "./recording.js";
 import { applyStaticStrings, confirmDialog, exportCsv, exportLog, reorderPinnedSensor, pinnedSensors, getSelectedDclCandidates, isDashboardArranging, toggleDashboardArrangement, setDashboardDensity, setDashboardColumns, toggleDashboardFocus, inspectSensorChart, closeSensorDetails, openSensorDetails, refreshDashboardCharts, render, renderDclCommandExplorer, wireDclCommandExplorer, renderEventHistory, renderWarningHistory, setSensorChartRange, showView, toggleSensorPin } from "./ui.js";
 import { closeDiagnosticRun, flushDiagnosticQueue, diagnosticHistory, recentDiagnosticEvents, recordDiagnosticEvent, recordDiagnosticWarning, setDiagnosticStorageErrorHandler, startDiagnosticRun } from "./diagnostics.js";
 import { exportDiagnosticZip, exportGroupCsv, exportSensorCsv, saveOrShare } from "./exports.js";
 import { lookupCode } from "./codes-db.js";
 import { sensorFreshnessTransitions } from "./live-dashboard.js";
+import { initAnalysisUI } from "./analysis-ui.js";
 
 import { savedDiagnosticTests, diagnosticTestReport } from "./test-history.js";
 
@@ -34,6 +35,7 @@ let wired = false;
 let resumeWork = null;
 let protectedCapture = false;
 let operatorSave = Promise.resolve(false);
+let analysisUI = null;
 const koerGuide = createKoerGuide({ journal: (type, detail) => {
   const pending = recordDiagnosticEvent(type, detail, "koer");
   if (type === "KOER_OPERATOR_EVENT") operatorSave = pending;
@@ -50,66 +52,6 @@ const controller = createController({
 });
 
 const reviewControls = createReviewControls({ state: controller.state, render: renderApp, closeDetails: closeSensorDetails });
-function latestDclCaptureLines(log) {
-  let start = -1;
-  for (let index = log.length - 1; index >= 0; --index) {
-    if (String(log[index]).startsWith("EVENT session=READ_CANDIDATE")) { start = index; break; }
-  }
-  if (start < 0) return [];
-  let first = start;
-  for (let index = start - 1; index >= 0; --index) {
-    if (String(log[index]).startsWith("EVENT read_armed ")) { first = index; break; }
-    if (String(log[index]).startsWith("END ") || String(log[index]).startsWith("EVENT session=")) break;
-  }
-  let end = log.findIndex((line, index) => index > start && String(line).startsWith("END "));
-  if (end < 0) end = log.length - 1;
-  return log.slice(first, end + 1).map(String);
-}
-
-function renderSingleProbe(state) {
-  const select = document.getElementById("dcl-probe-select");
-  if (!select) return;
-  const selected = DCL_PROBE_VARIANTS[select.value];
-  const description = document.getElementById("dcl-probe-description");
-  if (description) {
-    const blockedSuffix = selected?.blockedReason ? ` · [BLOCKED: ${selected.blockedReason}]` : "";
-    description.textContent = selected
-      ? `${selected.word} · ${selected.description} ${selected.parityNote ? `${selected.parityNote} ` : ""}Source: ${selected.source}. ${selected.evidence}${blockedSuffix}`
-      : "Select a fixed read candidate.";
-  }
-  const activeVariant = state.op?.kind === "probe" ? state.op.variant : "";
-  const activeMeta = DCL_PROBE_VARIANTS[activeVariant];
-  const activeLines = activeMeta ? latestDclCaptureLines(state.log) : [];
-  const probe = activeMeta ? {
-    ...activeMeta, variant: activeVariant, responseBytes: state.op?.session?.rx || 0,
-    bridgeCaptureStatus: "IN_PROGRESS", rawLines: activeLines,
-  } : state.lastDclProbe;
-  const run = document.getElementById("dcl-probe-run");
-  const exportButton = document.getElementById("dcl-probe-export");
-  if (run) run.disabled = !selected || state.link !== "ready" || state.phase !== "idle" || state.transport === "demo";
-  if (exportButton) exportButton.disabled = !probe || state.phase !== "idle" || !!state.op;
-  const summary = document.getElementById("dcl-probe-summary");
-  const raw = document.getElementById("dcl-probe-raw");
-  if (!probe) {
-    if (summary) summary.textContent = "No DCL discovery probe has been recorded yet.";
-    if (raw) raw.textContent = "The selected command will be sent once after bridge prechecks. All received bytes are retained in the diagnostic journal.";
-    return;
-  }
-  const status = probe.bridgeCaptureStatus || probe.verdict?.status || "UNKNOWN";
-  const count = Number(probe.responseBytes || 0);
-  if (summary) summary.textContent = activeMeta
-    ? `Running ${probe.label} (${probe.word}) · ${count} raw RO byte(s) observed so far. ECU ownership is not verified.`
-    : `Last probe: ${probe.label} (${probe.word}) · bridge capture ${status} · ${count} raw RO byte(s). ECU ownership and command support remain unverified.`;
-  const lines = (probe.rawLines || []).filter(line => /^(EVENT read_armed |EVENT session=|TX_PAD |RX |RXB |FAULT |DENIED |END )/.test(line));
-  if (raw) {
-    if (!lines.length) raw.textContent = "Raw response lines are retained in the diagnostic journal. Use History → Export diagnostics to retrieve the complete raw transcript.";
-    else {
-      const shown = lines.slice(-160);
-      raw.textContent = `${lines.length > shown.length ? `… ${lines.length - shown.length} earlier evidence lines omitted from this preview …\n` : ""}${shown.join("\n")}`;
-    }
-  }
-}
-
 function singleCandidateWarning(spec) {
   const effects = {
     READ_ONLY: "Fixed read candidate. This records raw RO bytes and does not verify ECU ownership or command meaning.",
@@ -132,7 +74,6 @@ function singleCandidateWarning(spec) {
 function renderApp(state) {
   reviewControls.update();
   render(state);
-  renderSingleProbe(state);
   renderDclCommandExplorer(state);
 }
 
@@ -798,22 +739,13 @@ async function restoreLastDiagnosticResult() {
 
 function wire() {
   applyStaticStrings();
-  const probeSelect = document.getElementById("dcl-probe-select");
-  probeSelect.replaceChildren(...Object.entries(DCL_PROBE_VARIANTS)
-    .filter(([, spec]) => spec.sendable)
-    .map(([variant, spec]) => {
-    const option = document.createElement("option");
-    option.value = variant;
-    option.textContent = `${spec.label} · ${spec.word}`;
-    return option;
-  }));
+  analysisUI = initAnalysisUI();
   const blockedList = document.getElementById("dcl-probe-blocked");
   blockedList.replaceChildren(...DCL_BLOCKED_CANDIDATES.map(item => {
     const li = document.createElement("li");
     li.textContent = `${item.word} · ${item.label} — ${item.reason}`;
     return li;
   }));
-  renderSingleProbe(controller.state);
   renderDclCommandExplorer(controller.state);
   wireDclCommandExplorer();
   document.getElementById("about-version").textContent = APP_VERSION;
@@ -945,7 +877,7 @@ function wire() {
       showView(button.dataset.view);
       recordDiagnosticEvent("SCREEN_VIEW", { view: button.dataset.view }, "ui");
       if (button.dataset.view === "codes") refreshTestHistory();
-      if (button.dataset.view === "log") { refreshWarnings(); refreshJournal(); }
+      if (button.dataset.view === "log") { refreshWarnings(); refreshJournal(); void analysisUI?.refreshAnalysisRecordings(); }
       renderApp(controller.state);
     });
   });
@@ -1000,7 +932,6 @@ function wire() {
       closeSensorDetails();
     }
   });
-  document.getElementById("dcl-probe-select").addEventListener("change", () => renderSingleProbe(controller.state));
   document.addEventListener("dcl:run-candidate", event => { void runSingleDclCandidate(event.detail?.candidateId); });
   document.addEventListener("dcl:run-selected", event => { void runSelectedCandidateBatch(event.detail?.candidateIds || getSelectedDclCandidates()); });
   document.addEventListener("dcl:run-mem", event => { void runMemMatrix(event.detail?.experimentId); });
@@ -1063,35 +994,6 @@ function wire() {
       renderApp(controller.state);
     }
   });
-  document.getElementById("dcl-probe-run").addEventListener("click", () => {
-    const variant = document.getElementById("dcl-probe-select").value;
-    const spec = DCL_PROBE_VARIANTS[variant];
-    if (!spec) return;
-    const candidate = Object.values(EXPERIMENT_CATALOGUE).find(item => item.variantKey === variant);
-    if (candidate) void runSingleDclCandidate(candidate.id);
-  });
-  document.getElementById("dcl-probe-export").addEventListener("click", async () => {
-    if (controller.state.phase !== "idle" || controller.state.op) {
-      controller.state.message = "Finish the active probe before exporting evidence.";
-      renderApp(controller.state);
-      return;
-    }
-    const probe = controller.state.lastDclProbe;
-    const variant = probe?.variant || "probe";
-    const stamp = new Date(probe?.completedAt || Date.now()).toISOString().replaceAll(":", "-");
-    const recId = probe?.recordingId;
-    try {
-      if (!probe || !recId) throw new Error("No finalized recording is associated with this probe.");
-      const archive = await exportExperimentArchive(recId);
-      const fileName = `sme105-dcl-${variant}-${stamp}.zip`;
-      await saveOrShare(archive.blob, fileName);
-      controller.state.message = `Exported probe archive ${fileName} (SHA-256 ${archive.archiveSha.slice(0, 8)}...)`;
-      renderApp(controller.state);
-    } catch (error) {
-      controller.state.message = `DCL probe export failed: ${error.message}`;
-      renderApp(controller.state);
-    }
-  });
   document.getElementById("read-codes-btn").addEventListener("click", () => {
     const variant = document.getElementById("stored-code-mode").value === "A4" ? "A4" : "0E";
     ask(`${STR.confirmStoredTitle} (${variant})`, `${STR.confirmStoredBody}\n\nSelected request: ${variant}; expected response mode: 26H.`, () => startVehicleOperation(variant));
@@ -1112,14 +1014,6 @@ function wire() {
   document.getElementById("clear-btn").addEventListener("click", () => ask(
     STR.confirmClearTitle, STR.confirmClearBody, () => startVehicleOperation("CLR"),
   ));
-  document.getElementById("mem-btn").addEventListener("click", () => {
-    if (COMMAND_CATALOGUE.MEM_READ.sendable === false) {
-      controller.state.message = COMMAND_CATALOGUE.MEM_READ.blockedReason;
-      renderApp(controller.state);
-      return;
-    }
-    ask(STR.confirmMemTitle, STR.confirmMemBody, () => startVehicleOperation("MEM"));
-  });
   document.getElementById("reboot-btn").addEventListener("click", () => ask(
     STR.confirmRebootTitle, STR.confirmRebootBody, () => controller.requestReboot(),
   ));

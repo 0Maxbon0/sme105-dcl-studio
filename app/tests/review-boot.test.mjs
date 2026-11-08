@@ -37,8 +37,17 @@ test('actual app entry boots existing recording into offline dashboard and wires
     assert.equal($('saved-recordings').value,rec.id);
     assert.equal($('review-mode').hidden,false);
     assert.equal($('live-start').disabled,true);
-    assert.deepEqual([...$('dcl-probe-select').options].map(option => option.value), ['ECU_STATUS','PIDMAP','PIDMAP_ALT','DMRMAP','DMR','BOTH','KOEO_ALT','CLEAR_A1','CLEAR_F4','DMRMAP_TX','CHANGE_BAUD','STOP_PID_FLOW','MEM','MEM_OFF0','MEM_SINGLE','MEM_PARITY','PID_VALUES']);
-    assert.equal($('dcl-probe-run').disabled,true); // No live bridge: discovery must stay inert.
+    assert.equal($('mem-btn'), null);
+    assert.equal($('identity-out'), null);
+    for (const id of ['dcl-probe-select', 'dcl-probe-description', 'dcl-probe-run', 'dcl-probe-summary', 'dcl-probe-export', 'dcl-probe-raw']) {
+      assert.equal($(id), null, `legacy probe control #${id} must be removed`);
+    }
+    const candidateRunner = document.querySelectorAll('#view-lab .dcl-runner-panel .dcl-run-bar button.primary');
+    assert.equal(candidateRunner.length, 1);
+    assert.equal(candidateRunner[0].id, 'dcl-run-action');
+    assert.ok($('dcl-toggle-multiselect'));
+    assert.equal($('dcl-run-action').disabled, true); // The canonical action stays inert without a live bridge.
+    assert.equal($('dcl-run-selected'), null);
     assert.doesNotMatch($('dcl-probe-blocked').textContent,/01A1/);
     assert.match($('dcl-probe-blocked').textContent,/FF5F/);
     $('review-position').value=5; $('review-position').dispatchEvent(new window.Event('input'));

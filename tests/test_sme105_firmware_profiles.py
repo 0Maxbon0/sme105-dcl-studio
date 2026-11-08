@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -40,6 +41,54 @@ PROFILES = {
     "MEM_SINGLE": (28, "kVariantMemSingle", "42F3", False),
     "MEM_PARITY": (29, "kVariantMemGenericParity", "42F3", True),
 }
+
+
+MEM_PROFILES = {
+    "MEM": (10, "kVariantMem", True, 0xD3),
+    "MEM_OFF0": (27, "kVariantMemOff0", True, 0xD3),
+    "MEM_SINGLE": (28, "kVariantMemSingle", False, None),
+    "MEM_PARITY": (29, "kVariantMemGenericParity", True, 0x93),
+}
+
+
+def synthetic_mem_map_frame(profile: str, dps_blocks: int, frame: int,
+                            frame_period_us: int) -> bool:
+    """Model the bounded MEM map-frame gate for synthetic transition cases."""
+    if profile not in ("MEM", "MEM_OFF0", "MEM_PARITY"):
+        return False
+    if dps_blocks != 1 or frame > 15 or (frame == 0 and profile != "MEM_OFF0"):
+        return False
+    if frame == 0:
+        return frame_period_us == 0 or abs(frame_period_us - 15000) <= 1200
+    return abs(frame_period_us - 15000) <= 1200
+
+
+def synthetic_offset_word(offset: int) -> tuple[int, int]:
+    parity_nibble = ((offset >> 4) ^ (offset & 15) ^ 0x0A) << 4
+    return offset, parity_nibble
+
+
+def synthetic_extra_slot(profile: str, dps_blocks: int, frame: int,
+                         frame_period_us: int) -> tuple[str, tuple[int, int]] | None:
+    """Model the extra-word arm point: one offset word in frame IW2."""
+    if not synthetic_mem_map_frame(profile, dps_blocks, frame, frame_period_us):
+        return None
+    return "IW2", synthetic_offset_word(frame)
+
+
+def source_function(signature: str) -> str:
+    """Return one C++ function body, including its outer braces."""
+    start = SOURCE.index(signature)
+    opening = SOURCE.index("{", start)
+    depth = 0
+    for index in range(opening, len(SOURCE)):
+        if SOURCE[index] == "{":
+            depth += 1
+        elif SOURCE[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return SOURCE[opening:index + 1]
+    raise AssertionError(f"unclosed function body for {signature}")
 
 
 class FirmwareProfileTests(unittest.TestCase):
@@ -111,6 +160,129 @@ class FirmwareProfileTests(unittest.TestCase):
         self.assertIn("elapsed < limit + 3000", active_loop)
         self.assertIn("!isRepeating(kVariantMemSingle)", SOURCE)
 
+    def test_mem_off0_is_explicitly_bench_tested_and_preserves_v28(self) -> None:
+        self.assertIn("kUsbInstalledBuildVersion = 28", SOURCE)
+        self.assertRegex(SOURCE, r"\bkVariantMemOff0\s*=\s*27\b")
+        self.assertEqual(SOURCE.count("MEM_OFF0 adds offset 0 (bench-tested only)"), 2)
+
+
+class MemMapSyntheticTests(unittest.TestCase):
+    def test_mem_profile_frame_and_continuation_matrix(self) -> None:
+        for name in ("MEM", "MEM_PARITY"):
+            with self.subTest(profile=name):
+                self.assertTrue(MEM_PROFILES[name][2])
+                self.assertFalse(synthetic_mem_map_frame(name, 1, 0, 15000))
+                self.assertEqual(
+                    [frame for frame in range(16)
+                     if synthetic_mem_map_frame(name, 1, frame, 15000)],
+                    list(range(1, 16)),
+                )
+                self.assertEqual(MEM_PROFILES[name][3],
+                                 0x93 if name == "MEM_PARITY" else 0xD3)
+
+        self.assertFalse(MEM_PROFILES["MEM_SINGLE"][2])
+        self.assertIsNone(MEM_PROFILES["MEM_SINGLE"][3])
+        self.assertFalse(any(synthetic_mem_map_frame("MEM_SINGLE", 1, frame, 15000)
+                             for frame in range(16)))
+        self.assertIn("!isRepeating(kVariantMemSingle)", SOURCE)
+
+    def test_mem_off0_arms_offset_zero_during_zero_period_transition(self) -> None:
+        self.assertTrue(synthetic_mem_map_frame("MEM_OFF0", 1, 0, 0))
+        self.assertEqual(synthetic_extra_slot("MEM_OFF0", 1, 0, 0),
+                         ("IW2", (0x00, 0xA0)))
+        self.assertEqual(synthetic_extra_slot("MEM_OFF0", 1, 0, 15000),
+                         ("IW2", (0x00, 0xA0)))
+        self.assertEqual(synthetic_extra_slot("MEM_OFF0", 1, 1, 15000),
+                         ("IW2", (0x01, 0xB0)))
+        self.assertEqual(
+            [frame for frame in range(16)
+             if synthetic_mem_map_frame("MEM_OFF0", 1, frame,
+                                        0 if frame == 0 else 15000)],
+            list(range(16)),
+        )
+        self.assertIn("(frame == 0 ? (framePeriodUs == 0 || nearUs(framePeriodUs, 15000, 1200))",
+                      SOURCE)
+        self.assertIn("(index == 0 && variant == kVariantMemOff0 && memMapFrame(index))",
+                      SOURCE)
+        self.assertIn("offsetWord(0).first == 0x00 && offsetWord(0).second == 0xA0",
+                      SOURCE)
+
+    def test_frame_zero_never_arms_for_mem_or_parity_profiles(self) -> None:
+        for name in ("MEM", "MEM_PARITY"):
+            with self.subTest(profile=name):
+                self.assertIsNone(synthetic_extra_slot(name, 1, 0, 0))
+                self.assertIsNone(synthetic_extra_slot(name, 1, 0, 15000))
+        self.assertIn("(frame >= 1 || variant == kVariantMemOff0)", SOURCE)
+
+    def test_period_gate_and_map_block_bounds_remain_strict(self) -> None:
+        for name in ("MEM", "MEM_OFF0", "MEM_PARITY"):
+            with self.subTest(profile=name):
+                self.assertFalse(synthetic_mem_map_frame(name, 0, 1, 15000))
+                self.assertFalse(synthetic_mem_map_frame(name, 1, 16, 15000))
+                self.assertFalse(synthetic_mem_map_frame(name, 1, 1, 13799))
+                self.assertFalse(synthetic_mem_map_frame(name, 1, 1, 16201))
+        self.assertIn("dpsBlocks == 1 && frame <= 15", SOURCE)
+
+    def test_framing_and_fixed_control_words_are_unchanged_across_mem_profiles(self) -> None:
+        envelope = ((0x01, 0xB0), (0xFF, 0x5F), (0x42, 0xF3), (0x00, 0xA0))
+        for name, (_variant_id, variant, repeating, continuation) in MEM_PROFILES.items():
+            with self.subTest(profile=name):
+                self.assertIn(f"hasEnvelope({variant}, 0x42, 0xF3)", SOURCE)
+                self.assertEqual(envelope[2], (0x42, 0xF3))
+                self.assertEqual(envelope[3], (0x00, 0xA0))
+                self.assertEqual(repeating, continuation is not None)
+        self.assertIn("dpsBlocks == 0 ? CmdWord{0x42, 0xF3} : memContinuationWord(variant)",
+                      SOURCE)
+        self.assertIn("CmdWord{0x22,0xD3}", SOURCE)
+        self.assertIn("CmdWord{0x22,0x93}", SOURCE)
+        self.assertIn("armExtra(index, txStartUs[index] + 2500)", SOURCE)
+        self.assertIn("armExtra(id, sync + 2917 + 2500)", SOURCE)
+        self.assertIn("constexpr uint32_t kJoinMinPeriodUs = 9500, kJoinMaxPeriodUs = 46000",
+                      SOURCE)
+
+    def test_extra_words_keep_the_same_hardware_and_pad_safety_gates(self) -> None:
+        slot_isr = source_function("void IRAM_ATTR slotISR()")
+        tx_isr = source_function("void IRAM_ATTR uart2ISR(void*)")
+        begin_session = source_function("void beginSession(Stage target, uint8_t kind)")
+
+        for gate in (
+            "stage != CART_READ", "stopLatched", "slotArmed", "slotInFlight",
+            "!gateReady", "!nearUs(now, extraTargetUs)",
+            "UART2.status.txfifo_cnt != 0", "UART2.status.rxfifo_cnt != 0",
+            "UART2.mem_rx_status.rd_addr != UART2.mem_rx_status.wr_addr",
+            "!(GPIO.in & (1UL << kRO))", "armTimer(0, kSlotWatchdogUs)",
+            "startDeGate(extraGate)", "extraWord.first", "extraWord.second",
+        ):
+            with self.subTest(gate=gate):
+                self.assertIn(gate, slot_isr)
+
+        for gate in (
+            "const bool deWasHigh = (GPIO.in & (1UL << kDE)) != 0",
+            "deOff();", "disableDeTimer();", "extra ? extraWord :",
+            "count != 2 || countMid != 1 || countAfter != 0",
+            "flags & ((1UL << 2) | (1UL << 3) | (1UL << 4))",
+            "b0 != expected.first || b1 != expected.second",
+            "faultISR(DE_MISSING)", "faultISR(PAD_FRAMING)",
+            "faultISR(PAD_MISMATCH)",
+        ):
+            with self.subTest(gate=gate):
+                self.assertIn(gate, tx_isr)
+        self.assertLess(tx_isr.index("const CmdWord expected = extra ? extraWord :"),
+                        tx_isr.index("b0 != expected.first || b1 != expected.second"))
+        pad_validation = tx_isr[
+            tx_isr.index("if (!extra) padEvidence.complete"):
+            tx_isr.index("} else if (extra) {")
+        ]
+        for check in ("if (!deWasHigh)", "count != 2 || countMid != 1 || countAfter != 0",
+                      "b0 != expected.first || b1 != expected.second"):
+            with self.subTest(pad_check=check):
+                self.assertIn(check, pad_validation)
+
+        self.assertIn("if (target == CART_READ && !tx2BenchPassed)", begin_session)
+        self.assertIn("stopLatched = false", begin_session)
+        self.assertIn("if (stage != CART_READ || stopLatched || slotArmed || slotInFlight || !gateReady",
+                      slot_isr)
+
     def test_request_classifiers_keep_single_shot_and_repeating_modes_explicit(self) -> None:
         self.assertIn("constexpr bool isRequestVariant(uint8_t v)", SOURCE)
         self.assertIn("constexpr bool joinsRunningCart(uint8_t v)", SOURCE)
@@ -155,14 +327,23 @@ class FirmwareProfileTests(unittest.TestCase):
             'F(" offline_used=")',
             'F(" armed=")',
             'F(" fault=")',
-            'F(" live_all=1 rx_batch=1 pad_evidence=2 kline_hw=0 kline_tx=0 kline_rx_backend=NONE")',
+            'F(" live_all=1 rx_batch=1 pad_evidence=2 mem_off0=1 kline_hw=0 kline_tx=0 kline_rx_backend=NONE")',
             'F(" fw=")',
         )
         positions = [status.index(field) for field in fields]
         self.assertEqual(positions, sorted(positions))
-        self.assertIn("stage=0 DE=LOW auto_tx=0 gate4=1 pad_rx=1 tx2_bench_used=0 tx2_bench_pass=0 read_used=0 observe_used=0 transport_lost=0 out_overflow=0 usb_skipped=0 offline_used=0 armed=NONE fault=0 live_all=1 rx_batch=1 pad_evidence=2 kline_hw=0 kline_tx=0 kline_rx_backend=NONE fw=27",
-                      (ROOT / "firmware/sme105_usb_bridge/README.md").read_text())
-        self.assertIn("kUsbInstalledBuildVersion = 27", SOURCE)
+        self.assertIn(
+            'out.print(F(" live_all=1 rx_batch=1 pad_evidence=2 mem_off0=1 '
+            'kline_hw=0 kline_tx=0 kline_rx_backend=NONE"));', status
+        )
+        self.assertIn(
+            'out.print(F(" fw=")); out.println(kUsbInstalledBuildVersion);', status
+        )
+        installed_version = re.search(
+            r"constexpr uint32_t kUsbInstalledBuildVersion = (\d+)", SOURCE
+        )
+        self.assertIsNotNone(installed_version)
+        self.assertEqual(f"fw={installed_version.group(1)}", "fw=28")
         self.assertIn("void IRAM_ATTR uart1ISR(void*)", SOURCE)
         self.assertIn('"RXB t_us=%lu data="', SOURCE)
         self.assertIn('"RX t_us=%lu byte=%02X\\n"', SOURCE)

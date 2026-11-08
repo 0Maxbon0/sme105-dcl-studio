@@ -130,8 +130,8 @@ class JoinRearmSourceTests(unittest.TestCase):
         self.assertIn("REBOOT", help_line)
         self.assertIn('out.print(F(" fw=")); out.println(kUsbInstalledBuildVersion);', self.source)
 
-    def test_usb_installed_build_version_is_27(self) -> None:
-        self.assertIn("constexpr uint32_t kUsbInstalledBuildVersion = 27", self.source)
+    def test_usb_installed_build_version_is_28(self) -> None:
+        self.assertIn("constexpr uint32_t kUsbInstalledBuildVersion = 28", self.source)
 
     def test_ble_build_does_not_start_wifi(self) -> None:
         init = _between(self.source, "void initializeWiFi() {", "void initializeOtaBootHealth()")

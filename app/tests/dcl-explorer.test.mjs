@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { JSDOM } from "jsdom";
-import { EXPERIMENT_CATALOGUE, DCL_PROBE_VARIANTS, VARIANTS } from "../js/protocol.js";
+import { EVIDENCE_LEVEL_NAMES, EXPERIMENT_CATALOGUE, DCL_PROBE_VARIANTS, VARIANTS, evidenceLevelName } from "../js/protocol.js";
 import { discoveryPassCandidates } from "../js/controller.js";
 import { filterDclCatalogue, renderDclCommandExplorer, wireDclCommandExplorer } from "../js/ui.js";
 
@@ -45,8 +45,12 @@ test("the command catalogue is complete and each operation variant matches its f
     assert.ok(item, `missing catalogue candidate ${id}`);
     assert.equal(item.commandWord, word, id);
     assert.equal(item.classification, classification, id);
+    assert.ok(Number.isInteger(item.evidenceNumericLevel) && item.evidenceNumericLevel >= 1 && item.evidenceNumericLevel <= 5, id);
+    assert.equal(item.evidenceLevel, evidenceLevelName(item.evidenceNumericLevel), id);
     for (const field of fields) assert.ok(field in item, `${id} is missing ${field}`);
   }
+  assert.deepEqual([...new Set(catalogue.map(item => item.evidenceNumericLevel))].sort(), [1, 2, 3, 4]);
+  for (let level = 1; level <= 5; level += 1) assert.equal(evidenceLevelName(level), EVIDENCE_LEVEL_NAMES[level]);
   for (const [key, [word, arm, read]] of Object.entries({
     PIDMAP_ALT: ["004E", "ARM_PIDMAP_ALT", "READ_PIDMAP_ALT"],
     KOEO_ALT: ["2594", "ARM_KOEO_ALT", "READ_KOEO_ALT"],
@@ -62,6 +66,7 @@ test("the command catalogue is complete and each operation variant matches its f
     assert.equal(variant.armCommand, arm, key);
     assert.equal(variant.readCommand, read, key);
     assert.equal(VARIANTS[key].command, key, key);
+    assert.equal(variant.evidenceLevel, evidenceLevelName(variant.evidenceNumericLevel), key);
   }
   assert.deepEqual(discoveryPassCandidates().map(item => item.id), [
     "STORED_0E", "STORED_A4", "ECU_STATUS", "PIDMAP", "PIDMAP_ALT", "DMRMAP", "DMR_VALUES", "PID_DMR_BOTH",
@@ -76,7 +81,8 @@ test("catalogue search and category/firmware filters match names and hexadecimal
   assert.ok(filterDclCatalogue({ category: "SELF_TEST" }).every(item => item.classification === "SELF_TEST"));
   assert.ok(filterDclCatalogue({ category: "FACTORY_PROCEDURE" }).every(item => item.classification === "FACTORY_PROCEDURE"));
   assert.ok(filterDclCatalogue({ firmwareStatus: "SUPPORTED", firmwareVersion: "27" }).every(item => item.sendable));
-  assert.deepEqual(filterDclCatalogue({ firmwareStatus: "DEFERRED", firmwareVersion: "27" }), []);
+  assert.deepEqual(filterDclCatalogue({ firmwareStatus: "DEFERRED", firmwareVersion: "27" }).map(item => item.id), ["MEM_OFF0"]);
+  assert.equal(filterDclCatalogue({ firmwareStatus: "DEFERRED", firmwareVersion: "27" })[0].requiredFirmwareVersion, 28);
   assert.ok(filterDclCatalogue({ firmwareStatus: "DEFERRED", firmwareVersion: "24" }).every(item => item.requiredFirmwareVersion > 24));
   assert.equal(filterDclCatalogue({ category: "CONFIG_CHANGE" }).some(item => item.id === "CHANGE_BAUD"), true);
 });

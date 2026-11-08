@@ -152,11 +152,18 @@ test("Single selection updates the contextual run action and dispatches the sele
     card.click();
 
     const candidate = Object.values(EXPERIMENT_CATALOGUE).find(item => item.id === "PIDMAP_ALT");
+    assert.equal(candidate.evidenceNumericLevel, 3);
+    assert.equal(candidate.evidenceLevel, "3: Structural Response Observed");
     const runAction = document.getElementById("dcl-run-action");
     assert.equal(document.getElementById("dcl-command-detail-title").textContent, `${candidate.name} · ${candidate.commandWord}`);
+    const evidenceCondition = [...document.querySelectorAll("#dcl-command-detail-body .dcl-condition-item")]
+      .find(item => item.querySelector(".dcl-cond-label")?.textContent === "Evidence:");
+    assert.equal(evidenceCondition?.querySelector(".dcl-cond-val")?.textContent, candidate.evidenceLevel);
+    assert.match(document.querySelector("#dcl-command-detail-body .dcl-command-tech-meta").textContent, /Evidence status/);
     assert.equal(runAction.textContent, `Run ${candidate.name} (${candidate.commandWord})`);
     assert.equal(runAction.disabled, false, "A sendable candidate is enabled with a compatible ready bridge");
     assert.equal(document.getElementById("dcl-batch-order").hidden, true, "Batch order is hidden in single-selection mode");
+    assert.equal(document.querySelector(".dcl-batch-controls").hidden, true, "Batch controls start hidden until the operator enables batch selection");
 
     state.link = "disconnected";
     renderDclCommandExplorer(state);
@@ -218,6 +225,34 @@ test("Contextual run action disables firmware-incompatible and busy candidates",
   }
 });
 
+test("MEM_OFF0 stays disabled on firmware v27 and is enabled by the v28 frame 0 fix", async () => {
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+  const dom = new JSDOM(html, { url: "https://dcl-studio.test/" });
+  const oldWindow = globalThis.window, oldDocument = globalThis.document;
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  try {
+    const state = { link: "ready", phase: "idle", transport: "ble", status: { fields: { fw: "27" } } };
+    wireDclCommandExplorer();
+    renderDclCommandExplorer(state);
+    const search = document.getElementById("dcl-command-search");
+    search.value = "MEM_OFF0";
+    search.dispatchEvent(new window.Event("input"));
+    document.querySelector("#dcl-command-list .dcl-command-card").click();
+    const runAction = document.getElementById("dcl-run-action");
+    assert.equal(runAction.disabled, true);
+    assert.match(document.getElementById("dcl-command-detail-body").textContent, /Firmware v28\+ required/);
+
+    state.status.fields.fw = "28";
+    renderDclCommandExplorer(state);
+    assert.equal(runAction.disabled, false);
+  } finally {
+    dom.window.close();
+    globalThis.window = oldWindow;
+    globalThis.document = oldDocument;
+  }
+});
+
 test("Multi-select mode shows the execution order and dispatches the selected batch", async () => {
   const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
   const dom = new JSDOM(html, { url: "https://dcl-studio.test/" });
@@ -230,7 +265,9 @@ test("Multi-select mode shows the execution order and dispatches the selected ba
     renderDclCommandExplorer(state);
 
     const toggle = document.getElementById("dcl-toggle-multiselect");
+    assert.equal(document.querySelector(".dcl-batch-controls").hidden, true, "Batch controls are hidden in single-selection mode");
     toggle.click();
+    assert.equal(document.querySelector(".dcl-batch-controls").hidden, false, "Multi-select mode reveals batch controls");
     assert.equal(toggle.textContent, "Single selection");
     assert.equal(toggle.getAttribute("aria-pressed"), "true");
     assert.equal(document.getElementById("dcl-run-action").textContent, "Run selected (0)");
@@ -260,8 +297,21 @@ test("Multi-select mode shows the execution order and dispatches the selected ba
     assert.equal(toggle.textContent, "Select multiple");
     assert.equal(toggle.getAttribute("aria-pressed"), "false");
     assert.equal(document.getElementById("dcl-batch-order").hidden, true);
+    assert.equal(document.querySelector(".dcl-batch-controls").hidden, true, "Batch controls hide when multi-select ends without a batch result");
     const primaryPidMap = Object.values(EXPERIMENT_CATALOGUE).find(item => item.id === "PIDMAP");
+    assert.equal(primaryPidMap.evidenceNumericLevel, 2);
+    assert.equal(primaryPidMap.evidenceLevel, "2: TX Verified");
     assert.equal(document.getElementById("dcl-run-action").textContent, `Run ${primaryPidMap.name} (${primaryPidMap.commandWord})`);
+
+    state.candidateBatch = { status: "running", results: [] };
+    renderDclCommandExplorer(state);
+    assert.equal(document.querySelector(".dcl-batch-controls").hidden, false, "Running batches keep their controls visible");
+    state.candidateBatch = { status: "complete", results: [{ candidateId: "PIDMAP", status: "COMPLETE" }] };
+    renderDclCommandExplorer(state);
+    assert.equal(document.querySelector(".dcl-batch-controls").hidden, false, "Batch results keep controls available for review/export");
+    state.candidateBatch = { status: "complete", results: [] };
+    renderDclCommandExplorer(state);
+    assert.equal(document.querySelector(".dcl-batch-controls").hidden, true, "Empty completed batches do not keep controls visible");
   } finally {
     dom.window.close();
     globalThis.window = oldWindow;

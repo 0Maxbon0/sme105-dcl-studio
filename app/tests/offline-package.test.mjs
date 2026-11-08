@@ -7,6 +7,10 @@ import { APP_VERSION } from "../js/protocol.js";
 test("every runtime local module is present and pre-cached for offline use",()=>{
   const app=fileURLToPath(new URL("../",import.meta.url));
   const sw=readFileSync(resolve(app,"sw.js"),"utf8");
+  const androidBuild=readFileSync(resolve(app,"../android/app/build.gradle"),"utf8");
+  assert.equal(APP_VERSION,"1.8.13");
+  assert.match(sw,/const CACHE_NAME = 'eeciv-v1\.8\.13';/);
+  assert.match(androidBuild,/versionName\s+"1\.8\.13"/);
   const cached=new Set([...sw.matchAll(/"(\.\/[^"?]+)(?:\?[^"\n]*)?"/g)].map(m=>resolve(app,m[1])));
   const seen=new Set(),queue=[resolve(app,"js/app.js")];
   while(queue.length){const path=queue.pop();if(seen.has(path))continue;seen.add(path);

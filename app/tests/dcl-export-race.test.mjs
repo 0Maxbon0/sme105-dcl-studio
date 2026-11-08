@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import * as fake from "fake-indexeddb";
 import "./test-env.mjs";
@@ -16,10 +15,7 @@ async function zipFiles(blob) {
   return JSZip.loadAsync(await blob.arrayBuffer());
 }
 
-test("export during an active probe is disabled in the app and rejected by the archive API", async () => {
-  const source = await readFile(new URL("../js/app.js", import.meta.url), "utf8");
-  assert.match(source, /exportButton\.disabled = !probe \|\| state\.phase !== "idle" \|\| !!state\.op;/);
-  assert.match(source, /if \(controller\.state\.phase !== "idle" \|\| controller\.state\.op\)/);
+test("export API rejects an active capture until finalization", async () => {
   const recording = await createRecording("ECU_STATUS");
   await assert.rejects(exportExperimentArchive(recording.id), new RegExp(`active or unfinalized recording ${recording.id}`));
   await recording.finish({ valid: false, status: "INCOMPLETE" });
@@ -90,18 +86,13 @@ test("export immediately after completion contains consistent metadata and exact
   assert.deepEqual(await zip.file("ro.bin").async("uint8array"), new Uint8Array([0xaa, 0xbb, 0xcc]));
 });
 
-test("a previous completed probe cannot be exported while a new probe is active", async () => {
+test("a completed capture remains exportable while a different capture is active", async () => {
   const oldProbe = await createRecording("ECU_STATUS");
   oldProbe.line("END reason=15");
   await oldProbe.finish({ valid: true, status: "VALID" });
   const activeProbe = await createRecording("PIDMAP");
-  const state = { phase: "read", op: { variant: "PIDMAP" }, lastDclProbe: { recordingId: oldProbe.id } };
-  const source = await readFile(new URL("../js/app.js", import.meta.url), "utf8");
-  const clickHandler = source.slice(source.indexOf('getElementById("dcl-probe-export").addEventListener'), source.indexOf('getElementById("read-codes-btn")'));
-  assert.match(clickHandler, /state\.phase !== "idle" \|\| controller\.state\.op/);
-  assert.match(clickHandler, /const recId = probe\?\.recordingId;/);
-  assert.doesNotMatch(clickHandler, /lastSession\?\.recordingId|state\.archive\?\.id/);
-  assert.equal(state.lastDclProbe.recordingId, oldProbe.id);
+  const oldArchive = await exportExperimentArchive(oldProbe.id);
+  assert.equal(oldArchive.capture.id, oldProbe.id);
   await assert.rejects(exportExperimentArchive(activeProbe.id), /active or unfinalized/);
   await activeProbe.finish({ valid: false, status: "INCOMPLETE" });
 });

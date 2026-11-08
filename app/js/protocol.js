@@ -1,12 +1,32 @@
 /** ASCII line protocol for the SME105 bridge. No DOM, no Bluetooth. */
 
-export const APP_VERSION = "1.8.12";
+export const APP_VERSION = "1.8.13";
 
 export const NUS_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
 export const NUS_RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
 export const NUS_TX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
 export const DEVICE_NAME_PREFIX = "SME105";
 export const MAX_WRITE_BYTES = 180;
+
+export const EVIDENCE_LEVELS = Object.freeze({
+  LEVEL_1_NOT_TESTED: 1,
+  LEVEL_2_TX_VERIFIED: 2,
+  LEVEL_3_STRUCTURAL_RESPONSE: 3,
+  LEVEL_4_RESPONSE_CANDIDATE: 4,
+  LEVEL_5_MEANING_VERIFIED: 5,
+});
+
+export const EVIDENCE_LEVEL_NAMES = Object.freeze({
+  1: "1: Not Tested",
+  2: "2: TX Verified",
+  3: "3: Structural Response Observed",
+  4: "4: Response Candidate Captured",
+  5: "5: Meaning Verified",
+});
+
+export function evidenceLevelName(level) {
+  return EVIDENCE_LEVEL_NAMES[level] || "1: Not Tested";
+}
 
 /** Generic Ford DCL VPARITY byte calculation for a data byte and low-nibble ID. */
 export function dclVParityByte(firstByte, id) {
@@ -79,9 +99,9 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
   A_ECU_STATUS: Object.freeze({
     id: "ECU_STATUS", letter: "A", name: "ECU status", commandWord: "0381",
     envelope: ["01B0", "FF5F", "0381", "00A0"],
-    description: "Queries general ECU operating status byte; external scanner table labels it 'Get status'.",
+    description: "Nov 8 captures 18 and 23: 0381 was pad-verified and returned F04=0390 while cadence remained 10.0 ms. Since ID 1 already maps to 10 ms, structural acceptance is not established.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
-    parityStatus: "GENERIC_MATCH", evidenceLevel: "UNVERIFIED_CANDIDATE",
+    parityStatus: "GENERIC_MATCH", evidenceNumericLevel: 2, evidenceLevel: evidenceLevelName(2),
     classification: "READ_ONLY", risk: "LOW", timeoutMs: 10000,
     requiredEcuState: "ANY_POWERED", repeats: false, requiresMapOrQualifier: false,
     armCommand: "ARM_ECU_STATUS", readCommand: "READ_ECU_STATUS", variantKey: "ECU_STATUS",
@@ -90,9 +110,9 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
   B_STORED_0E: Object.freeze({
     id: "STORED_0E", letter: "B", name: "Read stored DTCs (0E)", commandWord: "260E",
     envelope: ["01B0", "FF5F", "260E", "00A0"],
-    description: "Read stored continuous trouble codes profile with 14-slot response window.",
+    description: "Stored continuous DTC read (0E). Nov 8 captures 19 and 21: 42.5 ms cadence, with 72E1 in F00 and 26E0 in F04; these remain response candidates, not decoded DTC meanings.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
-    parityStatus: "GENERIC_MATCH", evidenceLevel: "HISTORICAL_ECU_EVIDENCE",
+    parityStatus: "GENERIC_MATCH", evidenceNumericLevel: 4, evidenceLevel: evidenceLevelName(4),
     classification: "READ_ONLY", risk: "LOW", timeoutMs: 20000,
     requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: false, requiresMapOrQualifier: false,
     armCommand: "ARM_0E", readCommand: "READ_0E", variantKey: "0E",
@@ -101,9 +121,9 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
   B_STORED_A4: Object.freeze({
     id: "STORED_A4", letter: "B", name: "Read stored DTCs (A4)", commandWord: "26A4",
     envelope: ["01B0", "FF5F", "26A4", "00A0"],
-    description: "Alternative stored trouble code profile from flxkrmr reader with 4-slot window.",
+    description: "Stored continuous DTC read (A4). Nov 8 captures 20 and 22: 17.5 ms cadence, with matching first-cycle response candidates 72E1 in F00 and 26E0 in F04. Retained separately from 260E because the timing differs.",
     source: "flxkrmr/eec-iv-reader-arduino", sourceUrl: "https://github.com/flxkrmr/eec-iv-reader-arduino",
-    parityStatus: "GENERIC_MATCH", evidenceLevel: "HISTORICAL_ECU_EVIDENCE",
+    parityStatus: "GENERIC_MATCH", evidenceNumericLevel: 4, evidenceLevel: evidenceLevelName(4),
     classification: "READ_ONLY", risk: "LOW", timeoutMs: 20000,
     requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: false, requiresMapOrQualifier: false,
     armCommand: "ARM_A4", readCommand: "READ_A4", variantKey: "A4",
@@ -112,9 +132,9 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
   C_CLEAR_DTC: Object.freeze({
     id: "CLEAR_DTC", letter: "C", name: "Clear DTCs", commandWord: "0291",
     envelope: ["01B0", "FF5F", "0291", "00A0"],
-    description: "Destructive command that clears continuous memory fault codes. Single-shot transmission then 4s capture.",
+    description: "November 8 field attempts aborted at HSK_ACK with words_started=0, so physical bus transmission remains unverified on the vehicle. The command is destructive and intended to clear continuous-memory DTCs.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
-    parityStatus: "GENERIC_MATCH", evidenceLevel: "STATE_CHANGING",
+    parityStatus: "GENERIC_MATCH", evidenceNumericLevel: EVIDENCE_LEVELS.LEVEL_1_NOT_TESTED, evidenceLevel: evidenceLevelName(1),
     classification: "STATE_CHANGING", risk: "MEDIUM", timeoutMs: 12000,
     requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: false, requiresMapOrQualifier: false,
     armCommand: "ARM_CLR", readCommand: "READ_CLR", variantKey: "CLR",
@@ -123,9 +143,9 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
   D_KOEO_253E: Object.freeze({
     id: "KOEO_253E", letter: "D", name: "KOEO on-demand self-test", commandWord: "253E",
     envelope: ["01B0", "FF5F", "253E", "00A0"],
-    description: "Key On Engine Off diagnostic self-test. Actuates relays and monitors sensors; repeating DPS request.",
+    description: "Nov 8 capture 33: 253E sustained 42.5 ms cadence for 1,408 frames. 11B1 appeared in F00 at about 9 s and F07 changed from ACC0 to EC80. Ford code 11 is a hypothesis, not independently verified for SME-105.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
-    parityStatus: "GENERIC_MATCH", evidenceLevel: "HISTORICAL_ECU_EVIDENCE",
+    parityStatus: "GENERIC_MATCH", evidenceNumericLevel: 4, evidenceLevel: evidenceLevelName(4),
     classification: "SELF_TEST", risk: "MEDIUM", timeoutMs: 60000,
     requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: true, requiresMapOrQualifier: false,
     armCommand: "ARM_KOEO", readCommand: "READ_KOEO", variantKey: "KOEO",
@@ -134,9 +154,9 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
   D_KOER_253E: Object.freeze({
     id: "KOER_253E", letter: "D", name: "KOER running self-test", commandWord: "253E",
     envelope: ["01B0", "FF5F", "253E", "00A0"],
-    description: "Key On Engine Running diagnostic self-test with dynamic operator prompts and goose pulse.",
+    description: "Nov 8 capture 34: 253E sustained 42.5 ms cadence for 5,648 frames. At about 58.6 s, 16C1, 72E1, 3845, and 21C5 appeared in F00–F03 and persisted for 267 cycles with EC80 in F07. Codes are candidate hypotheses, not confirmed DTCs.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
-    parityStatus: "GENERIC_MATCH", evidenceLevel: "HISTORICAL_ECU_EVIDENCE",
+    parityStatus: "GENERIC_MATCH", evidenceNumericLevel: 4, evidenceLevel: evidenceLevelName(4),
     classification: "SELF_TEST", risk: "HIGH", timeoutMs: 240000,
     requiredEcuState: "KEY_ON_ENGINE_RUNNING", repeats: true, requiresMapOrQualifier: false,
     armCommand: "ARM_KOER", readCommand: "READ_KOER", variantKey: "KOER",
@@ -147,7 +167,7 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
     envelope: ["01B0", "FF5F", "2594", "00A0"],
     description: "Alternate KOEO request from flxkrmr with 4-slot receive window.",
     source: "flxkrmr/eec-iv-reader-arduino", sourceUrl: "https://github.com/flxkrmr/eec-iv-reader-arduino",
-    parityStatus: "GENERIC_MATCH", evidenceLevel: "UNVERIFIED_CANDIDATE",
+    parityStatus: "GENERIC_MATCH", evidenceNumericLevel: 1, evidenceLevel: evidenceLevelName(1),
     classification: "SELF_TEST", risk: "MEDIUM", timeoutMs: 60000,
     requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: true, requiresMapOrQualifier: false,
     armCommand: "ARM_KOEO_ALT", readCommand: "READ_KOEO_ALT", variantKey: "KOEO_ALT",
@@ -156,9 +176,9 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
   E_LOAD_PIDMAP: Object.freeze({
     id: "PIDMAP_TX", letter: "E", name: "Transmit/load PID map", commandWord: "4196",
     envelope: ["01B0", "FF5F", "4196", "00A0"],
-    description: "Initial request block that loads the diagnostic PID map sequence before reading live values.",
+    description: "Initial request block intended to load the diagnostic PID map sequence before reading live values. No November 8 vehicle verification is recorded.",
     source: "doncreat0r/eeciv + flxkrmr", sourceUrl: "https://github.com/doncreat0r/eeciv",
-    parityStatus: "GENERIC_MATCH", evidenceLevel: "HISTORICAL_ECU_EVIDENCE",
+    parityStatus: "GENERIC_MATCH", evidenceNumericLevel: 1, evidenceLevel: evidenceLevelName(1),
     classification: "STATE_CHANGING", risk: "LOW", timeoutMs: 10000,
     requiredEcuState: "ANY_POWERED", repeats: false, requiresMapOrQualifier: true,
     armCommand: "ARM_LIVE", readCommand: "READ_LIVE", variantKey: "LIVE",
@@ -167,9 +187,9 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
   F_READ_PIDMAP: Object.freeze({
     id: "PIDMAP", letter: "F", name: "Read PID map (005E literal)", commandWord: "005E",
     envelope: ["01B0", "FF5F", "005E", "00A0"],
-    description: "Reads the active PID map from ECU. Published literal 005E has parity mismatch vs generic formula (004E). Dedicated 'f' handler in reference code is commented out.",
+    description: "The published tables.h literal 005E has a parity mismatch: generic VPARITY for (0x00, ID E) yields 004E. In Nov 8 capture 24, 005E was transmitted and pad-witness verified, but the ECU stayed at 10.0 ms with no structural response. Retained for historical verification.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
-    parityStatus: "UNRESOLVED_MISMATCH", evidenceLevel: "UNVERIFIED_CANDIDATE",
+    parityStatus: "UNRESOLVED_MISMATCH", evidenceNumericLevel: 2, evidenceLevel: evidenceLevelName(2),
     classification: "READ_ONLY", risk: "LOW", timeoutMs: 20000,
     requiredEcuState: "ANY_POWERED", repeats: false, requiresMapOrQualifier: false,
     armCommand: "ARM_PIDMAP", readCommand: "READ_PIDMAP", variantKey: "PIDMAP",
@@ -178,9 +198,9 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
   F_PIDMAP_PARITY_HYPOTHESIS: Object.freeze({
     id: "PIDMAP_ALT", letter: "F", name: "PID map generic parity alternative", commandWord: "004E",
     envelope: ["01B0", "FF5F", "004E", "00A0"],
-    description: "Parity-calculated alternative to 005E. Not published as a command by any external reference. Distinct from received frame-ID E.",
+    description: "Parity-derived alternative to 005E. Nov 8 capture 25 observed a structural response at about 42.5 ms for 16 frames, but no decoded PID map was returned.",
     source: "local parity derivation", sourceUrl: null,
-    parityStatus: "GENERIC_MATCH", evidenceLevel: "REVERSE_ENGINEERING_HYPOTHESIS",
+    parityStatus: "GENERIC_MATCH", evidenceNumericLevel: 3, evidenceLevel: evidenceLevelName(3),
     classification: "READ_ONLY", risk: "MEDIUM", timeoutMs: 20000,
     requiredEcuState: "ANY_POWERED", repeats: false, requiresMapOrQualifier: false,
     armCommand: "ARM_PIDMAP_ALT", readCommand: "READ_PIDMAP_ALT", variantKey: "PIDMAP_ALT",
@@ -189,9 +209,9 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
   G_READ_PID_VALUES: Object.freeze({
     id: "PID_VALUES", letter: "G", name: "Read PID values", commandWord: "21F6",
     envelope: ["01B0", "FF5F", "21F6", "00A0"],
-    description: "Streams PID telemetry values after map configuration. Used continuously in LIVE profiles.",
+    description: "Streams PID telemetry values after map configuration and is used in LIVE profiles. No November 8 vehicle verification is recorded.",
     source: "doncreat0r/eeciv + flxkrmr", sourceUrl: "https://github.com/doncreat0r/eeciv",
-    parityStatus: "GENERIC_MATCH", evidenceLevel: "HISTORICAL_ECU_EVIDENCE",
+    parityStatus: "GENERIC_MATCH", evidenceNumericLevel: 1, evidenceLevel: evidenceLevelName(1),
     classification: "READ_ONLY", risk: "LOW", timeoutMs: 180 * 60 * 1000,
     requiredEcuState: "ANY_POWERED", repeats: true, requiresMapOrQualifier: true,
     armCommand: "ARM_PID_VALUES", readCommand: "READ_PID_VALUES", variantKey: "PID_VALUES",
@@ -202,7 +222,7 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
     envelope: ["01B0", "FF5F", "01A1", "00A0"],
     description: "Clears internal DCL error/status flags register in ECU.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
-    parityStatus: "GENERIC_MATCH", evidenceLevel: "UNVERIFIED_CANDIDATE",
+    parityStatus: "GENERIC_MATCH", evidenceNumericLevel: 1, evidenceLevel: evidenceLevelName(1),
     classification: "STATE_CHANGING", risk: "MEDIUM", timeoutMs: 10000,
     requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: false, requiresMapOrQualifier: false,
     armCommand: "ARM_CLEAR_A1", readCommand: "READ_CLEAR_A1", variantKey: "CLEAR_A1",
@@ -213,7 +233,7 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
     envelope: ["01B0", "FF5F", "01F4", "00A0"],
     description: "Alternative DCL error clear command from flxkrmr reference.",
     source: "flxkrmr/eec-iv-reader-arduino", sourceUrl: "https://github.com/flxkrmr/eec-iv-reader-arduino",
-    parityStatus: "GENERIC_MATCH", evidenceLevel: "UNVERIFIED_CANDIDATE",
+    parityStatus: "GENERIC_MATCH", evidenceNumericLevel: 1, evidenceLevel: evidenceLevelName(1),
     classification: "STATE_CHANGING", risk: "MEDIUM", timeoutMs: 10000,
     requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: false, requiresMapOrQualifier: false,
     armCommand: "ARM_CLEAR_F4", readCommand: "READ_CLEAR_F4", variantKey: "CLEAR_F4",
@@ -224,7 +244,7 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
     envelope: ["01B0", "FF5F", "42A6", "00A0"],
     description: "Loads memory address map into ECU for Direct Memory Read.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
-    parityStatus: "GENERIC_MATCH", evidenceLevel: "UNVERIFIED_CANDIDATE",
+    parityStatus: "GENERIC_MATCH", evidenceNumericLevel: 1, evidenceLevel: evidenceLevelName(1),
     classification: "CONFIG_CHANGE", risk: "HIGH", timeoutMs: 10000,
     requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: false, requiresMapOrQualifier: true,
     armCommand: "ARM_DMRMAP_TX", readCommand: "READ_DMRMAP_TX", variantKey: "DMRMAP_TX",
@@ -233,9 +253,9 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
   J_READ_DMRMAP: Object.freeze({
     id: "DMRMAP", letter: "J", name: "Read DMR map", commandWord: "242E",
     envelope: ["01B0", "FF5F", "242E", "00A0"],
-    description: "Read existing DMR memory address map from ECU. Raw response capture only.",
+    description: "Nov 8 capture 26: observed 42.5 ms cadence for one 16-frame cycle, including structured raw response words. No DMR address map was decoded.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
-    parityStatus: "GENERIC_MATCH", evidenceLevel: "UNVERIFIED_CANDIDATE",
+    parityStatus: "GENERIC_MATCH", evidenceNumericLevel: 3, evidenceLevel: evidenceLevelName(3),
     classification: "READ_ONLY", risk: "LOW", timeoutMs: 20000,
     requiredEcuState: "ANY_POWERED", repeats: false, requiresMapOrQualifier: false,
     armCommand: "ARM_DMRMAP", readCommand: "READ_DMRMAP", variantKey: "DMRMAP",
@@ -244,9 +264,9 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
   K_READ_DMR_VALUES: Object.freeze({
     id: "DMR_VALUES", letter: "K", name: "Read DMR values", commandWord: "22C6",
     envelope: ["01B0", "FF5F", "22C6", "00A0"],
-    description: "Streams DMR values using address iteration; requires valid loaded DMR map.",
+    description: "Nov 8 capture 27: observed 22.5 ms cadence for one 16-frame cycle and a structured raw response. No valid loaded DMR map or addressed values were established.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
-    parityStatus: "GENERIC_MATCH", evidenceLevel: "UNVERIFIED_CANDIDATE",
+    parityStatus: "GENERIC_MATCH", evidenceNumericLevel: 3, evidenceLevel: evidenceLevelName(3),
     classification: "READ_ONLY", risk: "MEDIUM", timeoutMs: 20000,
     requiredEcuState: "ANY_POWERED", repeats: false, requiresMapOrQualifier: true,
     armCommand: "ARM_DMR", readCommand: "READ_DMR", variantKey: "DMR",
@@ -255,9 +275,9 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
   L_READ_COMBINED: Object.freeze({
     id: "PID_DMR_BOTH", letter: "L", name: "Read combined PID + DMR values", commandWord: "271E",
     envelope: ["01B0", "FF5F", "271E", "00A0"],
-    description: "Requests simultaneous streaming of configured PID and DMR tables.",
+    description: "Nov 8 capture 28: observed 42.5 ms cadence for one 16-frame cycle and a structured raw response. No decoded PID or DMR values were established.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
-    parityStatus: "GENERIC_MATCH", evidenceLevel: "UNVERIFIED_CANDIDATE",
+    parityStatus: "GENERIC_MATCH", evidenceNumericLevel: 3, evidenceLevel: evidenceLevelName(3),
     classification: "READ_ONLY", risk: "MEDIUM", timeoutMs: 20000,
     requiredEcuState: "ANY_POWERED", repeats: false, requiresMapOrQualifier: true,
     armCommand: "ARM_BOTH", readCommand: "READ_BOTH", variantKey: "BOTH",
@@ -268,7 +288,7 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
     envelope: ["01B0", "FF5F", "8174", "00A0"],
     description: "Switches communication speed. Upstream SetBaudrate() is commented out; no recovery sequence.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
-    parityStatus: "GENERIC_MATCH", evidenceLevel: "UNVERIFIED_CANDIDATE",
+    parityStatus: "GENERIC_MATCH", evidenceNumericLevel: 1, evidenceLevel: evidenceLevelName(1),
     classification: "CONFIG_CHANGE", risk: "CRITICAL", timeoutMs: 5000,
     requiredEcuState: "ANY_POWERED", repeats: false, requiresMapOrQualifier: false,
     armCommand: "ARM_CHANGE_BAUD", readCommand: "READ_CHANGE_BAUD", variantKey: "CHANGE_BAUD",
@@ -279,7 +299,7 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
     envelope: ["01B0", "FF5F", "411E", "00A0"],
     description: "Zero/stop active live PID streaming block flow.",
     source: "doncreat0r/eeciv · tables.h", sourceUrl: "https://github.com/doncreat0r/eeciv/blob/master/tables.h",
-    parityStatus: "GENERIC_MATCH", evidenceLevel: "UNVERIFIED_CANDIDATE",
+    parityStatus: "GENERIC_MATCH", evidenceNumericLevel: 1, evidenceLevel: evidenceLevelName(1),
     classification: "SEQUENCE_DEPENDENT", risk: "LOW", timeoutMs: 5000,
     requiredEcuState: "ACTIVE_PID_FLOW", repeats: false, requiresMapOrQualifier: false,
     armCommand: "ARM_STOP_PID_FLOW", readCommand: "READ_STOP_PID_FLOW", variantKey: "STOP_PID_FLOW",
@@ -288,9 +308,9 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
   MEM_READ: Object.freeze({
     id: "MEMORY_READ", letter: null, name: "Experimental reverse-engineering memory read candidate (42F3 / 22D3)", commandWord: "42F3 / 22D3",
     envelope: ["01B0", "FF5F", "42F3", "00A0"],
-    description: "Experimental reverse-engineering read candidate. The target address map is unverified for SME-105; 22D3 parity byte 93 differs from the generic-rule result 2293.",
+    description: "Nov 8 capture 29: 42F3 / 22D3 changed cadence to 15.0 ms for one 16-frame cycle, then dropped. 22D3 carries parity byte D3, while generic VPARITY expects 93; continued transmission did not sustain the response.",
     source: "local reverse-engineering candidate", sourceUrl: null,
-    parityStatus: "UNRESOLVED_MISMATCH", evidenceLevel: "EXPERIMENTAL",
+    parityStatus: "UNRESOLVED_MISMATCH", evidenceNumericLevel: 3, evidenceLevel: evidenceLevelName(3),
     classification: "READ_ONLY", risk: "HIGH", timeoutMs: 10000,
     requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: true, requiresMapOrQualifier: true,
     armCommand: "ARM_MEM", readCommand: "READ_MEM", variantKey: "MEM",
@@ -299,9 +319,9 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
   MEM_OFF0: Object.freeze({
     id: "MEM_OFF0", letter: null, name: "MEM offset-zero hypothesis", commandWord: "42F3 / 22D3",
     envelope: ["01B0", "FF5F", "42F3", "00A0"],
-    description: "Runs the standard memory-read continuation with offset zero included to test whether the first address is valid RAM or reserved.",
+    description: "Requires bridge firmware v28 with the frame 0 transition fix. Bench hypothesis for offset 0: TX was verified, but Nov 8 capture 30 matched the one-cycle MEM response and showed no independently armed offset-zero word; the offset itself remains untested.",
     source: "local reverse-engineering experiment", sourceUrl: null,
-    parityStatus: "FIXED_LITERAL_93", evidenceLevel: "EXPERIMENTAL",
+    parityStatus: "FIXED_LITERAL_93", evidenceNumericLevel: 2, evidenceLevel: evidenceLevelName(2),
     classification: "READ_ONLY", risk: "HIGH", timeoutMs: 13000,
     requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: true, requiresMapOrQualifier: true,
     armCommand: "ARM_MEM_OFF0", readCommand: "READ_MEM_OFF0", variantKey: "MEM_OFF0",
@@ -310,9 +330,9 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
   MEM_SINGLE: Object.freeze({
     id: "MEM_SINGLE", letter: null, name: "MEM request-only single block", commandWord: "42F3",
     envelope: ["01B0", "FF5F", "42F3", "00A0"],
-    description: "Sends the initial memory request once and does not send any continuation block.",
+    description: "Nov 8 capture 31: the initial 42F3 request produced 15.0 ms cadence for one 16-frame cycle, then returned to 10.0 ms without a continuation.",
     source: "local reverse-engineering experiment", sourceUrl: null,
-    parityStatus: "NOT_APPLICABLE", evidenceLevel: "EXPERIMENTAL",
+    parityStatus: "NOT_APPLICABLE", evidenceNumericLevel: 3, evidenceLevel: evidenceLevelName(3),
     classification: "READ_ONLY", risk: "HIGH", timeoutMs: 10000,
     requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: false, requiresMapOrQualifier: false,
     armCommand: "ARM_MEM_SINGLE", readCommand: "READ_MEM_SINGLE", variantKey: "MEM_SINGLE",
@@ -321,9 +341,9 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
   MEM_PARITY: Object.freeze({
     id: "MEM_PARITY", letter: null, name: "MEM generic VPARITY continuation", commandWord: "42F3 / 2293",
     envelope: ["01B0", "FF5F", "42F3", "00A0"],
-    description: "Runs offsets 1 through 15 with continuation 2293, the generic VPARITY result for 22D3 data and ID 3.",
+    description: "Nov 8 capture 32: parity-correct continuation 2293 sustained 15.0 ms timing for about 10 seconds (about 38 cycles, 635 frames). F14/F15 showed a structured changing sequence (19 → 14 → 0F → 0A → 05 → FF → FA → F5 → F0 …); its meaning remains unverified.",
     source: "local VPARITY derivation", sourceUrl: null,
-    parityStatus: "GENERIC_MATCH", evidenceLevel: "EXPERIMENTAL",
+    parityStatus: "GENERIC_MATCH", evidenceNumericLevel: 4, evidenceLevel: evidenceLevelName(4),
     classification: "READ_ONLY", risk: "HIGH", timeoutMs: 13000,
     requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: true, requiresMapOrQualifier: true,
     armCommand: "ARM_MEM_PARITY", readCommand: "READ_MEM_PARITY", variantKey: "MEM_PARITY",
@@ -334,7 +354,7 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
     envelope: ["01B0", "FF5F", "80CE", "7F20"],
     description: "Instructs ECU to terminate diagnostic session and return to autonomous CART bus master mode.",
     source: "current bridge firmware", sourceUrl: null,
-    parityStatus: "GENERIC_MATCH", evidenceLevel: "HISTORICAL_ECU_EVIDENCE",
+    parityStatus: "GENERIC_MATCH", evidenceNumericLevel: 1, evidenceLevel: evidenceLevelName(1),
     classification: "SEQUENCE_DEPENDENT", risk: "MEDIUM", timeoutMs: 15000,
     requiredEcuState: "ANY_POWERED", repeats: false, requiresMapOrQualifier: true,
     armCommand: "ARM_OFF", readCommand: "READ_OFF", variantKey: "OFF",
@@ -342,15 +362,15 @@ const EXPERIMENT_CATALOGUE_SOURCE = {
   }),
   OUTPUT_SWITCH_TEST: Object.freeze({
     id: "OUTPUT_SWITCH_TEST", letter: null, name: "Output Switch Test", commandWord: "procedure", envelope: null,
-    description: "Factory guided KOEO relay/solenoid output test using a compatible scan tool; this is a procedure, not a raw DCL opcode.",
-    source: "SPX 9640 service manual", sourceUrl: null, parityStatus: "NOT_APPLICABLE", evidenceLevel: "FACTORY_PROCEDURE",
+    description: "Level 1 guided KOEO relay/solenoid output procedure from the factory service manual; not a raw DCL opcode and not tested in the November 8 vehicle captures.",
+    source: "SPX 9640 service manual", sourceUrl: null, parityStatus: "NOT_APPLICABLE", evidenceNumericLevel: 1, evidenceLevel: evidenceLevelName(1),
     classification: "FACTORY_PROCEDURE", risk: "HIGH", timeoutMs: 0, requiredEcuState: "KEY_ON_ENGINE_OFF", repeats: false,
     armCommand: null, readCommand: null, variantKey: null, sendable: true, blockedReason: null, runnerKey: "OUTPUT_SWITCH_TEST",
   }),
   CYLINDER_BALANCE_TEST: Object.freeze({
     id: "CYLINDER_BALANCE_TEST", letter: null, name: "Cylinder Balance Test", commandWord: "procedure", envelope: null,
-    description: "Factory guided KOER routine that cuts fuel per cylinder while the engine runs; this is a procedure, not a raw DCL opcode.",
-    source: "SPX 9640 service manual", sourceUrl: null, parityStatus: "NOT_APPLICABLE", evidenceLevel: "FACTORY_PROCEDURE",
+    description: "Level 1 guided KOER cylinder-balance procedure from the factory service manual; not a raw DCL opcode and not tested in the November 8 vehicle captures.",
+    source: "SPX 9640 service manual", sourceUrl: null, parityStatus: "NOT_APPLICABLE", evidenceNumericLevel: 1, evidenceLevel: evidenceLevelName(1),
     classification: "FACTORY_PROCEDURE", risk: "HIGH", timeoutMs: 0, requiredEcuState: "KEY_ON_ENGINE_RUNNING", repeats: false,
     armCommand: null, readCommand: null, variantKey: null, sendable: true, blockedReason: null, runnerKey: "CYLINDER_BALANCE_TEST",
   }),
@@ -368,6 +388,7 @@ const EXPANDED_FIRMWARE_CANDIDATES = new Set([
 ]);
 
 function minimumFirmwareFor(candidate) {
+  if (candidate.id === "MEM_OFF0") return 28;
   if (BASELINE_FIRMWARE_CANDIDATES.has(candidate.id)) return 21;
   if (DISCOVERY_FIRMWARE_CANDIDATES.has(candidate.id)) return 24;
   if (EXPANDED_FIRMWARE_CANDIDATES.has(candidate.id)) return 27;
@@ -447,13 +468,17 @@ export function firmwareCompatibility(candidate, firmwareVersion) {
 
 function probeSpec(id, label, extra = {}) {
   const candidate = Object.values(EXPERIMENT_CATALOGUE).find(item => item.id === id);
+  const evidenceNumericLevel = candidate?.evidenceNumericLevel ?? EVIDENCE_LEVELS.LEVEL_1_NOT_TESTED;
+  const evidenceLevel = candidate?.evidenceLevel ?? evidenceLevelName(evidenceNumericLevel);
   return Object.freeze({
     word: candidate?.commandWord || "",
     label,
     description: candidate?.description || "",
     source: candidate?.source || "",
     sourceUrl: candidate?.sourceUrl ?? null,
-    evidence: `${candidate?.evidenceLevel || "UNVERIFIED_CANDIDATE"}; not validated on 97AB-12A650-KA.`,
+    evidenceNumericLevel,
+    evidenceLevel,
+    evidence: `${evidenceLevel}; not validated on 97AB-12A650-KA.`,
     parityNote: candidate?.parityNote || "",
     armCommand: candidate?.armCommand || null,
     readCommand: candidate?.readCommand || null,
@@ -477,7 +502,7 @@ export const DCL_PROBE_VARIANTS = Object.freeze({
     parityNote: "The published 005E literal differs from the generic VPARITY result 004E. Both are retained as separate candidates; no automatic fallback is used.",
   }),
   PIDMAP_ALT: probeSpec("PIDMAP_ALT", "PID-map parity alternative · 004E", {
-    parityNote: "Local generic-parity derivation; independent ECU evidence is absent.",
+    parityNote: "The generic-parity alternative produced a one-cycle 42.5 ms structural response in Nov 8 capture 25; a decoded PID map was not returned.",
   }),
   DMRMAP: probeSpec("DMRMAP", "Read DMR map · 242E"),
   DMR: probeSpec("DMR_VALUES", "Read DMR values · 22C6"),

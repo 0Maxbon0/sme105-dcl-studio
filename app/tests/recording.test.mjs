@@ -2,7 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as fake from "fake-indexeddb";
 import "./test-env.mjs";
-import { createRecording, listRecordings, recordingBlob } from "../js/recording.js";
+import {
+  attachRecordingAnalysis,
+  createRecording,
+  exportExperimentArchive,
+  listRecordings,
+  recordingBlob,
+  saveRecordingNotes,
+} from "../js/recording.js";
+import { compareReferencePair } from "../js/capture-comparison.js";
 
 globalThis.indexedDB = new fake.IDBFactory();
 globalThis.IDBKeyRange = fake.IDBKeyRange;
@@ -25,6 +33,64 @@ test("recording chunks retain all rows/raw data, export while active, and surviv
   const second = await createRecording("LIVE"); await second.finish({ valid: false });
   assert.ok((await listRecordings()).some(e => e.id === recording.id && e.verdict.valid));
   assert.equal(failures.length, 0);
+});
+
+test("editable notes and attached analysis export separately without changing capture metadata or raw checksum", options, async () => {
+  const recording = await createRecording("DCL_EXPERIMENT");
+  recording.line("RXB t_us=123456 data=72E126E0 dt=0,42500");
+  recording.line("END reason=COMPLETE at_ms=9876");
+  await recording.finish({ valid: true, status: "COMPLETE" });
+
+  const rawBefore = new Uint8Array(await (await recordingBlob(recording.id, "raw")).arrayBuffer());
+  const hash = async bytes => [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
+    .map(byte => byte.toString(16).padStart(2, "0")).join("");
+  const rawHashBefore = await hash(rawBefore);
+  const listedBefore = (await listRecordings()).find(item => item.id === recording.id);
+  const {
+    notes: _notesBefore, analysis: _analysisBefore, analysisAttachedAt: _analysisTimeBefore,
+    annotationsUpdatedAt: _notesTimeBefore, ...captureBefore
+  } = listedBefore;
+
+  await recording.updateNotes({ ignition: "ON", engine: "OFF", operatingConditions: "Key on, engine stopped." });
+  await saveRecordingNotes(recording.id, { operatorObservations: "No decoded PID map.", comments: "Repeat at warm idle." });
+  const analysis = compareReferencePair("260E-vs-26A4");
+  await recording.attachAnalysis(analysis);
+  assert.deepEqual(await recording.getNotes(), {
+    ignition: "ON", engine: "OFF", operatingConditions: "Key on, engine stopped.",
+    operatorObservations: "No decoded PID map.", comments: "Repeat at warm idle.",
+  });
+  assert.deepEqual((await listRecordings()).find(item => item.id === recording.id).analysis, analysis);
+  await assert.rejects(saveRecordingNotes(recording.id, { ignition: "RUNNING" }), /ignition must be ON, OFF, or UNKNOWN/);
+
+  const rawAfter = new Uint8Array(await (await recordingBlob(recording.id, "raw")).arrayBuffer());
+  assert.deepEqual(rawAfter, rawBefore);
+  assert.equal(await hash(rawAfter), rawHashBefore);
+  const listedAfter = (await listRecordings()).find(item => item.id === recording.id);
+  const {
+    notes: _notesAfter, analysis: _analysisAfter, analysisAttachedAt: _analysisTimeAfter,
+    annotationsUpdatedAt: _notesTimeAfter, ...captureAfter
+  } = listedAfter;
+  assert.deepEqual(captureAfter, captureBefore);
+
+  const archive = await exportExperimentArchive(recording.id);
+  const JSZip = (await import("jszip")).default;
+  const zip = await JSZip.loadAsync(await archive.blob.arrayBuffer());
+  assert.equal(await zip.file("raw.txt").async("uint8array").then(hash), rawHashBefore);
+  assert.deepEqual(JSON.parse(await zip.file("notes.json").async("string")).notes, await recording.getNotes());
+  assert.deepEqual(JSON.parse(await zip.file("analysis.json").async("string")).analysis, analysis);
+  assert.equal(JSON.parse(await zip.file("metadata.json").async("string")).id, recording.id);
+  const sumForRaw = (await zip.file("SHA256SUMS").async("string")).split("\n").find(line => line.endsWith("  raw.txt"));
+  assert.equal(sumForRaw.split("  ")[0], rawHashBefore);
+});
+
+test("annotation APIs reject missing recordings and analysis that is not JSON data", async () => {
+  await assert.rejects(attachRecordingAnalysis("not-a-recording", { verdict: "DIFFERENT" }), /Recording not-a-recording not found/);
+  const recording = await createRecording("DCL_EXPERIMENT");
+  try {
+    await assert.rejects(recording.attachAnalysis("not-an-object"), /JSON object/);
+  } finally {
+    await recording.finish({ valid: false });
+  }
 });
 
 test("vehicle transcript chunks preserve status, pad and RO lines verbatim", options, async () => {

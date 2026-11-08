@@ -1,4 +1,4 @@
-const CACHE = "eeciv-v1.8.12-dcl-explorer-1";
+const CACHE_NAME = 'eeciv-v1.8.13';
 const FILES = [
   "./",
   "./index.html",
@@ -8,7 +8,7 @@ const FILES = [
   "./icons/icon.svg",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
-  "./js/app.js?v=18",
+  "./js/app.js?v=19",
   "./js/ui.js",
   "./js/strings.js",
   "./js/protocol.js",
@@ -34,6 +34,9 @@ const FILES = [
   "./js/bit-presentation.js",
   "./js/diagnostics.js",
   "./js/exports.js",
+  "./js/analysis-ui.js",
+  "./js/frame-inspector.js",
+  "./js/capture-comparison.js",
   "./js/codes-db.js",
   "./js/controller.js",
   "./js/combined.js",
@@ -49,13 +52,13 @@ const FILES = [
 ];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(FILES)));
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(FILES)));
   self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(caches.keys().then((keys) => Promise.all(
-    keys.filter((key) => key !== CACHE).map((key) => caches.delete(key)),
+    keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)),
   )));
   self.clients.claim();
 });
@@ -64,7 +67,7 @@ self.addEventListener("fetch", (event) => {
   const request = event.request;
   if (request.method !== "GET") return;
   event.respondWith((async () => {
-    const cache = await caches.open(CACHE);
+    const cache = await caches.open(CACHE_NAME);
     try {
       const response = await fetch(request);
       if (response && response.ok) cache.put(request, response.clone());

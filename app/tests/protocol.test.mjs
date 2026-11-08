@@ -3,12 +3,15 @@ import { test } from "node:test";
 import {
   EXPECTED_HELLO,
   EXPECTED_PINS,
+  EVIDENCE_LEVELS,
+  EVIDENCE_LEVEL_NAMES,
   DCL_PROBE_VARIANTS,
   DCL_BLOCKED_CANDIDATES,
   EXPERIMENT_CATALOGUE,
   PROTOCOL_FRAMING_REFERENCE,
   VARIANTS,
   dclVParityByte,
+  evidenceLevelName,
   chunkBytes,
   createLineBuffer,
   encodeCommand,
@@ -91,6 +94,46 @@ test("generic DCL VPARITY calculates command bytes and exposes source-literal mi
   assert.equal(dclVParityByte(0x42, 0x03), 0xf3);
 });
 
+test("evidence classification defines all five canonical levels and catalogue metadata", () => {
+  assert.deepEqual(EVIDENCE_LEVELS, {
+    LEVEL_1_NOT_TESTED: 1,
+    LEVEL_2_TX_VERIFIED: 2,
+    LEVEL_3_STRUCTURAL_RESPONSE: 3,
+    LEVEL_4_RESPONSE_CANDIDATE: 4,
+    LEVEL_5_MEANING_VERIFIED: 5,
+  });
+  assert.deepEqual(EVIDENCE_LEVEL_NAMES, {
+    1: "1: Not Tested",
+    2: "2: TX Verified",
+    3: "3: Structural Response Observed",
+    4: "4: Response Candidate Captured",
+    5: "5: Meaning Verified",
+  });
+  for (let level = 1; level <= 5; level += 1) assert.equal(evidenceLevelName(level), EVIDENCE_LEVEL_NAMES[level]);
+  assert.equal(evidenceLevelName(0), EVIDENCE_LEVEL_NAMES[1]);
+  assert.equal(evidenceLevelName(6), EVIDENCE_LEVEL_NAMES[1]);
+
+  const catalogue = Object.values(EXPERIMENT_CATALOGUE);
+  assert.equal(catalogue.length, 26);
+  assert.equal(new Set(catalogue.map(item => item.id)).size, 26);
+  const expectedLevels = {
+    ECU_STATUS: 2, STORED_0E: 4, STORED_A4: 4, CLEAR_DTC: 1, KOEO_253E: 4, KOER_253E: 4,
+    KOEO_ALT: 1, PIDMAP_TX: 1, PIDMAP: 2, PIDMAP_ALT: 3, PID_VALUES: 1, CLEAR_A1: 1,
+    CLEAR_F4: 1, DMRMAP_TX: 1, DMRMAP: 3, DMR_VALUES: 3, PID_DMR_BOTH: 3, CHANGE_BAUD: 1,
+    STOP_PID_FLOW: 1, MEMORY_READ: 3, MEM_OFF0: 2, MEM_SINGLE: 3, MEM_PARITY: 4, GO_OFFLINE: 1,
+    OUTPUT_SWITCH_TEST: 1, CYLINDER_BALANCE_TEST: 1,
+  };
+  assert.deepEqual(Object.fromEntries(catalogue.map(item => [item.id, item.evidenceNumericLevel])), expectedLevels);
+  const clearDtc = catalogue.find(item => item.id === "CLEAR_DTC");
+  assert.equal(clearDtc.evidenceLevel, evidenceLevelName(EVIDENCE_LEVELS.LEVEL_1_NOT_TESTED));
+  assert.match(clearDtc.description, /November 8.*HSK_ACK.*words_started=0.*physical bus transmission remains unverified on the vehicle/i);
+  for (const item of catalogue) {
+    assert.ok(Number.isInteger(item.evidenceNumericLevel) && item.evidenceNumericLevel >= 1 && item.evidenceNumericLevel <= 5, item.id);
+    assert.equal(item.evidenceLevel, evidenceLevelName(item.evidenceNumericLevel), item.id);
+  }
+  assert.deepEqual([...new Set(catalogue.map(item => item.evidenceNumericLevel))].sort(), [1, 2, 3, 4]);
+});
+
 
 test("DCL catalogue variants expose fixed command words and their sendability", () => {
   assert.match(DCL_PROBE_VARIANTS.PIDMAP.parityNote, /published 005E.*generic VPARITY.*004E/i);
@@ -105,6 +148,8 @@ test("DCL catalogue variants expose fixed command words and their sendability", 
     assert.ok(VARIANTS[key].timeoutMs > 0, key);
     if (DCL_PROBE_VARIANTS[key].sourceUrl) assert.match(DCL_PROBE_VARIANTS[key].sourceUrl, /^https:\/\/github\.com\//, key);
     assert.match(DCL_PROBE_VARIANTS[key].evidence, /not validated on 97AB-12A650-KA/, key);
+    assert.ok(Number.isInteger(DCL_PROBE_VARIANTS[key].evidenceNumericLevel), key);
+    assert.equal(DCL_PROBE_VARIANTS[key].evidenceLevel, evidenceLevelName(DCL_PROBE_VARIANTS[key].evidenceNumericLevel), key);
     assert.equal(typeof DCL_PROBE_VARIANTS[key].sendable, "boolean", key);
   }
   for (const word of ["01B0", "FF5F", "00A0"]) {
@@ -183,6 +228,21 @@ test("firmware compatibility parses numeric and status-form versions", () => {
   assert.equal(firmwareCompatibility(candidate, { raw: "STATUS SME105_USB_BRIDGE_V1 stage=0 DE=LOW fw=27" }).connected, 27);
 });
 
+test("MEM_OFF0 requires firmware v28 after the frame 0 transition fix", () => {
+  const candidate = EXPERIMENT_CATALOGUE.MEM_OFF0;
+  assert.equal(candidate.requiredFirmwareVersion, 28);
+  const v27 = firmwareCompatibility(candidate, 27);
+  assert.equal(v27.required, 28);
+  assert.equal(v27.connected, 27);
+  assert.equal(v27.supported, false);
+  assert.match(v27.message, /Requires Firmware v28\+ \(Connected bridge: v27\)/);
+  const v28 = firmwareCompatibility(candidate, 28);
+  assert.equal(v28.required, 28);
+  assert.equal(v28.connected, 28);
+  assert.equal(v28.supported, true);
+  assert.equal(v28.message, "");
+});
+
 test("authoritative experiment catalogue covers all A-Q entries, parity states and blocking reasons", () => {
   const letters = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "Q"];
   for (const letter of letters) {
@@ -226,7 +286,8 @@ test("authoritative experiment catalogue covers all A-Q entries, parity states a
   const memEntry = EXPERIMENT_CATALOGUE.MEM_READ;
   assert.equal(memEntry.commandWord, "42F3 / 22D3");
   assert.equal(memEntry.sendable, true);
-  assert.equal(memEntry.evidenceLevel, "EXPERIMENTAL");
+  assert.equal(memEntry.evidenceNumericLevel, 3);
+  assert.equal(memEntry.evidenceLevel, "3: Structural Response Observed");
   assert.equal(memEntry.variantKey, "MEM");
   assert.equal(memEntry.armCommand, "ARM_MEM");
   assert.equal(memEntry.readCommand, "READ_MEM");
