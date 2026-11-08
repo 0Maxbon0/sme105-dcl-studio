@@ -127,6 +127,8 @@ class Tx2SourceTests(unittest.TestCase):
     def test_cpp_rmt_decoder_positive_and_captured_v5_negative(self) -> None:
         if not shutil.which("g++"):
             self.skipTest("g++ not available for portable pure decoder harness")
+        if not CAPTURE.is_file():
+            self.skipTest("Private V5 GPIO17 waveform capture is not included in the public checkout")
         code = self.source
         fn = code.split("bool decodeFirstTx2RmtPair(", 1)[1].split(
             "// Bench the native TX2", 1
@@ -177,6 +179,45 @@ int main() {{
             built = subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
                                     "-o", str(binary), str(src)],
                                     capture_output=True, text=True, check=False)
+            self.assertEqual(built.returncode, 0, built.stderr)
+            executed = subprocess.run([str(binary)], capture_output=True,
+                                      text=True, check=False)
+            self.assertEqual(executed.returncode, 0, executed.stderr)
+
+    def test_cpp_rmt_decoder_synthetic_vectors_without_private_capture(self) -> None:
+        """The positive/mutated/truncated decoder cases run even on clean CI checkout."""
+        if not shutil.which("g++"):
+            self.skipTest("g++ not available for portable pure decoder harness")
+        function = "bool decodeFirstTx2RmtPair(" + self.source.split(
+            "bool decodeFirstTx2RmtPair(", 1
+        )[1].split("// Bench the native TX2", 1)[0]
+        ideal = rmt_items(rmt_runs_for_word(0x01, 0xB0))
+        mutated = rmt_items(rmt_runs_for_word(0x01, 0xB1))
+        truncated = rmt_items(rmt_runs_for_word(0x01, 0xB0)[:-2])
+        source = f"""
+#include <cstddef>
+#include <cstdint>
+#include <cassert>
+struct CmdWord {{ uint8_t first, second; }};
+struct rmt_item32_t {{ uint16_t duration0; uint8_t level0; uint16_t duration1; uint8_t level1; }};
+{function}
+int main() {{
+    const rmt_item32_t expected[] = {ideal};
+    assert(decodeFirstTx2RmtPair(expected, sizeof(expected)/sizeof(expected[0]), {{0x01,0xB0}}));
+    assert(!decodeFirstTx2RmtPair(expected, sizeof(expected)/sizeof(expected[0]), {{0x01,0xB1}}));
+    const rmt_item32_t wrong_word[] = {mutated};
+    assert(!decodeFirstTx2RmtPair(wrong_word, sizeof(wrong_word)/sizeof(wrong_word[0]), {{0x01,0xB0}}));
+    const rmt_item32_t short_waveform[] = {truncated};
+    assert(!decodeFirstTx2RmtPair(short_waveform, sizeof(short_waveform)/sizeof(short_waveform[0]), {{0x01,0xB0}}));
+}}
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            src = Path(temporary) / "tx2_rmt_synthetic.cpp"
+            binary = Path(temporary) / "tx2_rmt_synthetic"
+            src.write_text(source, encoding="utf-8")
+            built = subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
+                                    "-o", str(binary), str(src)],
+                                   capture_output=True, text=True, check=False)
             self.assertEqual(built.returncode, 0, built.stderr)
             executed = subprocess.run([str(binary)], capture_output=True,
                                       text=True, check=False)

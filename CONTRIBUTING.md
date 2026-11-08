@@ -34,6 +34,10 @@ python -m platformio run -d firmware/sme105_usb_bridge -e esp32dev
 
 A software build or synthetic test does **not** count as vehicle or radio hardware acceptance. Keep physical bench and ECU validation results explicitly separate in a pull request.
 
+## Public CI and private historical evidence
+
+Some historical hardware assertions depend on captured RAW waveforms that are private or ignored by Git. The clean GitHub checkout runs synthetic decoder tests unconditionally and explicitly skips capture-dependent tests **only when those original files are unavailable**. Local researchers retaining the original files still run the complete real-capture regressions. Never upload sensitive recordings merely to make CI green.
+
 ## Pull requests
 
 Explain the engineering goal, affected profiles and hardware, data migration/rollback impact, exact tests and their results, and any tests not performed. Prefer narrow changes with explicit expected outputs and no edits to old captured bytes. Do not assume public repository visibility supplies a license to redistribute or relicense third-party work.

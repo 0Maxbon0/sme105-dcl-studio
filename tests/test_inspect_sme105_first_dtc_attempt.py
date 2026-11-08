@@ -12,6 +12,10 @@ from scripts.inspect_sme105_first_dtc_attempt import (
 )
 
 
+@unittest.skipUnless(
+    FIRST_CAPTURE.is_file(),
+    "Private first-vehicle RAW capture is not included in the public checkout",
+)
 class FirstVehicleAttemptTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

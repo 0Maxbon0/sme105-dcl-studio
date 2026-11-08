@@ -10,7 +10,7 @@ This is the active short engineering context. Read [README](README.md), [ROADMAP
 - ESP32 Wi-Fi firmware v29 uses safe physical-USB password rekey (`WIFI_AP_REKEY`) with one atomic NVS profile, retaining old legacy AP keys and OTA state. Flash verified at app0; safe idle and boot health verified after installation.
 - User confirms phone↔ESP32 direct connection and a disconnected-car output LED demonstration. This is bench confirmation, **not** ECU command/physical actuator qualification.
 - App v1.8.17 installed on Samsung Galaxy A52s using `adb install -r`; Android WebView data/IndexedDB and captured historical evidence not cleared.
-- Previous tests: JavaScript **273 passing/3 skipped**, Python **312 passing/10 skipped** before retiring GUI, Android JVM/Gradle APK build and PlatformIO v29 build passing.
+- Previous tests: JavaScript **273 passing/3 skipped**, Python **297 passing/10 skipped** locally after GUI retirement (clean checkout: **293 passing/14 skipped**), Android JVM/Gradle APK build and PlatformIO v29 build passing.
 - Retired the old independent localhost Python web GUI and launchers. `app/` is **still the canonical Android UI assets** via Capacitor `webDir`, and must not be deleted as an old web site. GitHub Pages was not configured at the repository inspection. Historic debug APKs are indexed and absent from the active tree.
 
 ## Working areas and command entrypoints

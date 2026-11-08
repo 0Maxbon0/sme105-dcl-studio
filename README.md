@@ -1,5 +1,7 @@
 # SME105 DCL Studio
 
+[![Source tests](https://github.com/0Maxbon0/sme105-dcl-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/0Maxbon0/sme105-dcl-studio/actions/workflows/ci.yml)
+
 **Offline Android diagnostics and evidence-led Ford EEC-IV DCL engineering**
 **Target:** Ford Escort 1998 · 1.6 Zetec-E · EEC-IV SME105 (`97AB-12A650-KA`)
 **Hardware:** ESP32 + MAX487 diagnostic bridge · **Maintainer:** MaximizoTech
@@ -101,7 +103,7 @@ The obsolete, separate Python localhost GUI is retired from the active project. 
 
 ## Verification and evidence policy
 
-The November 9 source checks passed: JavaScript **273 passed / 3 skipped / 0 failed**; Python **296 passed / 10 skipped / 0 failed** (current tree, after retiring the obsolete GUI); Android JVM tests and APK assembly **passed**; PlatformIO `esp32dev` build **passed**. The APK's **105 bundled web assets** matched the source byte-for-byte at release verification. These counts describe the recorded acceptance run; repeat tests after modifying code.
+The November 9 source checks passed: JavaScript **273 passed / 3 skipped / 0 failed**; Python **297 passed / 10 skipped / 0 failed** (current local tree with retained private captures; public clean checkout: 293 pass / 14 skipped); Android JVM tests and APK assembly **passed**; PlatformIO `esp32dev` build **passed**. The APK's **105 bundled web assets** matched the source byte-for-byte at release verification. These counts describe the recorded acceptance run; repeat tests after modifying code.
 
 **Evidence levels must never be conflated:**
 

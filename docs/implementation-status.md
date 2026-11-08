@@ -17,7 +17,7 @@
 ## Verification snapshot
 
 - JavaScript offline/mobile/transport tests: **273 pass, 3 skipped** in the current November 9 checkout; no failures. Repeat after changes.
-- Python suite before retiring the old GUI: **312 pass, 10 skipped**. After GUI removal: **296 pass, 10 skipped** in current-tree verification; no failures.
+- Python suite before retiring the old GUI: **312 pass, 10 skipped**. After GUI removal and fixture separation: **297 pass, 10 skipped** locally in current-tree verification; clean checkout runs **293 pass, 14 skipped**, all with zero failures.
 - Android Gradle JVM unit tests and `assembleDebug`: **PASS**; 105 APK web assets byte-identical to the source at acceptance.
 - PlatformIO Wi-Fi build: **PASS**; physical USB v29 flash/verify **PASS**.
 - No vehicle ECU operation was authorized or needed for the Wi-Fi bench acceptance.

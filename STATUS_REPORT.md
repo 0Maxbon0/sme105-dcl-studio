@@ -19,7 +19,7 @@
 ## Software verification
 
 - JavaScript offline/native-transport tests: **273 passed, 3 skipped, 0 failed** (current tree on 2026-11-09).
-- Python suite before retiring obsolete GUI: **312 passed, 10 skipped**. After retirement: **296 passed, 10 skipped** (current tree on 2026-11-09).
+- Python suite before retiring obsolete GUI: **312 passed, 10 skipped**. After retirement and CI-fixture separation: **297 passed, 10 skipped** locally (clean GitHub checkout: **293 passed, 14 skipped**, no failures).
 - Android `:app:testDebugUnitTest` and `:app:assembleDebug`: **PASS** on JDK 21; app assets checked byte-for-byte inside debug APK.
 - PlatformIO `esp32dev` v29: **PASS**; esptool physical application-slot verify **PASS**. The separate `esp32dev_ble` build remains a legacy alternate, not the currently installed direct-Wi-Fi image.
 - Real car/ECU command compatibility: **NOT certified by bench network tests**. Each operation in the DCL Explorer and protocol library retains its evidence classification and safety boundary.
