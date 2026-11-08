@@ -266,12 +266,12 @@ body.reduce-motion *, body.reduce-motion *::before, body.reduce-motion *::after 
 .recording-panel { gap: 14px; }
 .recording-panel h2 { margin: 0; font-size: 1rem; }
 .dcl-filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr)); gap: 8px; }
-.dcl-command-list { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; overflow-x: hidden; padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-sizing: border-box; }
-.dcl-command-card { display: grid; grid-template-columns: 1fr auto; grid-template-areas: "heading word" "status status"; gap: 2px 8px; min-width: 0; padding: 8px 10px; text-align: left; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-raised); }
-.dcl-command-card strong { grid-area: heading; font-size: .84rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
-.dcl-command-card .mono { grid-area: word; font-size: .82rem; color: var(--cyan); text-align: right; }
-.dcl-command-card small { grid-area: status; font-size: .70rem; color: var(--muted); }
-.dcl-command-card[aria-pressed="true"] { border-color: var(--cyan); background: var(--cyan-dim); box-shadow: inset 0 0 0 1px var(--cyan); }
+.dcl-command-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; max-height: 240px; overflow-y: auto; overflow-x: hidden; padding: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-sizing: border-box; }
+.dcl-command-card { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 10px 8px; text-align: center; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-raised); box-sizing: border-box; width: 100%; min-width: 0; overflow: hidden; cursor: pointer; }
+.dcl-command-card .mono { font-size: .95rem; font-weight: 700; color: var(--cyan); text-align: center; background: rgba(0, 212, 255, 0.08); padding: 2px 8px; border-radius: 6px; letter-spacing: .04em; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dcl-command-card strong { font-size: .78rem; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; text-align: center; display: block; font-weight: 600; }
+.dcl-command-card small { font-size: .65rem; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; text-align: center; }
+.dcl-command-card[aria-pressed="true"] { border-color: var(--cyan); background: var(--cyan-dim); box-shadow: inset 0 0 0 1.5px var(--cyan); }
 .dcl-command-details { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; }
 .dcl-condition-card { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 10px 14px; background: var(--surface-raised); border: 1px solid var(--line); border-radius: 10px; }
 .dcl-condition-item { display: inline-flex; align-items: center; gap: 6px; font-size: .88rem; }

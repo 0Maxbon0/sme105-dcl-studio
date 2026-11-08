@@ -268,26 +268,29 @@ function selectedCommand(state, item) {
 
   const actions = document.createElement("div");
   actions.className = "dcl-candidate-actions";
-  const selection = document.createElement("label");
-  selection.className = "check dcl-candidate-select";
-  const checkbox = document.createElement("input");
-  checkbox.type = "checkbox";
-  checkbox.disabled = !!item.runnerKey || !item.variantKey;
-  checkbox.checked = selectedDclCandidates.has(item.id);
-  checkbox.setAttribute("aria-label", `Select ${item.name} for batch execution`);
-  checkbox.addEventListener("change", () => {
-    if (checkbox.checked) selectedDclCandidates.add(item.id);
-    else selectedDclCandidates.delete(item.id);
-    updateCandidateBatchControls();
-  });
-  selection.append(checkbox, document.createTextNode(checkbox.disabled ? "Run procedure individually" : "Include in batch"));
+  const isBatchable = !item.runnerKey && !!item.variantKey;
+  if (isBatchable) {
+    const selection = document.createElement("label");
+    selection.className = "check dcl-candidate-select";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = selectedDclCandidates.has(item.id);
+    checkbox.setAttribute("aria-label", `Select ${item.name} for batch execution`);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) selectedDclCandidates.add(item.id);
+      else selectedDclCandidates.delete(item.id);
+      updateCandidateBatchControls();
+    });
+    selection.append(checkbox, document.createTextNode("Include in batch"));
+    actions.append(selection);
+  }
   const execute = document.createElement("button");
   execute.type = "button";
   execute.className = "primary";
   execute.textContent = item.classification === "FACTORY_PROCEDURE" ? "Run Guided Procedure" : "Transmit / Run Experiment";
   execute.disabled = !item.sendable;
   execute.addEventListener("click", () => document.dispatchEvent(new document.defaultView.CustomEvent("dcl:run-candidate", { detail: { candidateId: item.id } })));
-  actions.append(selection, execute);
+  actions.append(execute);
   body.append(actions);
 
   // Raw technical metadata (hidden from view to prevent mobile clutter while preserving assertions)
@@ -612,15 +615,14 @@ export function renderDclCommandExplorer(state) {
       button.className = "dcl-command-card";
       button.setAttribute("role", "listitem");
       button.setAttribute("aria-pressed", String(item.id === dclSelectedId));
-      const heading = document.createElement("strong");
-      heading.textContent = item.name;
       const word = document.createElement("span");
       word.className = "mono";
       word.textContent = item.commandWord;
+      const heading = document.createElement("strong");
+      heading.textContent = item.name;
       const status = document.createElement("small");
-      const compatibility = firmwareCompatibility(item, dclState?.transport === "demo" ? null : dclState?.status);
-      status.textContent = `${DCL_CLASS_LABELS[item.classification] || item.classification} · ${!item.sendable ? "Not sendable" : dclState?.transport === "demo" ? "Demo simulation available" : compatibility.message || `Requires fw v${item.requiredFirmwareVersion}+`}`;
-      button.append(heading, word, status);
+      status.textContent = DCL_CLASS_LABELS[item.classification] || item.classification;
+      button.append(word, heading, status);
       button.addEventListener("click", () => {
         dclSelectedId = item.id;
         renderDclCommandExplorer(dclState);
