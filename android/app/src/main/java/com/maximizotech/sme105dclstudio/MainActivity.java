@@ -7,6 +7,7 @@ public class MainActivity extends BridgeActivity {
     @Override public void onCreate(Bundle savedInstanceState) {
         registerPlugin(ExportStoragePlugin.class);
         registerPlugin(BridgeConnectionPlugin.class);
+        registerPlugin(WifiBridgePlugin.class);
         super.onCreate(savedInstanceState);
         bridge.getWebView().setRendererPriorityPolicy(android.webkit.WebView.RENDERER_PRIORITY_IMPORTANT, false);
     }

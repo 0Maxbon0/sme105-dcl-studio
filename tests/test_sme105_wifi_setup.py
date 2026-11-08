@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 import socket
@@ -151,6 +152,59 @@ class FakeSetupPort(FakePort):
         return super().write(data)
 
 
+class FakeApSetupPort(FakeSetupPort):
+    def __init__(self, *, rejected: bool = False,
+                 already_configured: bool = False,
+                 ap_mode_reply: bytes = b"WIFI_AP_MODE OK starting=1\n",
+                 status_reply: bytes | None = None,
+                 status_replies: list[bytes] | None = None):
+        super().__init__()
+        self.rejected = rejected
+        self.already_configured = already_configured
+        self.ap_mode_reply = ap_mode_reply
+        default_status = (
+            b"WIFI_AP_STATUS mode=AP state=ACTIVE ip=10.77.13.1 "
+            b"stations=0 channel=6 port=8765 wpa2=1\n"
+        )
+        self.status_replies = status_replies or [status_reply or default_status]
+        self.config_payload: bytes | None = None
+        self.ap_status_queries = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def write(self, data: bytes) -> int:
+        if data.startswith(b"WIFI_AP_CONFIG "):
+            self.writes.append(b"WIFI_AP_CONFIG <private>\n")
+            self.config_payload = data
+            if self.already_configured:
+                reply = b"DENIED wifi_ap_config_exists\n"
+            elif self.rejected:
+                reply = b"DENIED wifi_ap_invalid\n"
+            else:
+                reply = b"WIFI_AP_CONFIG OK saved=1 starting=1\n"
+            self._emit(reply)
+            return len(data)
+        if data == b"WIFI_AP_MODE\n":
+            self.writes.append(data)
+            self._emit(self.ap_mode_reply)
+            return len(data)
+        if data == b"WIFI_AP_STATUS\n":
+            self.writes.append(data)
+            self.ap_status_queries += 1
+            index = min(self.ap_status_queries - 1, len(self.status_replies) - 1)
+            self._emit(self.status_replies[index])
+            return len(data)
+        if data == b"WIFI_TOKEN\n":
+            self.writes.append(data)
+            self._emit(b"WIFI_TOKEN " + TOKEN + b"\n")
+            return len(data)
+        return super().write(data)
+
+
 class CredentialsAndStorageTests(unittest.TestCase):
     def test_documented_direct_script_entrypoint_imports_bridge(self):
         # Regression: `PYTHONPATH=src python scripts/sme105_wifi_setup.py`
@@ -181,6 +235,62 @@ class CredentialsAndStorageTests(unittest.TestCase):
             with self.subTest(invalid=invalid[0][:6]), self.assertRaises(
                     setup.ProvisioningError):
                 setup.validate_credentials(*invalid)
+
+    def test_ap_credential_validation_and_command_encoding(self):
+        minimum_ssid, minimum_password = setup.validate_ap_credentials(
+            "a", "1" * 16
+        )
+        maximum_ssid, maximum_password = setup.validate_ap_credentials(
+            "s" * 32, "p" * 63
+        )
+        self.assertEqual((len(minimum_ssid), len(minimum_password)), (1, 16))
+        self.assertEqual((len(maximum_ssid), len(maximum_password)), (32, 63))
+        ssid, password = setup.validate_ap_credentials(
+            "SME105_DCL", "a secure AP password"
+        )
+        command = setup.wifi_ap_config_command(ssid, password)
+        self.assertEqual(
+            command,
+            b"WIFI_AP_CONFIG " + base64.b64encode(ssid) + b" " +
+            base64.b64encode(password) + b"\n",
+        )
+        self.assertNotIn(ssid, command)
+        self.assertNotIn(password, command)
+        for invalid in (
+                ("", "1" * 16), ("x" * 33, "1" * 16),
+                ("bad\nssid", "1" * 16), ("wifi-é", "1" * 16),
+                ("SME105_DCL", "p" * 15), ("SME105_DCL", "p" * 64),
+                ("SME105_DCL", "tab\tpassword"),
+                ("SME105_DCL", "pässword123")):
+            with self.subTest(ssid_length=len(invalid[0]),
+                              password_length=len(invalid[1])), self.assertRaises(
+                    setup.ProvisioningError):
+                setup.validate_ap_credentials(*invalid)
+
+    def test_ap_status_parser_accepts_firmware_and_documented_shapes(self):
+        firmware_reply = setup.parse_wifi_ap_status(
+            b"WIFI_AP_STATUS mode=AP state=ACTIVE ip=10.77.13.1 "
+            b"stations=0 channel=6 port=8765 wpa2=1"
+        )
+        self.assertEqual(firmware_reply["mode"], "AP")
+        self.assertEqual(firmware_reply["ip"], "10.77.13.1")
+        self.assertEqual(firmware_reply["clients"], "0")
+        documented_reply = setup.parse_wifi_ap_status(
+            b"WIFI_AP_STATUS mode=AP ssid=SME105_DCL ip=10.77.13.1 "
+            b"clients=1 channel=6 port=8765 wpa2=1"
+        )
+        self.assertEqual(documented_reply["ssid"], "SME105_DCL")
+        self.assertEqual(documented_reply["clients"], "1")
+        for malformed in (
+                b"WIFI_STATUS mode=AP ip=10.77.13.1 clients=0 channel=6 port=8765 wpa2=1",
+                b"WIFI_AP_STATUS mode=AP state=ACTIVE ip=10.77.13.2 stations=0 channel=6 port=8765 wpa2=1",
+                b"WIFI_AP_STATUS mode=AP ip=10.77.13.1 clients=2 channel=6 port=8765 wpa2=1",
+                b"WIFI_AP_STATUS mode=AP ip=10.77.13.1 clients=0 channel=11 port=8765 wpa2=1",
+                b"WIFI_AP_STATUS mode=AP ip=10.77.13.1 clients=0 clients=0 channel=6 port=8765 wpa2=1",
+                b"WIFI_AP_STATUS mode=AP ip=10.77.13.1 clients=0 channel=6 port=8765 wpa2=0"):
+            with self.subTest(reply=malformed), self.assertRaises(
+                    setup.ProvisioningError):
+                setup.parse_wifi_ap_status(malformed)
 
     def test_wifi_status_and_token_parsing_rejects_ambiguous_lines(self):
         self.assertEqual(
@@ -296,6 +406,123 @@ class CredentialsAndStorageTests(unittest.TestCase):
             self.assertEqual(port.wifi_status_queries, 3)
             self.assertEqual(port.writes.count(b"WIFI_CONFIG <private>\n"), 1)
             self.assertNotIn("valid ascii pass", "\n".join(output))
+
+    def test_usb_ap_mode_provisions_waits_retrieves_and_saves_token_privately(self):
+        with tempfile.TemporaryDirectory() as folder:
+            port = FakeApSetupPort(status_replies=[
+                b"WIFI_AP_STATUS mode=AP state=INACTIVE ip=0.0.0.0 "
+                b"stations=0 channel=6 port=8765 wpa2=1\n",
+                b"WIFI_AP_STATUS mode=AP state=ACTIVE ip=10.77.13.1 "
+                b"stations=0 channel=6 port=8765 wpa2=1\n",
+            ])
+            output: list[str] = []
+            ap_ssid = "SME105_DCL"
+            password = "private-softap-passphrase"
+            token_path = Path(folder) / "bridge-token"
+            with patch.object(setup.serial, "Serial", return_value=port), patch.object(
+                    setup.time, "sleep", return_value=None):
+                result = setup.main(
+                    ["--ap", "--port", "FAKE", "--token-file", str(token_path),
+                     "--startup-seconds", "0"],
+                    ask_ssid=lambda _: self.fail("AP mode does not request a router SSID"),
+                    ask_password=lambda _: password,
+                    display=output.append,
+                )
+            self.assertEqual(result, 0, output)
+            self.assertEqual(
+                port.config_payload,
+                setup.wifi_ap_config_command(ap_ssid.encode(), password.encode()),
+            )
+            self.assertEqual(port.ap_status_queries, 2)
+            self.assertEqual(port.writes.count(b"WIFI_AP_CONFIG <private>\n"), 1)
+            self.assertNotIn(b"WIFI_AP_MODE\n", port.writes)
+            self.assertIn(b"WIFI_AP_STATUS\n", port.writes)
+            self.assertIn(b"WIFI_TOKEN\n", port.writes)
+            self.assertEqual(stat.S_IMODE(token_path.stat().st_mode), 0o600)
+            self.assertEqual(bridge.load_wifi_token(token_path), TOKEN)
+            self.assertTrue(port.closed)
+            shown = "\n".join(output)
+            self.assertIn("SSID: SME105_DCL", shown)
+            self.assertIn("10.77.13.1", shown)
+            self.assertIn("TCP port: 8765", shown)
+            self.assertIn("private 0600 file", shown)
+            self.assertNotIn(password, shown)
+            self.assertNotIn(TOKEN.decode(), shown)
+
+    def test_ap_existing_configuration_is_safely_reused_without_nvs_rotation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            port = FakeApSetupPort(
+                already_configured=True,
+                ap_mode_reply=b"WIFI_AP_MODE OK\n",
+            )
+            output: list[str] = []
+            token_path = Path(folder) / "bridge-token"
+            password = "private-softap-passphrase"
+            with patch.object(setup.serial, "Serial", return_value=port), patch.object(
+                    setup.time, "sleep", return_value=None):
+                result = setup.main(
+                    ["--ap", "--port", "FAKE", "--token-file", str(token_path),
+                     "--startup-seconds", "0"],
+                    ask_password=lambda _: password,
+                    display=output.append,
+                )
+
+            self.assertEqual(result, 0, output)
+            self.assertEqual(port.writes.count(b"WIFI_AP_CONFIG <private>\n"), 1)
+            self.assertEqual(port.writes.count(b"WIFI_AP_MODE\n"), 1)
+            self.assertEqual(port.ap_status_queries, 1)
+            self.assertIn(b"WIFI_TOKEN\n", port.writes)
+            self.assertEqual(bridge.load_wifi_token(token_path), TOKEN)
+            self.assertEqual(stat.S_IMODE(token_path.stat().st_mode), 0o600)
+            shown = "\n".join(output)
+            self.assertIn("Existing SoftAP configuration was safely reused", shown)
+            self.assertIn("NVS was not erased or rotated", shown)
+            self.assertIn("no vehicle command was sent", shown)
+            self.assertNotIn(password, shown)
+            self.assertNotIn(TOKEN.decode(), shown)
+            self.assertTrue(port.closed)
+
+    def test_ap_rejection_and_malformed_status_never_retrieve_token(self):
+        cases = (
+            (FakeApSetupPort(rejected=True), "rejection"),
+            (FakeApSetupPort(status_reply=b"WIFI_AP_STATUS malformed\n"), "malformed"),
+        )
+        for port, label in cases:
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as folder:
+                token_path = Path(folder) / "bridge-token"
+                output: list[str] = []
+                with patch.object(setup.serial, "Serial", return_value=port):
+                    code = setup.main(
+                        ["--ap", "--port", "FAKE", "--token-file", str(token_path),
+                         "--startup-seconds", "0"],
+                        ask_password=lambda _: "private-softap-passphrase",
+                        display=output.append,
+                    )
+                self.assertNotEqual(code, 0)
+                self.assertFalse(token_path.exists())
+                self.assertNotIn(b"WIFI_TOKEN\n", port.writes)
+                self.assertNotIn("private-softap-passphrase", "\n".join(output))
+
+    def test_ap_start_timeout_does_not_retrieve_or_save_token(self):
+        port = FakeApSetupPort(status_reply=(
+            b"WIFI_AP_STATUS mode=AP state=INACTIVE ip=0.0.0.0 "
+            b"stations=0 channel=6 port=8765 wpa2=1\n"
+        ))
+        with tempfile.TemporaryDirectory() as folder:
+            token_path = Path(folder) / "bridge-token"
+            output: list[str] = []
+            with patch.object(setup.serial, "Serial", return_value=port):
+                code = setup.main(
+                    ["--ap", "--port", "FAKE", "--token-file", str(token_path),
+                     "--startup-seconds", "0", "--ap-timeout-seconds", "0"],
+                    ask_password=lambda _: "private-softap-passphrase",
+                    display=output.append,
+                )
+            self.assertNotEqual(code, 0)
+            self.assertEqual(port.ap_status_queries, 1)
+            self.assertNotIn(b"WIFI_TOKEN\n", port.writes)
+            self.assertFalse(token_path.exists())
+            self.assertNotIn("private-softap-passphrase", "\n".join(output))
 
     def test_bad_firmware_identity_denies_usb_secret_payload(self):
         with tempfile.TemporaryDirectory() as folder:

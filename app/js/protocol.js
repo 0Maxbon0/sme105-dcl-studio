@@ -1,6 +1,7 @@
 /** ASCII line protocol for the SME105 bridge. No DOM, no Bluetooth. */
 
-export const APP_VERSION = "1.8.13";
+export const VERSION = "1.8.16";
+export const APP_VERSION = VERSION;
 
 export const NUS_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
 export const NUS_RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";

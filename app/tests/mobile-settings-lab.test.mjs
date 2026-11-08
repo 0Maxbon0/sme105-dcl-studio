@@ -25,6 +25,26 @@ test("Settings structure has exactly four compact groups plus Engineering Lab en
   assert.ok(doc.getElementById("settings-fw-version"), "settings-fw-version must exist");
   assert.ok(doc.getElementById("status-raw"), "status-raw must be preserved in details");
   assert.ok(doc.getElementById("auth-value"), "auth-value must be preserved");
+  assert.deepEqual([...doc.getElementById("transport-select").options].map(option => [option.value, option.textContent]), [
+    ["wifi", "Wi-Fi (Recommended)"], ["ble", "Bluetooth (Legacy)"],
+  ], "Wi-Fi is the recommended default transport and BLE remains available");
+  assert.equal(doc.getElementById("transport-select").value, "wifi");
+  assert.ok(doc.getElementById("wifi-config-section"), "Wi-Fi settings must be grouped in Connection & Bridge");
+  assert.deepEqual([...doc.getElementById("wifi-mode").options].map(option => option.value), ["softap", "router"]);
+  assert.equal(doc.getElementById("wifi-ssid").value, "SME105_DCL");
+  assert.equal(doc.getElementById("wifi-ip").value, "10.77.13.1");
+  assert.equal(doc.getElementById("wifi-port").value, "8765");
+  assert.equal(doc.getElementById("wifi-token").type, "password");
+  assert.equal(doc.getElementById("wifi-token").getAttribute("value"), null, "Saved bridge tokens must never be embedded in markup");
+  assert.ok(doc.getElementById("wifi-token-save"));
+  assert.ok(doc.getElementById("wifi-token-clear"));
+  assert.equal(doc.getElementById("wifi-password").type, "password");
+  assert.equal(doc.getElementById("wifi-password").minLength, 16);
+  assert.equal(doc.getElementById("wifi-password").maxLength, 63);
+  assert.equal(doc.getElementById("wifi-password").getAttribute("value"), null, "WPA2 passwords must never be embedded in markup");
+  assert.ok(doc.getElementById("wifi-password-save"));
+  assert.ok(doc.getElementById("wifi-password-clear"));
+  assert.ok(doc.getElementById("wifi-password-status"));
 
   // Vehicle group elements
   assert.ok(doc.getElementById("manual-gearbox-settings"), "manual-gearbox-settings must exist");
@@ -40,6 +60,7 @@ test("Settings structure has exactly four compact groups plus Engineering Lab en
 
   // Data & About elements
   assert.ok(doc.getElementById("about-version"), "about-version must exist");
+  assert.equal(doc.getElementById("about-version").textContent, "1.8.16");
   assert.ok(doc.getElementById("demo-toggle"), "demo-toggle must exist");
   assert.ok(doc.getElementById("play-demo"), "play-demo must exist");
   assert.ok(doc.getElementById("demo-capture"), "demo-capture must exist");

@@ -2129,6 +2129,7 @@ var Share = registerPlugin("Share", {
 init_dist();
 var ExportStorage = registerPlugin("ExportStorage");
 var BridgeConnection = registerPlugin("BridgeConnection");
+var WifiBridge = registerPlugin("WifiBridge");
 export {
   BleClient,
   BridgeConnection,
@@ -2136,7 +2137,8 @@ export {
   Directory,
   ExportStorage,
   Filesystem,
-  Share
+  Share,
+  WifiBridge
 };
 /*! Bundled license information:
 

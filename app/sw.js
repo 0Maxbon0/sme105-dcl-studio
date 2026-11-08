@@ -1,4 +1,4 @@
-const CACHE_NAME = 'eeciv-v1.8.13';
+const CACHE_NAME = 'eeciv-v1.8.16';
 const FILES = [
   "./",
   "./index.html",
@@ -42,6 +42,7 @@ const FILES = [
   "./js/combined.js",
   "./js/live-dashboard.js",
   "./js/ble.js",
+  "./js/wifi.js",
   "./js/mock-transport.js",
   "./vendor/jszip.min.js",
   "./vendor/native-bridge.js",

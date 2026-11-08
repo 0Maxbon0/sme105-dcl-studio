@@ -438,6 +438,20 @@ body.dashboard-focus .dashboard-rotation-help { display:none; }
 .settings-group h3 { margin: 0 0 8px 2px; font-size: 0.92rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .settings-card { display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-sizing: border-box; width: 100%; }
 .full-width { width: 100%; }
+.transport-setting, .wifi-config, .wifi-config > *, .wifi-fields, .token-setup, .password-setup { width: 100%; min-width: 0; max-width: 100%; }
+.wifi-config { display: flex; flex-direction: column; gap: 11px; border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: color-mix(in srgb, var(--surface-raised) 70%, var(--surface)); }
+.wifi-config-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.wifi-config-heading h4 { margin: 0; font-size: .9rem; color: var(--text); }
+.wifi-auth-summary { display: inline-flex; align-items: center; gap: 7px; flex-wrap: wrap; color: var(--muted); font-size: .72rem; }
+.token-status { display: inline-flex; align-items: center; min-height: 27px; padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: .72rem; font-weight: 700; }
+.token-status[data-configured="true"] { color: var(--green); border-color: color-mix(in srgb, var(--green) 50%, var(--line)); }
+.wifi-fields { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.wifi-config input { display: block; width: 100%; min-width: 0; max-width: 100%; min-height: 46px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+.wifi-config input[readonly] { color: var(--muted); background: var(--surface); }
+.wifi-config .help { margin: 0; font-size: .74rem; overflow-wrap: anywhere; }
+.token-setup, .password-setup { display: grid; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
+.token-actions, .password-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.token-actions button, .password-actions button { width: 100%; min-width: 0; padding: 8px 6px; font-size: .8rem; }
 
 /* Connection Status Summary Card in Settings */
 .connection-status-summary { display: flex; flex-direction: column; gap: 8px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
@@ -522,4 +536,8 @@ body.dashboard-focus .dashboard-rotation-help { display:none; }
   .connection-device-info { flex-direction: column; align-items: flex-start; gap: 2px; }
   .lab-header { flex-wrap: wrap; gap: 8px; }
   .dcl-procedure-actions button { min-width: 100%; }
+}
+@media (min-width: 380px) {
+  .wifi-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .wifi-fields label:first-child { grid-column: 1 / -1; }
 }

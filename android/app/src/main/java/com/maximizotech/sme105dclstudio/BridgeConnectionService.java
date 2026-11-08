@@ -5,7 +5,7 @@ import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.*;
 
-/** Keeps an operator-established BLE link alive while the activity is hidden. */
+/** Keeps an operator-established SME105 bridge link alive while the activity is hidden. */
 public class BridgeConnectionService extends Service {
     private static final String CHANNEL = "sme105_bridge";
     private static final int NOTICE = 105;
@@ -24,9 +24,9 @@ public class BridgeConnectionService extends Service {
     private Notification notification() {
         Intent open = new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
         PendingIntent pending = PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        return new Notification.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-            .setContentTitle("SME105 bridge connected")
-            .setContentText(recording ? "Recording continues while you use other apps" : "Connection kept ready · tap to return")
+        return new Notification.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setContentTitle("SME105 DCL bridge connection")
+            .setContentText(recording ? "Recording continues over Wi-Fi or BLE" : "Wi-Fi or BLE connection kept ready · tap to return")
             .setContentIntent(pending).setOngoing(true).setOnlyAlertOnce(true).build();
     }
     @Override public int onStartCommand(Intent intent, int flags, int startId) {

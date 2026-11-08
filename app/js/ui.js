@@ -1232,26 +1232,96 @@ export function closeSensorDetails() {
   $("sensor-drawer").hidden = true;
 }
 
+export function renderSettings(state) {
+  const selectedTransport = readStored("sme105-transport") === "ble" ? "ble" : "wifi";
+  const transportSelect = $("transport-select");
+  if (transportSelect) {
+    transportSelect.value = selectedTransport;
+    transportSelect.disabled = state.link === "ready" || state.link === "denied" || !!state.recovering || state.transportStatus === "connecting";
+  }
+  const wifiSection = $("wifi-config-section");
+  if (wifiSection) wifiSection.hidden = selectedTransport !== "wifi";
+  const wifiMode = $("wifi-mode");
+  const mode = readStored("sme105-wifi-mode") === "router" ? "router" : "softap";
+  if (wifiMode) wifiMode.value = mode;
+  const wifiIp = $("wifi-ip");
+  if (wifiIp) wifiIp.readOnly = mode === "softap";
+  const modeHelp = $("wifi-mode-help");
+  if (modeHelp) modeHelp.textContent = mode === "softap"
+    ? "Connect your phone to the bridge’s direct Wi-Fi network before connecting."
+    : "Connect your phone and bridge to the same router, then enter the bridge’s router-assigned IP address.";
+  const tokenStatus = $("wifi-auth-status");
+  if (tokenStatus) {
+    const configured = state.wifiTokenConfigured ?? readStored("sme105-wifi-token-configured") === "1";
+    tokenStatus.textContent = configured ? "Configured" : "Not configured";
+    tokenStatus.dataset.configured = String(!!configured);
+  }
+  const passwordStatus = $("wifi-password-status");
+  if (passwordStatus) {
+    const configured = !!state.wifiPasswordConfigured;
+    passwordStatus.textContent = configured ? "Configured" : "Not configured";
+    passwordStatus.dataset.configured = String(configured);
+  }
+
+  const connected = state.link === "ready";
+  const authenticated = connected && (state.identity.auth === "OK" || (state.transport === "wifi" && state.wifiAuthenticated));
+  const helloComplete = state.identity.helloOk === true && state.identity.pinsOk === true && !!state.status;
+  let connectionState = state.transport === "demo" ? "Demo Replay" : "Disconnected";
+  if (state.transport !== "demo" && (state.transportStatus === "denied" || state.link === "denied")) connectionState = "Denied";
+  else if (state.transport !== "demo" && (state.transportStatus === "connecting" || state.link === "connecting")) connectionState = "Connecting";
+  else if (state.transport !== "demo" && connected && authenticated && helloComplete) connectionState = "Connected";
+  else if (state.transport !== "demo" && connected) connectionState = "Authenticating";
+
+  const activeTransport = state.transport === "wifi" || state.transport === "ble" ? state.transport : selectedTransport;
+  const ip = readStored("sme105-wifi-ip") || (mode === "softap" ? "10.77.13.1" : "");
+  const port = readStored("sme105-wifi-port") || "8765";
+  const activeName = activeTransport === "wifi"
+    ? `ESP32 Wi-Fi${ip ? ` (${ip}:${port})` : ""}`
+    : (state.deviceName || "BLE Bridge");
+  const statusConn = $("settings-conn-status");
+  if (statusConn) statusConn.textContent = connectionState;
+  const statusDot = $("settings-status-dot");
+  if (statusDot) {
+    const stateClass = connectionState === "Connected" ? "dot-connected"
+      : connectionState === "Authenticating" || connectionState === "Connecting" ? "dot-checking"
+        : connectionState === "Denied" ? "dot-error" : "dot-disconnected";
+    statusDot.className = `status-indicator-dot ${state.transport === "demo" ? "dot-demo" : stateClass}`;
+  }
+  const deviceName = $("settings-device-name");
+  if (deviceName) deviceName.textContent = state.transport === "demo" ? "Demo Replay" : activeName;
+  const fwVersion = $("settings-fw-version");
+  if (fwVersion) {
+    const fw = state.status?.fields?.fw;
+    fwVersion.textContent = fw ? `Firmware: v${fw}` : (connected ? "Firmware: Identifying…" : "Firmware: Not connected");
+  }
+}
+
 export function render(state) {
   latestState = state;
   const busy = state.phase !== "idle" || !!state.combined?.active;
   const linked = state.link === "ready";
   const codesWarning = $("codes-link-warning"); if (codesWarning) codesWarning.hidden = linked;
   const dclWarning = $("dcl-link-warning"); if (dclWarning) dclWarning.hidden = linked;
-  const authenticated = linked && state.identity.auth === "OK";
+  const authenticated = linked && (state.identity.auth === "OK" || (state.transport === "wifi" && state.wifiAuthenticated));
   const demoTransport = state.transport === "demo";
-  $("link-pill").textContent = demoTransport ? "DEMO · REPLAY" : authenticated ? "BLE · AUTH" : linked ? "BLE · CHECKING" : state.link === "denied" ? "AUTH DENIED" : STR.disconnected;
+  const activeTransport = state.transport === "wifi" || state.transport === "ble"
+    ? state.transport : readStored("sme105-transport") === "ble" ? "ble" : "wifi";
+  const connectionState = demoTransport ? "Demo Replay" : state.transportStatus === "denied" || state.link === "denied" ? "Denied"
+    : state.transportStatus === "connecting" || state.link === "connecting" ? "Connecting"
+      : linked && authenticated && state.identity.helloOk === true && state.identity.pinsOk === true && state.status ? "Connected"
+        : linked ? "Authenticating" : "Disconnected";
+  $("link-pill").textContent = demoTransport ? "DEMO · REPLAY" : `${activeTransport === "wifi" ? "WI-FI" : "BLE"} · ${connectionState.toUpperCase()}`;
   $("link-pill").dataset.state = linked ? "connected" : state.link === "denied" ? "error" : "disconnected";
   $("link-pill").title = state.deviceName || state.link;
-  $("link-pill").setAttribute("aria-label", demoTransport ? "Demo replay; no Bluetooth connection or vehicle communication" : linked ? `Bluetooth connected to ${state.deviceName || "bridge"}; ${authenticated ? "authenticated" : "bridge checks pending"}` : state.link === "denied" ? "Bridge authentication denied" : "Bluetooth bridge disconnected");
+  $("link-pill").setAttribute("aria-label", demoTransport ? "Demo replay; no hardware connection or vehicle communication" : `${activeTransport === "wifi" ? "ESP32 Wi-Fi" : "Bluetooth"} bridge: ${connectionState}`);
   $("stop-btn").disabled = !busy;
   $("stop-btn").hidden = !busy;
   $("stop-btn").classList.toggle("stop-active", busy);
   const connectText = linked || state.link === "denied" ? STR.disconnectAction : STR.connectAction;
   $("connect-btn").textContent = connectText;
   $("connect-settings").textContent = connectText;
-  $("connect-settings").disabled = busy || !!state.recovering;
-  $("connect-btn").disabled = !!state.recovering;
+  $("connect-settings").disabled = busy || !!state.recovering || state.transportStatus === "connecting";
+  $("connect-btn").disabled = !!state.recovering || state.transportStatus === "connecting";
   $("message").textContent = state.message || "";
 
   const onboardingDismissed = readStored("sme105-onboarding-dismissed") === "1";
@@ -1272,23 +1342,7 @@ export function render(state) {
   $("battery-value").textContent = vbat == null ? STR.notKnown : `${formatMeasurement("VBAT", vbat, "V")} V`;
   $("status-raw").textContent = redactDiagnostic(state.status?.raw || state.identity.hello || "");
 
-  const statusConn = $("settings-conn-status");
-  if (statusConn) {
-    statusConn.textContent = demoTransport ? "Demo Replay" : authenticated ? "Connected & Authenticated" : linked ? "Connected (Verifying)" : state.link === "denied" ? "Auth Denied" : STR.disconnected;
-  }
-  const statusDot = $("settings-status-dot");
-  if (statusDot) {
-    statusDot.className = "status-indicator-dot " + (demoTransport ? "dot-demo" : authenticated ? "dot-connected" : linked ? "dot-checking" : state.link === "denied" ? "dot-error" : "dot-disconnected");
-  }
-  const deviceName = $("settings-device-name");
-  if (deviceName) {
-    deviceName.textContent = state.deviceName || "SME105 BLE Bridge";
-  }
-  const fwVersion = $("settings-fw-version");
-  if (fwVersion) {
-    const fw = fields.fw || state.status?.fields?.fw;
-    fwVersion.textContent = fw ? `Firmware: v${fw}` : (linked ? "Firmware: Identifying…" : "Firmware: Not connected");
-  }
+  renderSettings(state);
 
   const actions = ["read-codes-btn", "koeo-btn", "koer-btn", "live-start", "offline-btn", "bench-btn", "reboot-btn", "clear-btn"];
   for (const id of actions) $(id).disabled = !linked || busy || !!state.recovering || !!state.review?.active;

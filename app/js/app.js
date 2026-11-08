@@ -6,6 +6,7 @@ import { warningsForDiagnosticSession } from "./dtc-history.js";
 import { wireKline } from "./kline-ui.js";
 import { createKoerGuide } from "./koer-guide.js";
 import { BleTransport, bluetoothAvailable } from "./ble.js";
+import { WifiTransport } from "./wifi.js";
 import { createController, candidateRequiresOperatorConfirmation, candidateRequiredStateText } from "./controller.js";
 import { APP_VERSION, createLineBuffer, DCL_BLOCKED_CANDIDATES, EXPERIMENT_CATALOGUE, MEM_EXPERIMENTS, firmwareCompatibility } from "./protocol.js";
 import { createMockTransport, createReplay } from "./mock-transport.js";
@@ -28,6 +29,7 @@ const DEMO_FILES = {
 
 const buffer = createLineBuffer();
 let transport = null;
+let selectedTransport = "wifi";
 let previousAudit = { link: null, phase: null, message: null };
 let previousSessionKey = "";
 const previousFreshness = new Map();
@@ -46,8 +48,8 @@ const nativeApp = () => !!window.Capacitor?.isNativePlatform?.();
 
 const controller = createController({
   send(command) {
-    if (!transport) return;
-    transport.write(command);
+    if (!transport || controller.state.link !== "ready") return;
+    void transport.write(command).catch(() => {});
   },
 });
 
@@ -77,6 +79,59 @@ function renderApp(state) {
   renderDclCommandExplorer(state);
 }
 
+function incompleteLinkLossVerdict(verdict) {
+  const reason = "Link lost during capture";
+  return {
+    ...(verdict || {}),
+    valid: false,
+    status: "INCOMPLETE",
+    reasons: [reason, ...(verdict?.reasons || []).filter(item => item !== reason)],
+  };
+}
+
+function handleTransportDisconnect(message = "") {
+  const state = controller.state;
+  const captureInterrupted = !!state.op || !!state.combined?.active;
+  const archive = state.archive;
+  let originalFinish = null;
+  let wrappedFinish = null;
+
+  // Finalize the raw recording before controller disconnect handling can label
+  // the session FAILED. This does not send STOP, replay a command, or re-arm.
+  if (captureInterrupted && archive && !archive.closed && typeof archive.finish === "function") {
+    originalFinish = archive.finish;
+    wrappedFinish = function (verdict, details) {
+      const incomplete = incompleteLinkLossVerdict(verdict);
+      if (state.lastSession) state.lastSession.verdict = incomplete;
+      return originalFinish.call(this, incomplete, details);
+    };
+    archive.finish = wrappedFinish;
+  }
+
+  controller.onDisconnected();
+
+  if (archive && wrappedFinish && archive.finish === wrappedFinish) archive.finish = originalFinish;
+  if (captureInterrupted && archive && !archive.closed) {
+    if (state.lastSession) state.lastSession.verdict = incompleteLinkLossVerdict(state.lastSession.verdict);
+    archive.finished = archive.finish(incompleteLinkLossVerdict(null)).catch(error => {
+      state.message = `Recording storage failed while finalizing the incomplete capture: ${error.message}`;
+      return null;
+    });
+  }
+
+  state.recovering = false;
+  state.transportStatus = /denied|auth/i.test(message) ? "denied" : "disconnected";
+  state.wifiAuthenticated = false;
+  if (state.transportStatus === "denied") state.link = "denied";
+  if (captureInterrupted) {
+    state.message = "INCOMPLETE: link lost during capture; raw recording finalized.";
+    recordDiagnosticEvent("CAPTURE_LINK_LOST", { recordingId: archive?.id || null }, "transport");
+  } else if (message) {
+    state.message = message;
+  }
+  renderApp(state);
+}
+
 const ignitionReview = createIgnitionReview({ controller, render: renderApp, refreshWarnings, refreshRecordings });
 const refreshPendingIgnition = show => ignitionReview.refresh(show);
 
@@ -86,10 +141,20 @@ function acceptText(chunk) {
 
 const ble = new BleTransport({
   onLine(line) { controller.handleLine(line); },
-  onDisconnect() { controller.onDisconnected(); renderApp(controller.state); },
+  onDisconnect() { handleTransportDisconnect(); },
   onError(error) {
-    controller.onDisconnected();
-    controller.state.message = `Bluetooth transport failed: ${error?.message || String(error)}`;
+    handleTransportDisconnect(`Bluetooth transport failed: ${error?.message || String(error)}`);
+  },
+});
+
+const wifi = new WifiTransport({
+  onLine(line) { controller.handleLine(line); },
+  onDisconnect() { handleTransportDisconnect(); },
+  onError(error) {
+    handleTransportDisconnect(`Wi-Fi transport failed: ${error?.message || String(error)}`);
+  },
+  onStatus(status) {
+    controller.state.transportStatus = status;
     renderApp(controller.state);
   },
 });
@@ -100,6 +165,11 @@ function demoEnabled() {
 
 function demoKey() {
   return document.getElementById("demo-capture").value;
+}
+
+function updateBluetoothWarning() {
+  const warning = document.getElementById("bt-warning");
+  if (warning) warning.hidden = configuredTransport() !== "ble" || bluetoothAvailable() || demoEnabled();
 }
 
 /** Simulation is only allowed after the operator deliberately enables Demo mode. */
@@ -141,7 +211,7 @@ function auditState(state) {
   const capturing = !!state.op;
   if (capturing !== protectedCapture) {
     protectedCapture = capturing;
-    if (transport === ble) ble.setRecording(capturing).catch(error => {
+    if (typeof transport?.setRecording === "function") Promise.resolve(transport.setRecording(capturing)).catch(error => {
       if (capturing) controller.failRecording(`Background recording protection failed: ${error.message}`);
     });
   }
@@ -220,25 +290,177 @@ function writeStorage(key, value) {
   try { localStorage.setItem(key, value); } catch { /* private mode */ }
 }
 
+const WIFI_TOKEN_KEY = "sme105-wifi-token";
+let simulatedWifiToken = "";
+let simulatedWifiPassword = "";
+
+function simulatedWifiStorage() {
+  return globalThis.__SME105_WIFI_SIMULATED__ === true && !nativeApp();
+}
+
+function secureWifiStorageUnavailable() {
+  return new Error("Secure native Keystore storage is unavailable.");
+}
+
+function validWpa2Password(password) {
+  return typeof password === "string" && /^[\x20-\x7E]{16,63}$/.test(password);
+}
+
+function configuredTransport() {
+  const value = readStorage("sme105-transport");
+  return value === "ble" ? "ble" : "wifi";
+}
+
+function wifiConfig() {
+  const mode = readStorage("sme105-wifi-mode") === "router" ? "sta" : "ap";
+  const customIp = readStorage("sme105-wifi-ip");
+  return {
+    mode,
+    ssid: readStorage("sme105-wifi-ssid") || "SME105_DCL",
+    host: customIp || (mode === "ap" ? "10.77.13.1" : ""),
+    ip: customIp || (mode === "ap" ? "10.77.13.1" : ""),
+    port: Number(readStorage("sme105-wifi-port") || 8765),
+    // Passwords are never persisted in localStorage. A typed value is passed
+    // only for this connection; otherwise the native Keystore supplies it.
+    password: document.getElementById("wifi-password")?.value || undefined,
+  };
+}
+
+async function refreshWifiTokenStatus() {
+  try {
+    controller.state.wifiTokenConfigured = await hasWifiToken();
+  } catch {
+    controller.state.wifiTokenConfigured = false;
+  }
+  renderApp(controller.state);
+}
+
+async function hasWifiToken() {
+  if (simulatedWifiStorage()) return !!simulatedWifiToken;
+  return await wifi.hasToken();
+}
+
+async function saveWifiToken(token) {
+  if (simulatedWifiStorage()) {
+    simulatedWifiToken = token;
+  } else {
+    if (!nativeApp() || typeof wifi.saveToken !== "function") throw secureWifiStorageUnavailable();
+    try {
+      await wifi.saveToken(token);
+    } catch (error) {
+      if (/unavailable|not implemented/i.test(error?.message || "")) throw secureWifiStorageUnavailable();
+      throw error;
+    }
+  }
+  writeStorage("sme105-wifi-token-configured", "1");
+  await refreshWifiTokenStatus();
+}
+
+async function clearWifiToken() {
+  if (simulatedWifiStorage()) {
+    simulatedWifiToken = "";
+  } else {
+    if (!nativeApp() || typeof wifi.clearToken !== "function") throw secureWifiStorageUnavailable();
+    await wifi.clearToken();
+  }
+  try { localStorage.removeItem(WIFI_TOKEN_KEY); } catch { /* Remove any token written by an older insecure build. */ }
+  try { localStorage.removeItem("sme105-wifi-token-configured"); } catch { /* private mode */ }
+  await refreshWifiTokenStatus();
+}
+
+async function getWifiBridgePasswordMethod(method) {
+  if (!nativeApp() || typeof wifi.loadPlugins !== "function") throw secureWifiStorageUnavailable();
+  let plugins;
+  try { plugins = await wifi.loadPlugins(); }
+  catch (error) {
+    if (/unavailable|not implemented/i.test(error?.message || "")) throw secureWifiStorageUnavailable();
+    throw error;
+  }
+  const bridge = plugins?.WifiBridge;
+  if (!bridge || typeof bridge[method] !== "function") throw secureWifiStorageUnavailable();
+  return bridge;
+}
+
+async function saveWifiPassword(password) {
+  if (!validWpa2Password(password)) throw new Error("Enter a WPA2 passphrase with 16–63 ASCII characters.");
+  if (simulatedWifiStorage()) {
+    simulatedWifiPassword = password;
+  } else {
+    if (!nativeApp()) throw secureWifiStorageUnavailable();
+    if (typeof wifi.savePassword === "function") await wifi.savePassword(password);
+    else {
+      const bridge = await getWifiBridgePasswordMethod("savePassword");
+      await bridge.savePassword({ password });
+    }
+  }
+  await refreshWifiPasswordStatus();
+}
+
+async function clearWifiPassword() {
+  if (simulatedWifiStorage()) {
+    simulatedWifiPassword = "";
+  } else {
+    if (!nativeApp()) throw secureWifiStorageUnavailable();
+    if (typeof wifi.clearPassword === "function") await wifi.clearPassword();
+    else {
+      const bridge = await getWifiBridgePasswordMethod("clearPassword");
+      await bridge.clearPassword();
+    }
+  }
+  await refreshWifiPasswordStatus();
+}
+
+async function hasWifiPassword() {
+  if (simulatedWifiStorage()) return !!simulatedWifiPassword;
+  if (!nativeApp()) throw secureWifiStorageUnavailable();
+  let result;
+  if (typeof wifi.hasPassword === "function") {
+    result = await wifi.hasPassword();
+  } else {
+    const bridge = await getWifiBridgePasswordMethod("hasPassword");
+    result = await bridge.hasPassword();
+  }
+  return typeof result === "boolean" ? result : !!(result?.hasPassword ?? result?.configured);
+}
+
+async function refreshWifiPasswordStatus() {
+  try {
+    controller.state.wifiPasswordConfigured = await hasWifiPassword();
+  } catch {
+    controller.state.wifiPasswordConfigured = false;
+  }
+  renderApp(controller.state);
+}
+
 async function reconcileBridgeConnection() {
-  if (!nativeApp() || demoEnabled() || !ble.connectionWanted || ble.connecting) return;
+  if (demoEnabled()) return;
   if (resumeWork) return resumeWork;
-  transport = ble;
+  const activeKey = controller.state.transport === "wifi" || controller.state.transport === "ble"
+    ? controller.state.transport : configuredTransport();
+  const active = activeKey === "ble" ? ble : wifi;
+  if (!nativeApp() || active.connecting || typeof active.reconcile !== "function") return;
+  if (activeKey === "ble" && !active.connectionWanted) return;
+  transport = active;
   controller.state.recovering = true;
   renderApp(controller.state);
   resumeWork = (async () => {
-    const result = await ble.reconcile();
-    recordDiagnosticEvent("BLE_FOREGROUND_CHECK", { connected: result.connected, reconnected: !!result.reconnected }, "bluetooth");
+    const result = await active.reconcile();
+    recordDiagnosticEvent(`${activeKey.toUpperCase()}_FOREGROUND_CHECK`, { connected: result.connected, reconnected: !!result.reconnected }, activeKey);
     if (result.connected && (result.reconnected || controller.state.link === "disconnected")) {
-      controller.onConnected(result.device?.name || ble.device?.name || "SME105-DCL", "ble");
+      const connection = result.connection || result.conn || result.device || active.connection || active.device || {};
+      const fallbackName = activeKey === "wifi" ? "ESP32 Wi-Fi" : "SME105-DCL";
+      controller.onConnected(connection.name || fallbackName, activeKey);
+      controller.state.transportStatus = "authenticating";
+      controller.state.wifiAuthenticated = activeKey === "wifi" && (active.authenticated === true || result.connected);
+      if (controller.state.wifiAuthenticated) controller.state.identity.auth = "OK";
       // onConnected sends only HELLO/PINS/STATUS. Interrupted vehicle operations
       // remain saved and are never automatically armed or started again.
     }
   })().catch(async error => {
-    await ble.discardNative();
-    controller.onDisconnected();
-    controller.state.message = `Bluetooth recovery failed: ${error.message}. Tap Connect to retry.`;
-    recordDiagnosticEvent("BLE_RECOVERY_FAILED", { reason: error.message }, "error");
+    if (typeof active.discardNative === "function") await active.discardNative();
+    else await active.disconnect?.();
+    handleTransportDisconnect(`${activeKey === "wifi" ? "Wi-Fi" : "Bluetooth"} recovery failed: ${error.message}. Tap Connect to retry.`);
+    recordDiagnosticEvent(`${activeKey.toUpperCase()}_RECOVERY_FAILED`, { reason: error.message }, "error");
   }).finally(() => {
     controller.state.recovering = false;
     resumeWork = null;
@@ -251,7 +473,7 @@ async function connect() {
   if (resumeWork) return resumeWork;
   const button = document.getElementById("connect-btn");
   button.disabled = true;
-  recordDiagnosticEvent("BLE_CONNECT_REQUESTED", { demo: demoEnabled() }, "bluetooth");
+  recordDiagnosticEvent("TRANSPORT_CONNECT_REQUESTED", { demo: demoEnabled(), transport: configuredTransport() }, "transport");
   try {
     if (controller.state.link === "ready" || controller.state.link === "denied") {
       await transport?.disconnect();
@@ -263,21 +485,73 @@ async function connect() {
       const replay = createReplay(await response.text());
       transport = createMockTransport(replay, {
         onText: acceptText,
-        onDisconnect() { controller.onDisconnected(); },
+        onDisconnect() { handleTransportDisconnect(); },
       });
       await transport.connect();
       controller.onConnected("SME105-DCL demo", "demo");
+      controller.state.transportStatus = "connected";
+      controller.state.wifiAuthenticated = false;
       recordDiagnosticEvent("BLE_DEMO_CONNECTED", { transport: "mock" }, "bluetooth");
       return;
     }
     if (!window.isSecureContext) throw new Error(STR.secureWarning);
-    transport = ble;
-    const device = await ble.connect();
-    controller.onConnected(device.name || "SME105");
-    recordDiagnosticEvent("BLE_CONNECTED", { transport: window.Capacitor?.isNativePlatform?.() ? "native" : "web-bluetooth", deviceName: device.name || "SME105", mtu: device.mtu ?? null }, "bluetooth");
+    selectedTransport = configuredTransport();
+    if (selectedTransport === "wifi") {
+      controller.state.transportStatus = "connecting";
+      renderApp(controller.state);
+      let tokenConfigured = false;
+      try { tokenConfigured = await hasWifiToken(); } catch { /* Missing native secure storage is a closed connection failure. */ }
+      if (!tokenConfigured) {
+        window.alert("Please configure your 32-character bridge token in Settings before connecting.");
+        controller.state.transportStatus = "disconnected";
+        return;
+      }
+      const config = wifiConfig();
+      if (config.mode === "sta" && !config.ip) {
+        window.alert("Enter the bridge’s router-assigned IP address in Settings before connecting.");
+        controller.state.transportStatus = "disconnected";
+        return;
+      }
+      if (config.mode === "ap") {
+        const passwordInput = document.getElementById("wifi-password");
+        const typedPassword = passwordInput?.value || "";
+        const typedPasswordValid = validWpa2Password(typedPassword);
+        if (typedPassword && !typedPasswordValid) {
+          passwordInput.setCustomValidity("Enter 16–63 ASCII characters.");
+          passwordInput.reportValidity();
+          controller.state.transportStatus = "disconnected";
+          return;
+        }
+        let passwordConfigured = false;
+        try { passwordConfigured = await hasWifiPassword(); } catch { /* A valid typed password can be used without saving. */ }
+        if (!passwordConfigured && !typedPasswordValid) {
+          window.alert("Enter or save the WPA2 passphrase in Settings before connecting to the direct bridge network.");
+          controller.state.transportStatus = "disconnected";
+          return;
+        }
+      }
+      transport = wifi;
+      const conn = await wifi.connect(config);
+      controller.onConnected(conn?.name || "ESP32 Wi-Fi", "wifi");
+      controller.state.transportStatus = "authenticating";
+      controller.state.wifiAuthenticated = wifi.authenticated === true;
+      if (controller.state.wifiAuthenticated) controller.state.identity.auth = "OK";
+      recordDiagnosticEvent("WIFI_CONNECTED", { transport: "wifi", deviceName: conn?.name || "ESP32 Wi-Fi", host: config.host, port: config.port }, "wifi");
+    } else {
+      controller.state.transportStatus = "connecting";
+      renderApp(controller.state);
+      transport = ble;
+      const device = await ble.connect();
+      controller.onConnected(device.name || "SME105", "ble");
+      controller.state.transportStatus = "authenticating";
+      controller.state.wifiAuthenticated = false;
+      recordDiagnosticEvent("BLE_CONNECTED", { transport: window.Capacitor?.isNativePlatform?.() ? "native" : "web-bluetooth", deviceName: device.name || "SME105", mtu: device.mtu ?? null }, "bluetooth");
+    }
   } catch (error) {
     controller.state.message = error?.message || String(error);
-    recordDiagnosticEvent("BLE_CONNECT_FAILED", { message: controller.state.message }, "error");
+    controller.state.transportStatus = /denied|auth/i.test(controller.state.message) ? "denied" : "disconnected";
+    if (controller.state.transportStatus === "denied") controller.state.link = "denied";
+    recordDiagnosticEvent("TRANSPORT_CONNECT_FAILED", { transport: selectedTransport, message: controller.state.message }, "error");
     renderApp(controller.state);
   } finally {
     button.disabled = false;
@@ -749,8 +1023,114 @@ function wire() {
   renderDclCommandExplorer(controller.state);
   wireDclCommandExplorer();
   document.getElementById("about-version").textContent = APP_VERSION;
+  selectedTransport = configuredTransport();
+  document.getElementById("transport-select").value = selectedTransport;
+  const storedWifiMode = readStorage("sme105-wifi-mode") === "router" ? "router" : "softap";
+  document.getElementById("wifi-mode").value = storedWifiMode;
+  document.getElementById("wifi-ssid").value = readStorage("sme105-wifi-ssid") || "SME105_DCL";
+  let storedWifiIp = readStorage("sme105-wifi-ip");
+  if (storedWifiMode === "router" && storedWifiIp === "10.77.13.1") {
+    storedWifiIp = "";
+    writeStorage("sme105-wifi-ip", "");
+  }
+  document.getElementById("wifi-ip").value = storedWifiIp ?? (storedWifiMode === "router" ? "" : "10.77.13.1");
+  document.getElementById("wifi-port").value = readStorage("sme105-wifi-port") || "8765";
+  const updateWifiMode = () => {
+    const direct = document.getElementById("wifi-mode").value === "softap";
+    const ip = document.getElementById("wifi-ip");
+    if (direct && ip.value !== "10.77.13.1") {
+      ip.value = "10.77.13.1";
+      writeStorage("sme105-wifi-ip", "10.77.13.1");
+    } else if (!direct && ip.value.trim() === "10.77.13.1") {
+      ip.value = "";
+      writeStorage("sme105-wifi-ip", "");
+    }
+    ip.readOnly = direct;
+    document.getElementById("wifi-mode-help").textContent = direct
+      ? "Connect your phone to the bridge’s direct Wi-Fi network before connecting."
+      : "Connect your phone and bridge to the same router, then enter the bridge’s router-assigned IP address.";
+  };
+  updateWifiMode();
+  document.getElementById("transport-select").addEventListener("change", event => {
+    selectedTransport = event.target.value === "ble" ? "ble" : "wifi";
+    writeStorage("sme105-transport", selectedTransport);
+    updateBluetoothWarning();
+    renderApp(controller.state);
+  });
+  document.getElementById("wifi-mode").addEventListener("change", event => {
+    writeStorage("sme105-wifi-mode", event.target.value);
+    updateWifiMode();
+    renderApp(controller.state);
+  });
+  document.getElementById("wifi-ssid").addEventListener("change", event => writeStorage("sme105-wifi-ssid", event.target.value.trim()));
+  document.getElementById("wifi-ip").addEventListener("change", event => writeStorage("sme105-wifi-ip", event.target.value.trim()));
+  document.getElementById("wifi-port").addEventListener("change", event => {
+    const port = Number(event.target.value);
+    if (Number.isInteger(port) && port >= 1 && port <= 65535) writeStorage("sme105-wifi-port", String(port));
+    else event.target.value = readStorage("sme105-wifi-port") || "8765";
+  });
+  document.getElementById("wifi-token-save").addEventListener("click", async () => {
+    const input = document.getElementById("wifi-token");
+    const token = input.value.trim();
+    if (!/^[A-Fa-f0-9]{32}$/.test(token)) {
+      input.setCustomValidity("Enter exactly 32 hexadecimal characters.");
+      input.reportValidity();
+      return;
+    }
+    input.setCustomValidity("");
+    try {
+      await saveWifiToken(token);
+      input.value = "";
+      controller.state.message = "Bridge token saved.";
+    } catch (error) {
+      controller.state.message = `Could not save bridge token: ${error.message}`;
+    }
+    renderApp(controller.state);
+  });
+  document.getElementById("wifi-token").addEventListener("input", event => event.target.setCustomValidity(""));
+  document.getElementById("wifi-token-clear").addEventListener("click", async () => {
+    try {
+      await clearWifiToken();
+      document.getElementById("wifi-token").value = "";
+      controller.state.message = "Bridge token cleared.";
+    } catch (error) {
+      controller.state.message = `Could not clear bridge token: ${error.message}`;
+    }
+    renderApp(controller.state);
+  });
+  document.getElementById("wifi-password-save").addEventListener("click", async () => {
+    const input = document.getElementById("wifi-password");
+    const password = input.value;
+    if (!validWpa2Password(password)) {
+      input.setCustomValidity("Enter 16–63 ASCII characters.");
+      input.reportValidity();
+      return;
+    }
+    input.setCustomValidity("");
+    try {
+      await saveWifiPassword(password);
+      input.value = "";
+      controller.state.message = "WPA2 passphrase saved securely.";
+    } catch (error) {
+      controller.state.message = `Could not save WPA2 passphrase: ${error.message}`;
+    }
+    renderApp(controller.state);
+  });
+  document.getElementById("wifi-password").addEventListener("input", event => event.target.setCustomValidity(""));
+  document.getElementById("wifi-password-clear").addEventListener("click", async () => {
+    try {
+      await clearWifiPassword();
+      document.getElementById("wifi-password").value = "";
+      controller.state.message = "WPA2 passphrase cleared.";
+    } catch (error) {
+      controller.state.message = `Could not clear WPA2 passphrase: ${error.message}`;
+    }
+    renderApp(controller.state);
+  });
+  void refreshWifiTokenStatus();
+  void refreshWifiPasswordStatus();
   document.getElementById("secure-warning").hidden = window.isSecureContext;
-  document.getElementById("bt-warning").hidden = bluetoothAvailable() || demoEnabled();
+  updateBluetoothWarning();
   const storedDemo = readStorage("eeciv-demo") === "1";
   const storedCapture = readStorage("eeciv-demo-capture");
   const manual = readStorage("eeciv-manual-gearbox") !== "0";
@@ -870,7 +1250,7 @@ function wire() {
   });
   if (storedDemo) document.getElementById("demo-toggle").checked = true;
   if (storedCapture) document.getElementById("demo-capture").value = storedCapture;
-  document.getElementById("bt-warning").hidden = bluetoothAvailable() || demoEnabled();
+  updateBluetoothWarning();
 
   document.querySelectorAll("nav button").forEach((button) => {
     button.addEventListener("click", () => {
@@ -1038,7 +1418,7 @@ function wire() {
   document.getElementById("export-all-tests").addEventListener("click", () => exportSavedTests(true));
   document.getElementById("demo-toggle").addEventListener("change", () => {
     writeStorage("eeciv-demo", demoEnabled() ? "1" : "0");
-    document.getElementById("bt-warning").hidden = bluetoothAvailable() || demoEnabled();
+    updateBluetoothWarning();
   });
   document.getElementById("demo-capture").addEventListener("change", () => {
     writeStorage("eeciv-demo-capture", demoKey());
@@ -1047,6 +1427,7 @@ function wire() {
     document.getElementById("demo-toggle").checked = true;
     writeStorage("eeciv-demo", "1");
     writeStorage("eeciv-demo-capture", demoKey());
+    updateBluetoothWarning();
     if (controller.state.link === "ready" || controller.state.link === "denied") {
       await transport?.disconnect();
     }
@@ -1073,7 +1454,8 @@ function wire() {
     if (document.hidden) {
       reviewControls.player.pause();
       void flushDiagnosticQueue();
-      if ((!nativeApp() || transport !== ble) && controller.state.phase !== "idle") {
+      const hasBackgroundRecordingGuard = nativeApp() && typeof transport?.setRecording === "function";
+      if (!hasBackgroundRecordingGuard && controller.state.phase !== "idle") {
         recordDiagnosticEvent("BACKGROUND_CAPTURE_STOP_REQUESTED", { reason: "browser/demo left foreground" }, "lifecycle");
         controller.requestStop();
       }

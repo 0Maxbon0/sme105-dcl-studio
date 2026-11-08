@@ -38,6 +38,9 @@ from scripts.sme105_usb_bridge import (
 MAX_RESPONSE_LINE = 512
 TOKEN_RE = re.compile(rb"^[0-9a-fA-F]{32}$")
 IPV4 = re.compile(rb"^(?:\d{1,3}\.){3}\d{1,3}$")
+DEFAULT_AP_SSID = "SME105_DCL"
+DIRECT_AP_IP = "10.77.13.1"
+DIRECT_AP_PORT = 8765
 
 
 class ProvisioningError(RuntimeError):
@@ -66,6 +69,30 @@ def validate_credentials(ssid: str, password: str) -> tuple[bytes, bytes]:
 
 def wifi_config_command(ssid: bytes, password: bytes) -> bytes:
     return (b"WIFI_CONFIG " + base64.b64encode(ssid) + b" " +
+            base64.b64encode(password) + b"\n")
+
+
+def validate_ap_credentials(ssid: str, password: str) -> tuple[bytes, bytes]:
+    """Validate first-time SoftAP credentials without echoing either secret."""
+    if not isinstance(ssid, str) or not isinstance(password, str):
+        raise ProvisioningError("SoftAP SSID and password must be entered as text")
+    try:
+        ssid_bytes = ssid.encode("ascii")
+        password_bytes = password.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ProvisioningError("SoftAP credentials must contain ASCII characters only") from exc
+    if not 1 <= len(ssid_bytes) <= 32:
+        raise ProvisioningError("SoftAP SSID must be 1–32 ASCII characters")
+    if not 16 <= len(password_bytes) <= 63:
+        raise ProvisioningError("SoftAP WPA2 password must be 16–63 ASCII characters")
+    if (any(byte < 32 or byte == 127 for byte in ssid_bytes) or
+            any(byte < 32 or byte > 126 for byte in password_bytes)):
+        raise ProvisioningError("SoftAP credentials must use printable ASCII characters")
+    return ssid_bytes, password_bytes
+
+
+def wifi_ap_config_command(ssid: bytes, password: bytes) -> bytes:
+    return (b"WIFI_AP_CONFIG " + base64.b64encode(ssid) + b" " +
             base64.b64encode(password) + b"\n")
 
 
@@ -142,6 +169,93 @@ def parse_wifi_token(reply: bytes) -> bytes:
     return value.lower()
 
 
+def parse_wifi_ap_status(reply: bytes) -> dict[str, str]:
+    """Parse the fixed direct-AP status response, including current firmware."""
+    if not reply.startswith(b"WIFI_AP_STATUS "):
+        raise ProvisioningError("Missing WiFi AP status response")
+    fields: dict[bytes, bytes] = {}
+    for part in reply[len(b"WIFI_AP_STATUS "):].split(b" "):
+        if not part or b"=" not in part:
+            raise ProvisioningError("Malformed WiFi AP status reply")
+        key, value = part.split(b"=", 1)
+        if not key or not value or key in fields:
+            raise ProvisioningError("Malformed WiFi AP status fields")
+        fields[key] = value
+    required = {b"mode", b"ip", b"channel", b"port", b"wpa2"}
+    allowed = required | {b"ssid", b"clients", b"stations", b"state"}
+    count_keys = {b"clients", b"stations"} & fields.keys()
+    if (not required.issubset(fields) or not fields.keys() <= allowed or
+            len(count_keys) != 1):
+        raise ProvisioningError("Unexpected or missing WiFi AP status fields")
+
+    mode, ip = fields[b"mode"], fields[b"ip"]
+    state = fields.get(b"state")
+    if mode not in (b"AP", b"STA"):
+        raise ProvisioningError("Untrusted WiFi AP mode")
+    if (fields[b"channel"] != b"6" or fields[b"port"] != str(DIRECT_AP_PORT).encode() or
+            fields[b"wpa2"] != b"1"):
+        raise ProvisioningError("Unexpected WiFi AP channel, port or security mode")
+    if state is not None and state not in (b"ACTIVE", b"INACTIVE"):
+        raise ProvisioningError("Untrusted WiFi AP state")
+
+    if not IPV4.fullmatch(ip):
+        raise ProvisioningError("Malformed WiFi AP IPv4 address")
+    octets = [int(part) for part in ip.split(b".")]
+    if any(octet > 255 for octet in octets):
+        raise ProvisioningError("Invalid WiFi AP IPv4 address")
+    if mode == b"AP":
+        if state == b"ACTIVE" and ip != DIRECT_AP_IP.encode("ascii"):
+            raise ProvisioningError("Unexpected active SoftAP address")
+        if state == b"INACTIVE" and ip != b"0.0.0.0":
+            raise ProvisioningError("Inactive SoftAP has an unexpected address")
+        if state is None and ip not in (b"0.0.0.0", DIRECT_AP_IP.encode("ascii")):
+            raise ProvisioningError("Unexpected SoftAP address")
+    elif state == b"ACTIVE" or ip != b"0.0.0.0":
+        raise ProvisioningError("STA mode cannot report an active SoftAP address")
+
+    count = fields[next(iter(count_keys))]
+    if not count.isdigit() or int(count) > 1:
+        raise ProvisioningError("Untrusted WiFi AP client count")
+    result = {
+        "mode": mode.decode("ascii"),
+        "ip": ip.decode("ascii"),
+        "clients": count.decode("ascii"),
+        "channel": fields[b"channel"].decode("ascii"),
+        "port": fields[b"port"].decode("ascii"),
+        "wpa2": fields[b"wpa2"].decode("ascii"),
+    }
+    if b"ssid" in fields:
+        ssid = fields[b"ssid"]
+        if (not 1 <= len(ssid) <= 32 or
+                any(byte < 32 or byte > 126 for byte in ssid)):
+            raise ProvisioningError("Untrusted WiFi AP SSID status")
+        result["ssid"] = ssid.decode("ascii")
+    if state is not None:
+        result["state"] = state.decode("ascii")
+    return result
+
+
+def wait_for_wifi_ap(client: UsbSetupClient, ssid: str | None,
+                     timeout: float) -> dict[str, str]:
+    """Poll USB status until the configured AP is listening at its fixed IP."""
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = max(0.1, deadline - time.monotonic())
+        status = parse_wifi_ap_status(
+            client.request(b"WIFI_AP_STATUS\n", timeout=min(3.0, remaining))
+        )
+        if ssid is not None and "ssid" in status and status["ssid"] != ssid:
+            raise ProvisioningError("Firmware reports a different SoftAP SSID")
+        if status["mode"] == "AP" and status["ip"] == DIRECT_AP_IP:
+            return status
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ProvisioningError(
+                f"Timed out waiting for SoftAP at {DIRECT_AP_IP}"
+            )
+        time.sleep(min(0.5, remaining))
+
+
 def check_destination(path: Path, *, replace: bool = False) -> None:
     target = path.expanduser()
     if target.exists() or target.is_symlink():
@@ -207,16 +321,30 @@ def main(argv: list[str] | None = None,
                         help="private 0600 token destination; never put token on CLI")
     parser.add_argument("--replace-token", action="store_true",
                         help="explicitly replace an existing private local token")
+    parser.add_argument("--ap", action="store_true",
+                        help="provision the ESP32 direct WPA2 SoftAP instead of a router STA")
+    parser.add_argument("--ap-ssid", default=DEFAULT_AP_SSID,
+                        help=f"direct SoftAP SSID (default: {DEFAULT_AP_SSID})")
+    parser.add_argument("--ap-timeout-seconds", type=float, default=20.0,
+                        help="maximum wait for the direct SoftAP to become active")
     parser.add_argument("--startup-seconds", type=float, default=1.5)
     args = parser.parse_args(argv)
     if not 0 <= args.startup_seconds <= 10:
         parser.error("startup-seconds must be 0..10")
+    if not 0 <= args.ap_timeout_seconds <= 120:
+        parser.error("ap-timeout-seconds must be 0..120")
     try:
         check_destination(args.token_file, replace=args.replace_token)
-        ssid, password = validate_credentials(
-            ask_ssid("WiFi SSID (2.4 GHz network): "),
-            ask_password("WiFi password (not echoed): "),
-        )
+        if args.ap:
+            ssid, password = validate_ap_credentials(
+                args.ap_ssid,
+                ask_password("SoftAP WPA2 password (not echoed): "),
+            )
+        else:
+            ssid, password = validate_credentials(
+                ask_ssid("WiFi SSID (2.4 GHz network): "),
+                ask_password("WiFi password (not echoed): "),
+            )
         # The password remains local until the exact firmware/DE/GPIO checks
         # pass, and is sent only over the physical USB port (never TCP).
         with serial.Serial(args.port, BAUD, timeout=0.05,
@@ -229,6 +357,55 @@ def main(argv: list[str] | None = None,
                 port.reset_input_buffer()
             client = UsbSetupClient(port)
             client.verify_identity()
+            if args.ap:
+                result = client.request(wifi_ap_config_command(ssid, password), timeout=8)
+                reused_existing_ap = False
+                if result == b"WIFI_AP_CONFIG OK saved=1 starting=1":
+                    pass
+                elif result == b"DENIED wifi_ap_config_exists":
+                    mode_result = client.request(b"WIFI_AP_MODE\n", timeout=8)
+                    if mode_result not in (
+                            b"WIFI_AP_MODE OK starting=1", b"WIFI_AP_MODE OK"):
+                        raise ProvisioningError(
+                            "Existing SoftAP could not be resumed; no token retrieved"
+                        )
+                    reused_existing_ap = True
+                else:
+                    raise ProvisioningError(
+                        "Firmware rejected SoftAP provisioning; it may be busy or "
+                        "require a 16–63 character WPA2 password"
+                    )
+                # Either exact acknowledgement selects the saved AP settings.
+                # Wait separately for the radio and listener; never resend the
+                # one-time config or alter existing NVS on the reuse path.
+                # On reuse, the saved SSID may differ from the supplied default,
+                # so validate readiness without assuming its name.
+                ap_status = wait_for_wifi_ap(
+                    client, None if reused_existing_ap else args.ap_ssid,
+                    args.ap_timeout_seconds,
+                )
+                token = parse_wifi_token(client.request(b"WIFI_TOKEN\n"))
+                save_token(args.token_file, token, replace=args.replace_token)
+                if reused_existing_ap:
+                    display("Existing SoftAP configuration was safely reused; "
+                            "NVS was not erased or rotated, and no vehicle command was sent.")
+                else:
+                    display("Direct Wi-Fi SoftAP is ready.")
+                reported_ssid = ap_status.get("ssid")
+                if reported_ssid is not None:
+                    display(f"  SSID: {reported_ssid} (2.4 GHz, WPA2, channel 6)")
+                elif reused_existing_ap:
+                    display("  SSID: saved SoftAP (not reported by firmware)")
+                else:
+                    display(f"  SSID: {args.ap_ssid} (2.4 GHz, WPA2, channel 6)")
+                display(f"  IP: {DIRECT_AP_IP}")
+                display(f"  TCP port: {DIRECT_AP_PORT}")
+                display("  Authentication token was retrieved over USB and saved "
+                        f"to the private 0600 file: {args.token_file.expanduser()}")
+                display("Connect the Android client to the SoftAP, then use the "
+                        "private token for its authenticated session.")
+                return 0
+
             result = client.request(wifi_config_command(ssid, password), timeout=8)
             # Exact positive ACK required before asking for the fresh token.
             if result != b"WIFI_CONFIG OK saved=1 reconnecting=1":
