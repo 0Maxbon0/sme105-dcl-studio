@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { JSDOM } from "jsdom";
 import { MEM_EXPERIMENTS, EXPERIMENT_CATALOGUE } from "../js/protocol.js";
-import { renderDclCommandExplorer, wireDclCommandExplorer, showView, render } from "../js/ui.js";
+import { renderDclCommandExplorer, wireDclCommandExplorer, applyStaticStrings, showView, render } from "../js/ui.js";
 
 test("Settings structure has exactly four compact groups plus Engineering Lab entry", async () => {
   const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
@@ -56,7 +56,7 @@ test("Settings structure has exactly four compact groups plus Engineering Lab en
   dom.window.close();
 });
 
-test("Engineering Lab view is dedicated and segmented into 6 distinct sections", async () => {
+test("Engineering Lab is organized into the three requested areas", async () => {
   const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
   const dom = new JSDOM(html, { url: "https://dcl-studio.test/" });
   const doc = dom.window.document;
@@ -68,32 +68,25 @@ test("Engineering Lab view is dedicated and segmented into 6 distinct sections",
   // Header & back button
   assert.equal(doc.getElementById("lab-back-btn"), null, "Lab tab must not have a redundant back header");
 
-  // 6 segmented navigation pills
-  const pills = doc.querySelectorAll("[data-lab-section]");
-  assert.equal(pills.length, 6, "Must have exactly 6 lab section pills");
-  const pillSections = [...pills].map(p => p.dataset.labSection);
-  assert.deepEqual(pillSections, ["explorer", "discovery", "mem", "procedures", "bridge", "reference"]);
-
-  // 6 section containers
-  assert.ok(doc.getElementById("lab-sec-explorer"), "explorer section must exist");
-  assert.ok(doc.getElementById("lab-sec-discovery"), "discovery section must exist");
-  assert.ok(doc.getElementById("lab-sec-mem"), "mem section must exist");
-  assert.ok(doc.getElementById("lab-sec-procedures"), "procedures section must exist");
-  assert.ok(doc.getElementById("lab-sec-bridge"), "bridge section must exist");
-  assert.ok(doc.getElementById("lab-sec-reference"), "reference section must exist");
-
-  // Only the first section is visible initially; the other 5 are hidden
-  assert.equal(doc.getElementById("lab-sec-explorer").hidden, false);
-  assert.equal(doc.getElementById("lab-sec-discovery").hidden, true);
-  assert.equal(doc.getElementById("lab-sec-mem").hidden, true);
-  assert.equal(doc.getElementById("lab-sec-procedures").hidden, true);
-  assert.equal(doc.getElementById("lab-sec-bridge").hidden, true);
-  assert.equal(doc.getElementById("lab-sec-reference").hidden, true);
+  const areaA = doc.getElementById("lab-sec-explorer");
+  const areaB = doc.getElementById("lab-workflows");
+  const areaC = doc.getElementById("lab-advanced-panel");
+  assert.ok(areaA, "Area A must contain the Command Explorer");
+  assert.ok(areaB, "Area B must contain Ready-made Workflows");
+  assert.ok(areaC, "Area C must contain the advanced bridge and protocol tools");
+  assert.equal(areaB.querySelectorAll("details.lab-workflow-card").length, 3, "Area B must have three workflow cards");
+  for (const id of ["lab-sec-discovery", "lab-sec-mem", "lab-sec-procedures"]) {
+    assert.ok(areaB.querySelector(`#${id}`), `Area B must include #${id}`);
+  }
+  assert.ok(areaC.querySelector("#lab-sec-bridge"), "Area C must contain bridge tools");
+  assert.ok(areaC.querySelector("#lab-sec-reference"), "Area C must contain protocol reference");
+  assert.equal(areaC.open, false, "Area C must start collapsed");
+  assert.equal(doc.querySelectorAll("[data-lab-section]").length, 0, "The old six-pill navigation must be removed");
 
   dom.window.close();
 });
 
-test("Navigation has six bottom tabs with Lab directly after Faults", async () => {
+test("Navigation has the six bottom tabs in the required order and labels", async () => {
   const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
   const dom = new JSDOM(html, { url: "https://dcl-studio.test/" });
   const oldWindow = globalThis.window, oldDocument = globalThis.document;
@@ -101,10 +94,14 @@ test("Navigation has six bottom tabs with Lab directly after Faults", async () =
   globalThis.document = dom.window.document;
 
   try {
+    applyStaticStrings();
     const bottomNavButtons = document.querySelectorAll("nav button");
     assert.equal(bottomNavButtons.length, 6, "Must have 6 bottom navigation tabs");
-    const views = [...bottomNavButtons].map(b => b.dataset.view);
-    assert.deepEqual(views, ["live", "codes", "lab", "log", "kline", "tools"], "Lab tab follows Faults");
+    const tabs = [...bottomNavButtons].map(button => [button.textContent.trim(), button.dataset.view]);
+    assert.deepEqual(tabs, [
+      ["Dashboard", "live"], ["Faults", "codes"], ["Lab", "lab"],
+      ["History", "log"], ["K-Line", "kline"], ["Settings", "tools"],
+    ]);
 
     // Show Lab
     showView("lab");
@@ -120,6 +117,152 @@ test("Navigation has six bottom tabs with Lab directly after Faults", async () =
     const toolsBtn = document.querySelector('nav button[data-view="tools"]');
     assert.equal(toolsBtn.getAttribute("aria-current"), "page", "Tools tab should be active in settings");
     assert.equal(labBtn.getAttribute("aria-current"), "false");
+  } finally {
+    dom.window.close();
+    globalThis.window = oldWindow;
+    globalThis.document = oldDocument;
+  }
+});
+
+test("Single selection updates the contextual run action and dispatches the selected candidate", async () => {
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+  const dom = new JSDOM(html, { url: "https://dcl-studio.test/" });
+  const oldWindow = globalThis.window, oldDocument = globalThis.document;
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  try {
+    const state = { link: "ready", phase: "idle", transport: "ble", status: { fields: { fw: "27" } } };
+    wireDclCommandExplorer();
+    renderDclCommandExplorer(state);
+
+    const toggle = document.getElementById("dcl-toggle-multiselect");
+    assert.equal(toggle.getAttribute("aria-pressed"), "false");
+    assert.equal(toggle.textContent, "Select multiple");
+    const search = document.getElementById("dcl-command-search");
+    search.value = "004E";
+    search.dispatchEvent(new window.Event("input"));
+    const card = document.querySelector("#dcl-command-list .dcl-command-card");
+    assert.ok(card);
+    card.click();
+
+    const candidate = Object.values(EXPERIMENT_CATALOGUE).find(item => item.id === "PIDMAP_ALT");
+    const runAction = document.getElementById("dcl-run-action");
+    assert.equal(document.getElementById("dcl-command-detail-title").textContent, `${candidate.name} · ${candidate.commandWord}`);
+    assert.equal(runAction.textContent, `Run ${candidate.name} (${candidate.commandWord})`);
+    assert.equal(runAction.disabled, false, "A sendable candidate is enabled with a compatible ready bridge");
+    assert.equal(document.getElementById("dcl-batch-order").hidden, true, "Batch order is hidden in single-selection mode");
+
+    state.link = "disconnected";
+    renderDclCommandExplorer(state);
+    assert.equal(runAction.disabled, true, "A disconnected physical bridge disables transmission");
+    state.link = "ready";
+    renderDclCommandExplorer(state);
+
+    let dispatched = null;
+    document.addEventListener("dcl:run-candidate", event => { dispatched = event.detail.candidateId; }, { once: true });
+    runAction.click();
+    assert.equal(dispatched, candidate.id);
+
+    const category = document.getElementById("dcl-command-category");
+    search.value = "";
+    search.dispatchEvent(new window.Event("input"));
+    category.value = "FACTORY_PROCEDURE";
+    category.dispatchEvent(new window.Event("change"));
+    const procedureCard = document.querySelector("#dcl-command-list .dcl-command-card");
+    procedureCard.click();
+    const procedure = Object.values(EXPERIMENT_CATALOGUE).find(item => item.id === "OUTPUT_SWITCH_TEST");
+    assert.equal(runAction.textContent, `Run ${procedure.name} (Guided)`);
+    let guidedProcedure = null;
+    document.addEventListener("dcl:run-procedure", event => { guidedProcedure = event.detail.procedureId; }, { once: true });
+    runAction.click();
+    assert.equal(guidedProcedure, procedure.id);
+  } finally {
+    dom.window.close();
+    globalThis.window = oldWindow;
+    globalThis.document = oldDocument;
+  }
+});
+
+test("Contextual run action disables firmware-incompatible and busy candidates", async () => {
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+  const dom = new JSDOM(html, { url: "https://dcl-studio.test/" });
+  const oldWindow = globalThis.window, oldDocument = globalThis.document;
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  try {
+    const state = { link: "ready", phase: "idle", transport: "ble", status: { fields: { fw: "24" } } };
+    wireDclCommandExplorer();
+    renderDclCommandExplorer(state);
+    const search = document.getElementById("dcl-command-search");
+    search.value = "004E";
+    search.dispatchEvent(new window.Event("input"));
+    const runAction = document.getElementById("dcl-run-action");
+    assert.equal(runAction.disabled, true, "The candidate requires firmware v27");
+
+    state.status.fields.fw = "27";
+    renderDclCommandExplorer(state);
+    assert.equal(runAction.disabled, false, "Compatible firmware enables the idle bridge action");
+    state.phase = "running";
+    renderDclCommandExplorer(state);
+    assert.equal(runAction.disabled, true, "A busy bridge cannot start another candidate");
+  } finally {
+    dom.window.close();
+    globalThis.window = oldWindow;
+    globalThis.document = oldDocument;
+  }
+});
+
+test("Multi-select mode shows the execution order and dispatches the selected batch", async () => {
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+  const dom = new JSDOM(html, { url: "https://dcl-studio.test/" });
+  const oldWindow = globalThis.window, oldDocument = globalThis.document;
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  try {
+    const state = { link: "ready", phase: "idle", transport: "ble", status: { fields: { fw: "27" } } };
+    wireDclCommandExplorer();
+    renderDclCommandExplorer(state);
+
+    const toggle = document.getElementById("dcl-toggle-multiselect");
+    toggle.click();
+    assert.equal(toggle.textContent, "Single selection");
+    assert.equal(toggle.getAttribute("aria-pressed"), "true");
+    assert.equal(document.getElementById("dcl-run-action").textContent, "Run selected (0)");
+    assert.equal(document.getElementById("dcl-run-action").disabled, true);
+    assert.match(document.getElementById("dcl-batch-order").textContent, /Select candidates from the list/);
+
+    const search = document.getElementById("dcl-command-search");
+    search.value = "004E";
+    search.dispatchEvent(new window.Event("input"));
+    document.querySelector("#dcl-command-list .dcl-command-card").click();
+    search.value = "005E";
+    search.dispatchEvent(new window.Event("input"));
+    document.querySelector("#dcl-command-list .dcl-command-card").click();
+
+    const runAction = document.getElementById("dcl-run-action");
+    const runSelected = document.getElementById("dcl-run-selected");
+    assert.equal(runAction.textContent, "Run selected (2)");
+    assert.equal(runAction.disabled, false);
+    assert.equal(runSelected.textContent, runAction.textContent, "Legacy batch control mirrors the unified run action");
+    assert.equal(runSelected.disabled, runAction.disabled);
+    assert.match(document.getElementById("dcl-batch-order").textContent, /Order: 1\. 004E \(PIDMAP_ALT\) → 2\. 005E \(PIDMAP\)/);
+    assert.equal(document.querySelector("#dcl-command-list .dcl-command-card").getAttribute("aria-pressed"), "true");
+
+    let dispatched = null;
+    document.addEventListener("dcl:run-selected", event => { dispatched = event.detail.candidateIds; }, { once: true });
+    runAction.click();
+    assert.deepEqual(dispatched, ["PIDMAP_ALT", "PIDMAP"]);
+    let legacyDispatched = null;
+    document.addEventListener("dcl:run-selected", event => { legacyDispatched = event.detail.candidateIds; }, { once: true });
+    runSelected.click();
+    assert.deepEqual(legacyDispatched, dispatched, "The legacy batch control dispatches the same selected run action");
+
+    toggle.click();
+    assert.equal(toggle.textContent, "Select multiple");
+    assert.equal(toggle.getAttribute("aria-pressed"), "false");
+    assert.equal(document.getElementById("dcl-batch-order").hidden, true);
+    const primaryPidMap = Object.values(EXPERIMENT_CATALOGUE).find(item => item.id === "PIDMAP");
+    assert.equal(document.getElementById("dcl-run-action").textContent, `Run ${primaryPidMap.name} (${primaryPidMap.commandWord})`);
   } finally {
     dom.window.close();
     globalThis.window = oldWindow;

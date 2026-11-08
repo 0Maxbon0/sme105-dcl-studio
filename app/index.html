@@ -287,190 +287,207 @@
         Bridge disconnected — tap <strong>Connect</strong> in the top header to enable candidate tests.
       </div>
 
-      <div class="lab-nav" role="tablist" aria-label="Engineering Lab Sections">
-        <div class="lab-nav-scroll">
-          <button type="button" class="lab-nav-pill active" data-lab-section="explorer" role="tab" aria-selected="true">Candidates (26)</button>
-          <button type="button" class="lab-nav-pill" data-lab-section="discovery" role="tab" aria-selected="false">Discovery (8)</button>
-          <button type="button" class="lab-nav-pill" data-lab-section="mem" role="tab" aria-selected="false">MEM Tests (4)</button>
-          <button type="button" class="lab-nav-pill" data-lab-section="procedures" role="tab" aria-selected="false">Procedures</button>
-          <button type="button" class="lab-nav-pill" data-lab-section="bridge" role="tab" aria-selected="false">Bridge</button>
-          <button type="button" class="lab-nav-pill" data-lab-section="reference" role="tab" aria-selected="false">Protocol Ref</button>
+      <!-- Area A: Command Explorer -->
+      <section id="lab-sec-explorer" class="lab-section lab-area lab-explorer" aria-labelledby="lab-explorer-title">
+        <div class="lab-area-heading">
+          <h3 id="lab-explorer-title">Command Explorer</h3>
+          <p class="help">Browse the 26 executable SME-105 command candidates. Fixed envelope framing words are listed in the advanced protocol reference.</p>
         </div>
-      </div>
-
-      <!-- 1. Command Explorer Section -->
-      <div id="lab-sec-explorer" class="lab-section" role="tabpanel">
-        <p class="help">Browse the 26 executable SME-105 command candidates. The three fixed envelope framing words (01B0, FF5F, 00A0) are shown separately in Protocol Reference.</p>
-        <label class="stack" for="dcl-command-search">Search command name or hexadecimal word
-          <input id="dcl-command-search" type="search" placeholder="004E or PID map" autocomplete="off">
-        </label>
-        <div class="dcl-filter-grid">
-          <label class="stack" for="dcl-command-category">Category
-            <select id="dcl-command-category">
-              <option value="ALL">All</option>
-              <option value="READ_ONLY">Read-only (Class A)</option>
-              <option value="SELF_TEST">Self-tests (Class B)</option>
-              <option value="STATE_CHANGING">State-changing (Class C)</option>
-              <option value="CONFIG_CHANGE">Config/Baud (Class D)</option>
-              <option value="SEQUENCE_DEPENDENT">Sequence-dependent (Class E)</option>
-              <option value="FACTORY_PROCEDURE">Procedures (Class F)</option>
-            </select>
+        <div class="dcl-explorer-filters">
+          <label class="stack" for="dcl-command-search">Search command name or hexadecimal word
+            <input id="dcl-command-search" type="search" placeholder="004E or PID map" autocomplete="off">
           </label>
-          <label class="stack" for="dcl-command-firmware" hidden>Firmware status
-            <select id="dcl-command-firmware">
-              <option value="ALL">All</option>
-              <option value="SUPPORTED">Supported on Bridge</option>
-              <option value="DEFERRED">Deferred / Needs Setup</option>
-            </select>
-          </label>
+          <div class="dcl-filter-grid">
+            <label class="stack" for="dcl-command-category">Category
+              <select id="dcl-command-category">
+                <option value="ALL">All</option>
+                <option value="READ_ONLY">Read-only (Class A)</option>
+                <option value="SELF_TEST">Self-tests (Class B)</option>
+                <option value="STATE_CHANGING">State-changing (Class C)</option>
+                <option value="CONFIG_CHANGE">Config/Baud (Class D)</option>
+                <option value="SEQUENCE_DEPENDENT">Sequence-dependent (Class E)</option>
+                <option value="FACTORY_PROCEDURE">Procedures (Class F)</option>
+              </select>
+            </label>
+            <label class="stack" for="dcl-command-firmware" hidden>Firmware status
+              <select id="dcl-command-firmware">
+                <option value="ALL">All</option>
+                <option value="SUPPORTED">Supported on Bridge</option>
+                <option value="DEFERRED">Deferred / Needs Setup</option>
+              </select>
+            </label>
+          </div>
         </div>
         <p id="dcl-catalogue-count" class="help" role="status"></p>
         <div id="dcl-command-list" class="dcl-command-list" role="list" aria-label="DCL command candidates"></div>
-        <details id="dcl-command-details" class="dcl-command-details" open>
-          <summary id="dcl-command-detail-title">Vehicle Conditions (Select a candidate)</summary>
-          <div id="dcl-command-detail-body" class="help">Select a candidate to view required ignition and engine conditions.</div>
+
+        <section class="dcl-candidate-details-card" aria-labelledby="dcl-candidate-details-heading">
+          <h4 id="dcl-candidate-details-heading">Candidate Details</h4>
+          <details id="dcl-command-details" class="dcl-command-details" open>
+            <summary id="dcl-command-detail-title">Vehicle Conditions (Select a candidate)</summary>
+            <div id="dcl-command-detail-body" class="help">Select a candidate to view required ignition and engine conditions.</div>
+          </details>
+        </section>
+
+        <section class="dcl-runner-panel" aria-label="Candidate execution controls">
+          <div class="dcl-run-bar">
+            <button id="dcl-toggle-multiselect" type="button" class="secondary" aria-pressed="false">Select multiple</button>
+            <button id="dcl-run-action" type="button" class="primary" disabled>Run candidate</button>
+          </div>
+          <div class="dcl-batch-controls">
+            <h4>Batch Runner</h4>
+            <p class="help">Choose candidates in the list, review their order, then run the batch. Read-only candidates require bridge pre-flight; other commands require separate operator confirmation and the stated vehicle conditions.</p>
+            <div class="dcl-batch-actions">
+              <button id="dcl-run-selected" type="button" class="primary" disabled>Run Selected Candidates</button>
+              <button id="dcl-stop-selected" type="button" disabled>Stop Candidate Batch</button>
+              <button id="dcl-experiment-export" type="button" disabled>Export Candidate and MEM Experiments ZIP</button>
+            </div>
+            <div id="dcl-batch-order" class="help" hidden></div>
+            <p id="dcl-batch-status" class="banner" role="status">No candidate batch is running.</p>
+          </div>
+        </section>
+      </section>
+
+      <!-- Area B: Ready-made Workflows -->
+      <section id="lab-workflows" class="lab-area lab-workflows" aria-labelledby="lab-workflows-title">
+        <div class="lab-area-heading">
+          <h3 id="lab-workflows-title">Ready-made Workflows</h3>
+          <p class="help">Run a fixed discovery pass, compare MEM profiles, or follow a guided factory procedure.</p>
+        </div>
+
+        <details class="lab-workflow-card">
+          <summary><span>Read-Only Discovery</span><span class="lab-workflow-meta">8 commands · fixed sequence</span></summary>
+          <section id="lab-sec-discovery" class="lab-section dcl-workflow-content" aria-labelledby="discovery-pass-title">
+            <div class="recording-panel dcl-discovery-panel">
+              <h4 id="discovery-pass-title">One-Pass Read-Only Discovery</h4>
+              <p class="help">Runs exactly 260E &rarr; 26A4 &rarr; 0381 &rarr; 005E &rarr; 004E &rarr; 242E &rarr; 22C6 &rarr; 271E. It verifies safe IDLE and read-lock status before each command. Zero-byte captures are retained as outcomes.</p>
+              <button id="discovery-run" type="button" class="primary" disabled>Run Supported Read-Only Discovery Pass</button>
+              <p id="discovery-active" class="banner" role="status">No discovery pass has been run.</p>
+              <progress id="discovery-progress" max="8" value="0" aria-label="Discovery pass progress"></progress>
+              <div class="dcl-discovery-lists">
+                <section><h4>Completed</h4><ul id="discovery-completed" class="help"></ul></section>
+                <section><h4>Failed</h4><ul id="discovery-failed" class="help"></ul></section>
+                <section><h4>Remaining</h4><ul id="discovery-remaining" class="help"></ul></section>
+              </div>
+              <div class="recording-export-actions">
+                <button id="discovery-stop" type="button" disabled>Stop discovery safely</button>
+                <button id="discovery-export" type="button" disabled>Export discovery ZIP</button>
+              </div>
+            </div>
+          </section>
         </details>
-        <div class="recording-panel dcl-batch-panel">
-          <h3>Selected Candidate Runner</h3>
-          <p class="help">Select candidates in their detail cards, then run the batch in order. Read-only candidates require bridge pre-flight. Each self-test, state-changing, baud/map, engine-running or MEM command requires a separate operator confirmation and the stated vehicle conditions. Skipped commands are recorded; no command is silently retried.</p>
-          <button id="dcl-run-selected" type="button" class="primary" disabled>Run Selected Candidates</button>
-          <button id="dcl-stop-selected" type="button" disabled>Stop Candidate Batch</button>
-          <button id="dcl-experiment-export" type="button" disabled>Export Candidate and MEM Experiments ZIP</button>
-          <p id="dcl-batch-status" class="banner" role="status">No candidate batch is running.</p>
-        </div>
-      </div>
 
-      <!-- 2. Discovery Section -->
-      <div id="lab-sec-discovery" class="lab-section" role="tabpanel" hidden>
-        <div class="recording-panel dcl-discovery-panel" aria-labelledby="discovery-pass-title">
-          <h3 id="discovery-pass-title">One-Pass Read-Only Discovery</h3>
-          <p class="help">Runs exactly 260E &rarr; 26A4 &rarr; 0381 &rarr; 005E &rarr; 004E &rarr; 242E &rarr; 22C6 &rarr; 271E. It verifies safe IDLE and read-lock status before each command. Zero-byte captures are retained as outcomes.</p>
-          <button id="discovery-run" type="button" class="primary" disabled>Run Supported Read-Only Discovery Pass</button>
-          <p id="discovery-active" class="banner" role="status">No discovery pass has been run.</p>
-          <progress id="discovery-progress" max="8" value="0" aria-label="Discovery pass progress"></progress>
-          <div class="dcl-discovery-lists">
-            <section><h4>Completed</h4><ul id="discovery-completed" class="help"></ul></section>
-            <section><h4>Failed</h4><ul id="discovery-failed" class="help"></ul></section>
-            <section><h4>Remaining</h4><ul id="discovery-remaining" class="help"></ul></section>
-          </div>
-          <div class="recording-export-actions">
-            <button id="discovery-stop" type="button" disabled>Stop discovery safely</button>
-            <button id="discovery-export" type="button" disabled>Export discovery ZIP</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- 3. MEM Experiments Section -->
-      <div id="lab-sec-mem" class="lab-section" role="tabpanel" hidden>
-        <div class="recording-panel dcl-mem-panel" aria-labelledby="mem-matrix-title">
-          <h3 id="mem-matrix-title">MEM Experiments</h3>
-          <p class="help">Isolates the offset-zero, request-only, and continuation-parity hypotheses on EEC-IV DCL. Use key on, engine off, neutral, parking brake applied. Every run stores the complete transcript in IndexedDB.</p>
-
-          <!-- Compact 4 Experiment Cards for mobile -->
-          <div id="mem-cards-container" class="mem-cards-container"></div>
-
-          <div class="recording-export-actions">
-            <button id="mem-run-all" type="button" class="primary">Run All MEM Experiments</button>
-            <button id="mem-stop" type="button" disabled>Stop MEM Experiments</button>
-          </div>
-          <p id="mem-matrix-status" class="banner" role="status">No MEM experiments have been run.</p>
-
-          <h4>Response Comparison</h4>
-          <div class="table-scroll">
-            <table class="dcl-matrix-table">
-              <thead><tr><th>Experiment</th><th>Response bytes</th><th>Response envelope</th><th>TX envelope</th><th>Verdict</th></tr></thead>
-              <tbody id="mem-matrix-comparison"></tbody>
-            </table>
-          </div>
-
-          <!-- Collapsible technical table -->
-          <details class="mem-technical-table-details">
-            <summary>Full Technical 10-Column MEM Matrix Table</summary>
-            <div class="table-scroll">
-              <table id="mem-matrix-table" class="dcl-matrix-table">
-                <thead><tr><th>Experiment ID</th><th>Initial Word</th><th>Continuation Word</th><th>Offset Scope</th><th>Parity Method</th><th>Firmware Variant</th><th>Status</th><th>Response Bytes</th><th>Verdict</th><th>Run</th></tr></thead>
-                <tbody id="mem-matrix-body"></tbody>
-              </table>
+        <details class="lab-workflow-card">
+          <summary><span>MEM Comparison</span><span class="lab-workflow-meta">4 memory experiment profiles</span></summary>
+          <section id="lab-sec-mem" class="lab-section dcl-workflow-content" aria-labelledby="mem-matrix-title">
+            <div class="recording-panel dcl-mem-panel">
+              <h4 id="mem-matrix-title">MEM Experiments</h4>
+              <p class="help">Isolates the offset-zero, request-only, and continuation-parity hypotheses on EEC-IV DCL. Use key on, engine off, neutral, parking brake applied. Every run stores the complete transcript in IndexedDB.</p>
+              <div id="mem-cards-container" class="mem-cards-container"></div>
+              <div class="recording-export-actions">
+                <button id="mem-run-all" type="button" class="primary">Run All MEM Experiments</button>
+                <button id="mem-stop" type="button" disabled>Stop MEM Experiments</button>
+              </div>
+              <p id="mem-matrix-status" class="banner" role="status">No MEM experiments have been run.</p>
+              <h4>Response Comparison</h4>
+              <div class="table-scroll">
+                <table class="dcl-matrix-table">
+                  <thead><tr><th>Experiment</th><th>Response bytes</th><th>Response envelope</th><th>TX envelope</th><th>Verdict</th></tr></thead>
+                  <tbody id="mem-matrix-comparison"></tbody>
+                </table>
+              </div>
+              <details class="mem-technical-table-details">
+                <summary>Full Technical 10-Column MEM Matrix Table</summary>
+                <div class="table-scroll">
+                  <table id="mem-matrix-table" class="dcl-matrix-table">
+                    <thead><tr><th>Experiment ID</th><th>Initial Word</th><th>Continuation Word</th><th>Offset Scope</th><th>Parity Method</th><th>Firmware Variant</th><th>Status</th><th>Response Bytes</th><th>Verdict</th><th>Run</th></tr></thead>
+                    <tbody id="mem-matrix-body"></tbody>
+                  </table>
+                </div>
+              </details>
             </div>
-          </details>
-        </div>
-      </div>
+          </section>
+        </details>
 
-      <!-- 4. Factory Procedures Section -->
-      <div id="lab-sec-procedures" class="lab-section" role="tabpanel" hidden>
-        <div class="recording-panel dcl-procedure-panel" aria-labelledby="factory-procedure-title">
-          <h3 id="factory-procedure-title">Factory Service Procedures</h3>
-          <p class="help">Guided KOEO and KOER factory diagnostic sessions with raw DCL logging. The app does not claim verified actuator cycling, fuel cutoff or cylinder identification on SME-105 without actual ECU evidence.</p>
-          <div class="dcl-procedure-actions">
-            <button type="button" data-run-procedure="OUTPUT_SWITCH_TEST">Run Output Switch Test</button>
-            <button type="button" data-run-procedure="CYLINDER_BALANCE_TEST">Run Cylinder Balance Test</button>
-          </div>
-          <p id="factory-procedure-status" class="banner" role="status">No factory procedure is running.</p>
-          <ol id="factory-procedure-steps" class="help"></ol>
-          <div class="recording-export-actions">
-            <button id="factory-procedure-next" type="button" disabled>Next Procedure Step</button>
-            <button id="factory-procedure-stop" type="button" disabled>Stop Procedure</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- 5. Bridge Tools Section -->
-      <div id="lab-sec-bridge" class="lab-section" role="tabpanel" hidden>
-        <div class="recording-panel bridge-tools-panel">
-          <h3>Low-Level Bridge Operations</h3>
-          <p class="help">Direct bridge diagnostic and hardware control commands. Only operate when vehicle state matches required conditions.</p>
-
-          <div class="bridge-action-cards">
-            <div class="bridge-action-card">
-              <h4>ESP32 Hardware Bench (TX2)</h4>
-              <p class="help" data-str="selfTestHelp"></p>
-              <button id="bench-btn" type="button" data-str="selfTest"></button>
+        <details class="lab-workflow-card">
+          <summary><span>Guided Factory Procedures</span><span class="lab-workflow-meta">Output Switch &amp; Cylinder Balance</span></summary>
+          <section id="lab-sec-procedures" class="lab-section dcl-workflow-content" aria-labelledby="factory-procedure-title">
+            <div class="recording-panel dcl-procedure-panel">
+              <h4 id="factory-procedure-title">Factory Service Procedures</h4>
+              <p class="help">Guided KOEO and KOER factory diagnostic sessions with raw DCL logging. The app does not claim verified actuator cycling, fuel cutoff or cylinder identification on SME-105 without actual ECU evidence.</p>
+              <div class="dcl-procedure-actions">
+                <button type="button" data-run-procedure="OUTPUT_SWITCH_TEST">Run Output Switch Test</button>
+                <button type="button" data-run-procedure="CYLINDER_BALANCE_TEST">Run Cylinder Balance Test</button>
+              </div>
+              <p id="factory-procedure-status" class="banner" role="status">No factory procedure is running.</p>
+              <ol id="factory-procedure-steps" class="help"></ol>
+              <div class="recording-export-actions">
+                <button id="factory-procedure-next" type="button" disabled>Next Procedure Step</button>
+                <button id="factory-procedure-stop" type="button" disabled>Stop Procedure</button>
+              </div>
             </div>
-            <div class="bridge-action-card">
-              <h4>Reboot ESP32 Bridge</h4>
-              <p class="help">Restarts the ESP32 bridge. A new BLE connection may be required.</p>
-              <button id="reboot-btn" type="button" data-str="reboot"></button>
-            </div>
-            <div class="bridge-action-card">
-              <h4>Bus Offline / Release</h4>
-              <p class="help" data-str="offlineHelp"></p>
-              <button id="offline-btn" type="button" class="primary" data-str="offline"></button>
-            </div>
-            <div class="bridge-action-card">
-              <h4>Experimental ECU Memory Read (42F3)</h4>
-              <p class="help">Sends the separately confirmed MEM request sequence. 00A0 is the envelope terminator, not an independent ECU inquiry.</p>
-              <button id="mem-btn" type="button" class="primary" data-str="readIdentity"></button>
-              <pre id="identity-out" class="mono"></pre>
-            </div>
-          </div>
+          </section>
+        </details>
+      </section>
 
-          <details class="bridge-probe-details" open>
-            <summary>Single Candidate Probe Runner</summary>
-            <label class="stack" for="dcl-probe-select">Sendable command candidate
-              <select id="dcl-probe-select"></select>
-            </label>
-            <p id="dcl-probe-description" class="help"></p>
-            <button id="dcl-probe-run" type="button" class="primary" disabled>Send one candidate request</button>
-            <p id="dcl-probe-summary" class="banner" role="status">No DCL discovery probe has been recorded yet.</p>
-            <button id="dcl-probe-export" type="button" disabled>Export finalized probe evidence</button>
-            <pre id="dcl-probe-raw" class="mono">The selected command will be sent once after bridge prechecks. All received bytes are retained in the diagnostic journal.</pre>
-          </details>
+      <!-- Area C: Advanced Bridge and Protocol Tools -->
+      <details id="lab-advanced-panel" class="lab-area lab-advanced-panel">
+        <summary>Advanced Bridge Tools &amp; Protocol Reference</summary>
+        <div class="lab-advanced-content">
+          <section id="lab-sec-bridge" class="lab-section" aria-labelledby="lab-bridge-title">
+            <div class="recording-panel bridge-tools-panel">
+              <h3 id="lab-bridge-title">Low-Level Bridge Operations</h3>
+              <p class="help">Direct bridge diagnostic and hardware control commands. Only operate when vehicle state matches required conditions.</p>
+              <div class="bridge-action-cards">
+                <div class="bridge-action-card">
+                  <h4>ESP32 Hardware Bench (TX2)</h4>
+                  <p class="help" data-str="selfTestHelp"></p>
+                  <button id="bench-btn" type="button" data-str="selfTest"></button>
+                </div>
+                <div class="bridge-action-card">
+                  <h4>Reboot ESP32 Bridge</h4>
+                  <p class="help">Restarts the ESP32 bridge. A new BLE connection may be required.</p>
+                  <button id="reboot-btn" type="button" data-str="reboot"></button>
+                </div>
+                <div class="bridge-action-card">
+                  <h4>Bus Offline / Release</h4>
+                  <p class="help" data-str="offlineHelp"></p>
+                  <button id="offline-btn" type="button" class="primary" data-str="offline"></button>
+                </div>
+                <div class="bridge-action-card">
+                  <h4>Experimental ECU Memory Read (42F3)</h4>
+                  <p class="help">Sends the separately confirmed MEM request sequence. 00A0 is the envelope terminator, not an independent ECU inquiry.</p>
+                  <button id="mem-btn" type="button" class="primary" data-str="readIdentity"></button>
+                  <pre id="identity-out" class="mono"></pre>
+                </div>
+              </div>
+              <details class="bridge-probe-details">
+                <summary>Single Candidate Probe Runner</summary>
+                <label class="stack" for="dcl-probe-select">Sendable command candidate
+                  <select id="dcl-probe-select"></select>
+                </label>
+                <p id="dcl-probe-description" class="help"></p>
+                <button id="dcl-probe-run" type="button" class="primary" disabled>Send one candidate request</button>
+                <p id="dcl-probe-summary" class="banner" role="status">No DCL discovery probe has been recorded yet.</p>
+                <button id="dcl-probe-export" type="button" disabled>Export finalized probe evidence</button>
+                <pre id="dcl-probe-raw" class="mono">The selected command will be sent once after bridge prechecks. All received bytes are retained in the diagnostic journal.</pre>
+              </details>
+            </div>
+          </section>
+          <section id="lab-sec-reference" class="lab-section" aria-labelledby="protocol-framing-title">
+            <div class="recording-panel dcl-framing-panel">
+              <h3 id="protocol-framing-title">Protocol Framing Reference</h3>
+              <p class="help">These three control words form the fixed four-word diagnostic request envelope. They are framing reference only, are never sent as standalone inquiries, and are excluded from the 26 executable candidates above.</p>
+              <ul id="protocol-framing-list" class="help" aria-label="Protocol framing reference words"></ul>
+            </div>
+            <div class="recording-panel dcl-framing-panel">
+              <h3>Deferred &amp; Setup-Required Commands</h3>
+              <p class="help">Commands that require specific external prerequisites, hardware wiring, or future firmware versions.</p>
+              <ul id="dcl-probe-blocked" class="help"></ul>
+            </div>
+          </section>
         </div>
-      </div>
-
-      <!-- 6. Protocol Reference Section -->
-      <div id="lab-sec-reference" class="lab-section" role="tabpanel" hidden>
-        <div class="recording-panel dcl-framing-panel" aria-labelledby="protocol-framing-title">
-          <h3 id="protocol-framing-title">Protocol Framing Reference</h3>
-          <p class="help">These three control words form the fixed four-word diagnostic request envelope. They are framing reference only, are never sent as standalone inquiries, and are excluded from the 26 executable candidates above.</p>
-          <ul id="protocol-framing-list" class="help" aria-label="Protocol framing reference words"></ul>
-        </div>
-        <div class="recording-panel">
-          <h3>Deferred &amp; Setup-Required Commands</h3>
-          <p class="help">Commands that require specific external prerequisites, hardware wiring, or future firmware versions.</p>
-          <ul id="dcl-probe-blocked" class="help"></ul>
-        </div>
-      </div>
+      </details>
     </section>
     <section id="view-log" class="view" hidden>
       <h2>History and diagnostics</h2>

@@ -37,6 +37,9 @@ let dclFirmwareStatus = "ALL";
 let dclSelectedId = "";
 let dclState = null;
 let dclRenderedIds = "";
+let dclRenderedList = null;
+let dclRenderedDocument = null;
+let dclMultiSelectActive = false;
 const selectedDclCandidates = new Set();
 
 const PREF_KEY = "sme105-dashboard-prefs-v1";
@@ -268,10 +271,8 @@ function selectedCommand(state, item) {
   `;
   body.append(condCard);
 
-  const actions = document.createElement("div");
-  actions.className = "dcl-candidate-actions";
   const isBatchable = !item.runnerKey && !!item.variantKey;
-  if (isBatchable) {
+  if (dclMultiSelectActive && isBatchable) {
     const selection = document.createElement("label");
     selection.className = "check dcl-candidate-select";
     const checkbox = document.createElement("input");
@@ -281,19 +282,11 @@ function selectedCommand(state, item) {
     checkbox.addEventListener("change", () => {
       if (checkbox.checked) selectedDclCandidates.add(item.id);
       else selectedDclCandidates.delete(item.id);
-      updateCandidateBatchControls();
+      renderDclCommandExplorer(dclState);
     });
     selection.append(checkbox, document.createTextNode("Include in batch"));
-    actions.append(selection);
+    body.append(selection);
   }
-  const execute = document.createElement("button");
-  execute.type = "button";
-  execute.className = "primary";
-  execute.textContent = item.classification === "FACTORY_PROCEDURE" ? "Run Guided Procedure" : "Transmit / Run Experiment";
-  execute.disabled = !item.sendable;
-  execute.addEventListener("click", () => document.dispatchEvent(new document.defaultView.CustomEvent("dcl:run-candidate", { detail: { candidateId: item.id } })));
-  actions.append(execute);
-  body.append(actions);
 
   // Collapsed technical details: accessible to technician on tap, but clean and non-cluttering by default
   const rawMeta = document.createElement("details");
@@ -330,9 +323,73 @@ function selectedCommand(state, item) {
   body.append(rawMeta);
 }
 
+function canRunDclCandidate(item, state = dclState) {
+  if (!item?.sendable || state?.candidateBatch?.status === "running") return false;
+  if (state?.transport === "demo") return state?.phase === "idle";
+  return state?.link === "ready" && state?.phase === "idle" && firmwareCompatibility(item, state?.status).supported;
+}
+
 function updateCandidateBatchControls() {
-  const run = $("dcl-run-selected");
-  if (run) run.disabled = !selectedDclCandidates.size;
+  const runAction = $("dcl-run-action");
+  const runSelected = $("dcl-run-selected");
+  const batchOrder = $("dcl-batch-order");
+  const toggle = $("dcl-toggle-multiselect");
+  if (toggle) {
+    toggle.textContent = dclMultiSelectActive ? "Single selection" : "Select multiple";
+    toggle.setAttribute("aria-pressed", String(dclMultiSelectActive));
+  }
+
+  let actionText = "Run candidate";
+  let actionDisabled = true;
+  if (dclMultiSelectActive) {
+    const selected = [...selectedDclCandidates].map(id => Object.values(EXPERIMENT_CATALOGUE).find(item => item.id === id)).filter(Boolean);
+    const canRunBatch = selected.length > 0 && selected.every(item => !item.runnerKey && !!item.variantKey && canRunDclCandidate(item));
+    actionText = `Run selected (${selectedDclCandidates.size})`;
+    actionDisabled = !canRunBatch;
+    if (batchOrder) {
+      batchOrder.hidden = false;
+      batchOrder.textContent = selected.length
+        ? `Order: ${selected.map((item, index) => `${index + 1}. ${item.commandWord} (${item.id})`).join(" → ")}`
+        : "Select candidates from the list to form an execution batch.";
+    }
+  } else {
+    const selected = Object.values(EXPERIMENT_CATALOGUE).find(item => item.id === dclSelectedId);
+    if (selected) {
+      actionText = selected.classification === "FACTORY_PROCEDURE"
+        ? `Run ${selected.name} (Guided)`
+        : selected.commandWord ? `Run ${selected.name} (${selected.commandWord})` : `Run ${selected.name}`;
+      actionDisabled = !canRunDclCandidate(selected);
+    }
+    if (batchOrder) batchOrder.hidden = true;
+  }
+  if (runAction) {
+    runAction.textContent = actionText;
+    runAction.disabled = actionDisabled;
+  }
+  if (runSelected) {
+    runSelected.textContent = actionText;
+    runSelected.disabled = actionDisabled;
+  }
+}
+
+function dispatchSelectedDclCandidates() {
+  const button = $("dcl-run-selected");
+  if (!dclMultiSelectActive || button?.disabled || !selectedDclCandidates.size) return;
+  document.dispatchEvent(new document.defaultView.CustomEvent("dcl:run-selected", { detail: { candidateIds: [...selectedDclCandidates] } }));
+}
+
+function dispatchDclRunAction() {
+  const button = $("dcl-run-action");
+  if (button?.disabled) return;
+  if (dclMultiSelectActive) {
+    dispatchSelectedDclCandidates();
+    return;
+  }
+  const selected = Object.values(EXPERIMENT_CATALOGUE).find(item => item.id === dclSelectedId);
+  if (!selected || !canRunDclCandidate(selected)) return;
+  const eventName = selected.classification === "FACTORY_PROCEDURE" ? "dcl:run-procedure" : "dcl:run-candidate";
+  const detail = selected.classification === "FACTORY_PROCEDURE" ? { procedureId: selected.id } : { candidateId: selected.id };
+  document.dispatchEvent(new document.defaultView.CustomEvent(eventName, { detail }));
 }
 
 function commandLabel(id) {
@@ -368,10 +425,8 @@ function renderDiscoveryPass(state) {
     batchStatus.textContent = !batch ? "No candidate batch is running."
       : `${String(batch.status || "idle").toUpperCase()} · ${batch.results?.length || 0} candidate(s) executed${batch.error ? ` · ${batch.error}` : ""}`;
   }
-  const runSelected = $("dcl-run-selected");
   const stopSelected = $("dcl-stop-selected");
   const exportExperiments = $("dcl-experiment-export");
-  if (runSelected) runSelected.disabled = selectedDclCandidates.size === 0 || state?.candidateBatch?.status === "running";
   if (stopSelected) stopSelected.disabled = state?.candidateBatch?.status !== "running";
   if (exportExperiments) exportExperiments.disabled = !(state?.experimentResults?.length || state?.memMatrix?.results?.length || state?.discoveryPass?.results?.length || state?.lastSession?.dclProbe);
   const list = (id, rows, kind) => {
@@ -609,6 +664,19 @@ export function renderDclCommandExplorer(state) {
   dclState = state;
   const list = $("dcl-command-list");
   if (!list) return;
+  if (list.ownerDocument !== dclRenderedDocument) {
+    dclRenderedDocument = list.ownerDocument;
+    dclSearch = "";
+    dclCategory = "ALL";
+    dclFirmwareStatus = "ALL";
+    dclSelectedId = "";
+    dclMultiSelectActive = false;
+    selectedDclCandidates.clear();
+  }
+  if (list !== dclRenderedList) {
+    dclRenderedList = list;
+    dclRenderedIds = "";
+  }
   renderProtocolFramingReference();
   const filtered = filterDclCatalogue({ query: dclSearch, category: dclCategory, firmwareStatus: dclFirmwareStatus, firmwareVersion: state?.transport === "demo" ? null : state?.status });
   if (!filtered.some(item => item.id === dclSelectedId)) dclSelectedId = filtered[0]?.id || "";
@@ -634,20 +702,34 @@ export function renderDclCommandExplorer(state) {
       heading.textContent = item.name;
       const status = document.createElement("small");
       status.textContent = DCL_CLASS_LABELS[item.classification] || item.classification;
-      textWrap.append(heading, status);
+      const selectionState = document.createElement("small");
+      selectionState.className = "dcl-card-selection";
+      textWrap.append(heading, status, selectionState);
 
       button.append(codeWrap, textWrap);
       button.addEventListener("click", () => {
         dclSelectedId = item.id;
+        if (dclMultiSelectActive && !item.runnerKey && item.variantKey) {
+          if (selectedDclCandidates.has(item.id)) selectedDclCandidates.delete(item.id);
+          else selectedDclCandidates.add(item.id);
+        }
         renderDclCommandExplorer(dclState);
       });
       return button;
     });
     list.replaceChildren(...buttons);
     dclRenderedIds = renderedIds;
-  } else {
-    [...list.children].forEach((button, index) => button.setAttribute("aria-pressed", String(filtered[index]?.id === dclSelectedId)));
   }
+  [...list.children].forEach((button, index) => {
+    const item = filtered[index];
+    const isSelected = dclMultiSelectActive ? selectedDclCandidates.has(item?.id) : item?.id === dclSelectedId;
+    button.setAttribute("aria-pressed", String(isSelected));
+    button.classList.toggle("is-selected", isSelected);
+    const selectionState = button.querySelector(".dcl-card-selection");
+    if (selectionState) selectionState.textContent = !dclMultiSelectActive ? ""
+      : !item?.runnerKey && item?.variantKey ? (selectedDclCandidates.has(item.id) ? "Selected" : "Select for batch")
+      : "Guided only";
+  });
   const selected = filtered.find(item => item.id === dclSelectedId);
   const body = $("dcl-command-detail-body");
   if (selected) selectedCommand(state, selected);
@@ -665,7 +747,13 @@ export function wireDclCommandExplorer() {
   $("dcl-command-search")?.addEventListener("input", event => { dclSearch = event.currentTarget.value; renderDclCommandExplorer(dclState); });
   $("dcl-command-category")?.addEventListener("change", event => { dclCategory = event.currentTarget.value; renderDclCommandExplorer(dclState); });
   $("dcl-command-firmware")?.addEventListener("change", event => { dclFirmwareStatus = event.currentTarget.value; renderDclCommandExplorer(dclState); });
-  $("dcl-run-selected")?.addEventListener("click", () => document.dispatchEvent(new document.defaultView.CustomEvent("dcl:run-selected", { detail: { candidateIds: [...selectedDclCandidates] } })));
+  $("dcl-toggle-multiselect")?.addEventListener("click", () => {
+    dclMultiSelectActive = !dclMultiSelectActive;
+    if (!dclMultiSelectActive) selectedDclCandidates.clear();
+    renderDclCommandExplorer(dclState);
+  });
+  $("dcl-run-action")?.addEventListener("click", dispatchDclRunAction);
+  $("dcl-run-selected")?.addEventListener("click", dispatchDclRunAction);
   $("mem-run-all")?.addEventListener("click", () => document.dispatchEvent(new document.defaultView.CustomEvent("dcl:run-mem-all")));
   $("mem-stop")?.addEventListener("click", () => document.dispatchEvent(new document.defaultView.CustomEvent("dcl:stop-mem")));
   $("dcl-experiment-export")?.addEventListener("click", () => document.dispatchEvent(new document.defaultView.CustomEvent("dcl:export-experiments")));

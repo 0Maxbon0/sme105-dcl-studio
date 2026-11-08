@@ -30,6 +30,7 @@ button, select, input { color: inherit; font: inherit; }
 button, select { min-height: 48px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface-raised); padding: 10px 14px; }
 button { cursor: pointer; }
 button:disabled { cursor: default; opacity: .45; }
+button.secondary { border-color: color-mix(in srgb, var(--cyan) 60%, var(--line)); background: var(--surface-raised); color: var(--cyan); font-weight: 700; }
 button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-visible, [tabindex="0"]:focus-visible { outline: 3px solid var(--cyan); outline-offset: 2px; }
 button.primary { border-color: transparent; background: var(--cyan); color: #072027; font-weight: 760; }
 button.danger { background: transparent; border-color: var(--red); color: var(--red); font-weight: 800; }
@@ -265,17 +266,23 @@ body.reduce-motion *, body.reduce-motion *::before, body.reduce-motion *::after 
 .warning-list:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
 .recording-panel { gap: 14px; }
 .recording-panel h2 { margin: 0; font-size: 1rem; }
-.dcl-filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr)); gap: 8px; }
-.dcl-command-list { display: flex; flex-direction: column; gap: 8px; max-height: 280px; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-sizing: border-box; width: 100%; }
+.dcl-explorer-filters { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; align-items: end; min-width: 0; }
+.dcl-explorer-filters label, .dcl-explorer-filters input, .dcl-explorer-filters select { width: 100%; min-width: 0; }
+.dcl-filter-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; min-width: 0; }
+.dcl-command-list { display: flex; flex-direction: column; gap: 8px; max-height: min(420px, 55dvh); overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-sizing: border-box; width: 100%; min-width: 0; }
 .dcl-command-card { display: flex; align-items: center; gap: 12px; padding: 8px 12px; text-align: left; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-raised); box-sizing: border-box; width: 100%; min-width: 0; cursor: pointer; transition: background .15s ease, border-color .15s ease; }
-.dcl-card-code-wrap { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 95px; text-align: center; }
-.dcl-command-card .mono { font-size: .88rem; font-weight: 700; color: var(--cyan); text-align: center; background: rgba(0, 212, 255, 0.1); padding: 4px 8px; border-radius: 6px; border: 1px solid rgba(0, 212, 255, 0.25); letter-spacing: .04em; display: block; width: 100%; box-sizing: border-box; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dcl-card-code-wrap { display: flex; align-items: center; justify-content: center; flex: 0 0 clamp(62px, 17vw, 95px); min-width: 0; text-align: center; }
+.dcl-command-card .mono { font-size: .88rem; font-weight: 800; color: var(--cyan); text-align: center; background: color-mix(in srgb, var(--cyan) 14%, var(--surface)); padding: 5px 10px; letter-spacing: .04em; display: block; width: 100%; box-sizing: border-box; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; clip-path: polygon(12% 0, 88% 0, 100% 50%, 88% 100%, 12% 100%, 0 50%); }
 .dcl-card-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .dcl-command-card strong { font-size: .86rem; font-weight: 600; color: var(--text); line-height: 1.25; overflow-wrap: break-word; word-break: break-word; }
 .dcl-command-card small { font-size: .68rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
 .dcl-command-card[aria-pressed="true"] { border-color: var(--cyan); background: var(--cyan-dim); box-shadow: inset 0 0 0 1.5px var(--cyan); }
 .dcl-command-card:active { background: var(--surface); }
-.dcl-command-details { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; }
+.dcl-candidate-details-card, .dcl-runner-panel { display: grid; gap: 10px; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.dcl-candidate-details-card > h4, .dcl-batch-controls > h4 { margin: 0; }
+.dcl-command-details { display: grid; gap: 8px; min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-raised); }
+.dcl-command-details > summary { color: var(--cyan); font-weight: 700; cursor: pointer; overflow-wrap: anywhere; }
+.dcl-command-details > #dcl-command-detail-body { min-width: 0; overflow-wrap: anywhere; }
 .dcl-condition-card { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 10px 14px; background: var(--surface-raised); border: 1px solid var(--line); border-radius: 10px; }
 .dcl-condition-item { display: inline-flex; align-items: center; gap: 6px; font-size: .88rem; }
 .dcl-cond-label { color: var(--muted); font-weight: 600; }
@@ -290,23 +297,84 @@ details.dcl-command-tech-meta summary { font-size: .78rem; cursor: pointer; colo
 .dcl-detail-row { display: grid; grid-template-columns: minmax(110px, .35fr) 1fr; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); }
 .dcl-detail-row:last-child { border-bottom: 0; }
 .dcl-detail-row p { margin: 0; overflow-wrap: anywhere; }
-.dcl-batch-panel, .dcl-discovery-panel, .dcl-mem-panel, .dcl-procedure-panel, .dcl-framing-panel { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); margin-top: 8px; max-width: 100%; box-sizing: border-box; overflow-x: hidden; }
-.dcl-discovery-panel h3, .dcl-discovery-lists h4 { margin: 0; }
-.dcl-discovery-lists { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.dcl-run-bar, .dcl-batch-actions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; min-width: 0; }
+.dcl-run-bar button, .dcl-batch-actions button { width: 100%; min-width: 0; overflow-wrap: anywhere; }
+.dcl-batch-controls { display: grid; gap: 10px; min-width: 0; padding-top: 12px; border-top: 1px solid var(--line); }
+.dcl-batch-controls > .help { margin: 0; }
+#dcl-batch-order { min-width: 0; overflow-wrap: anywhere; }
+.dcl-workflow-content { display: block; padding-top: 10px; }
+.dcl-discovery-panel, .dcl-mem-panel, .dcl-procedure-panel, .dcl-framing-panel { display: grid; gap: 10px; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-sizing: border-box; overflow-x: hidden; }
+.dcl-discovery-panel h3, .dcl-discovery-panel h4, .dcl-discovery-lists h4 { margin: 0; }
+.dcl-discovery-lists { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
 .dcl-discovery-lists section { min-width: 0; }
 .dcl-discovery-lists ul { padding-left: 19px; overflow-wrap: anywhere; }
 .dcl-framing-panel ul { padding-left: 19px; margin: 4px 0; overflow-wrap: anywhere; }
 .dcl-procedure-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
-.dcl-procedure-actions button { flex: 1 1 calc(50% - 8px); min-width: 130px; }
+.dcl-procedure-actions button { flex: 1 1 100%; min-width: 0; }
 .table-scroll { width: 100%; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 8px 0; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-sizing: border-box; }
 .dcl-matrix-table { width: 100%; min-width: 620px; border-collapse: collapse; font-size: .74rem; }
 .dcl-matrix-table th, .dcl-matrix-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .dcl-matrix-table th { background: var(--surface-raised); color: var(--text); font-weight: 700; font-size: .7rem; letter-spacing: .04em; text-transform: uppercase; }
 .dcl-matrix-table td button { min-height: 34px; padding: 4px 10px; font-size: .74rem; border-radius: 8px; }
-@media (max-width: 560px) {
-  .dcl-filter-grid, .dcl-discovery-lists { grid-template-columns: 1fr; }
-  .dcl-detail-row { grid-template-columns: 1fr; gap: 4px; }
-  .dcl-procedure-actions button { flex: 1 1 100%; }
+.dcl-mem-panel > h4 { margin: 0; }
+.dcl-procedure-panel > h4 { margin: 0; }
+.dcl-procedure-panel > .help, .dcl-mem-panel > .help, .dcl-discovery-panel > .help { margin: 0; }
+.dcl-framing-panel { margin: 0; }
+.recording-panel.dcl-mem-panel .recording-export-actions { grid-template-columns: minmax(0, 1fr); }
+.recording-panel.dcl-discovery-panel .recording-export-actions { grid-template-columns: minmax(0, 1fr); }
+.lab-area { display: grid; gap: 12px; width: 100%; max-width: 100%; min-width: 0; }
+.lab-area-heading { display: grid; gap: 4px; min-width: 0; }
+.lab-area-heading h3 { font-size: 1rem; }
+.lab-area-heading .help { margin: 0; }
+.lab-workflows { gap: 10px; }
+.lab-workflow-card { min-width: 0; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); overflow: hidden; }
+.lab-workflow-card > summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 54px; padding: 12px; color: var(--text); font-weight: 700; cursor: pointer; list-style-position: inside; }
+.lab-workflow-card > summary::marker { color: var(--cyan); }
+.lab-workflow-meta { color: var(--muted); font-size: .75rem; font-weight: 600; text-align: right; }
+.lab-workflow-card[open] > summary { border-bottom: 1px solid var(--line); }
+.lab-advanced-panel { min-width: 0; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); overflow: hidden; }
+.lab-advanced-panel > summary { min-height: 52px; padding: 14px; color: var(--cyan); font-weight: 750; cursor: pointer; }
+.lab-advanced-content { display: grid; gap: 12px; min-width: 0; padding: 0 10px 10px; }
+.lab-advanced-content > .lab-section { display: grid; gap: 12px; }
+.bridge-tools-panel { min-width: 0; }
+.bridge-probe-details { min-width: 0; }
+.bridge-probe-details > summary { color: var(--cyan); font-weight: 700; cursor: pointer; }
+.bridge-probe-details > label, .bridge-probe-details select { min-width: 0; width: 100%; }
+.bridge-probe-details pre { max-width: 100%; }
+.lab-section[hidden] { display: none !important; }
+@media (min-width: 560px) {
+  .dcl-explorer-filters { grid-template-columns: minmax(0, 1.15fr) minmax(210px, .85fr); }
+  .dcl-discovery-lists { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .dcl-procedure-actions button { flex: 1 1 calc(50% - 8px); }
+  .recording-panel.dcl-mem-panel .recording-export-actions,
+  .recording-panel.dcl-discovery-panel .recording-export-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dcl-run-bar { grid-template-columns: minmax(160px, .75fr) minmax(0, 1.25fr); }
+  .dcl-batch-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dcl-batch-actions #dcl-experiment-export { grid-column: 1 / -1; }
+}
+@media (min-width: 760px) {
+  .lab-workflows { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lab-workflows > .lab-area-heading { grid-column: 1 / -1; }
+  .lab-workflows > .lab-workflow-card:last-child { grid-column: 1 / -1; }
+  .dcl-batch-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .dcl-batch-actions #dcl-experiment-export { grid-column: auto; }
+  .dcl-detail-row { grid-template-columns: minmax(110px, .35fr) minmax(0, 1fr); }
+}
+@media (min-width: 1000px) {
+  .lab-workflows { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .lab-workflows > .lab-area-heading { grid-column: 1 / -1; }
+  .lab-workflows > .lab-workflow-card:last-child { grid-column: auto; }
+}
+@media (max-width: 359px) {
+  .dcl-command-card { gap: 8px; padding: 8px; }
+  .dcl-card-code-wrap { flex-basis: 60px; }
+  .dcl-command-card .mono { font-size: .78rem; padding-inline: 7px; }
+  .lab-workflow-card > summary { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .lab-workflow-meta { text-align: left; padding-left: 16px; }
+}
+@media (orientation: landscape) and (max-height: 500px) {
+  .dcl-command-list { max-height: 38dvh; }
+  #view-lab { gap: 10px; }
 }
 .recording-intro { margin: 0; }
 .saved-recording-controls { display: grid; gap: 10px; padding-top: 14px; border-top: 1px solid var(--line); }
@@ -404,17 +472,13 @@ body.dashboard-focus .dashboard-rotation-help { display:none; }
 .lab-launcher-desc { margin: 0; font-size: 0.78rem; color: var(--muted); line-height: 1.35; }
 .lab-launcher-arrow { font-size: 1.4rem; color: var(--cyan); font-weight: 700; flex-shrink: 0; }
 
-/* Dedicated Engineering Lab Full-Screen View */
-.lab-nav { width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; margin-bottom: 8px; }
-.lab-nav-scroll { display: flex; gap: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; padding: 2px 2px 6px 2px; scrollbar-width: none; min-width: 0; max-width: 100%; box-sizing: border-box; }
-.lab-nav-scroll::-webkit-scrollbar { display: none; }
-.lab-nav-pill { white-space: nowrap; padding: 8px 14px; font-size: 0.78rem; font-weight: 600; border-radius: 999px; border: 1px solid var(--line); background: var(--surface-raised); color: var(--muted); cursor: pointer; flex-shrink: 0; transition: all 0.15s ease; }
-.lab-nav-pill.active { background: var(--cyan); border-color: var(--cyan); color: #072027; font-weight: 800; }
+/* Engineering Lab Areas */
 .lab-section { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; overflow-x: hidden; }
 .lab-section[hidden] { display: none !important; }
 /* A wide technical table must never determine the Lab grid track's width. */
 #view-lab { grid-template-columns: minmax(0, 1fr); }
-#view-lab > *, #view-lab .lab-section, #view-lab .dcl-mem-panel, #view-lab .mem-cards-container, #view-lab .mem-card { min-width: 0; }
+#view-lab > *, #view-lab .lab-section, #view-lab .lab-area, #view-lab .lab-workflow-card, #view-lab .dcl-mem-panel, #view-lab .mem-cards-container, #view-lab .mem-card { min-width: 0; }
+#view-lab .dcl-mem-panel, #view-lab .dcl-discovery-panel, #view-lab .dcl-procedure-panel { grid-template-columns: minmax(0, 1fr); }
 #view-lab .dcl-mem-panel { grid-template-columns: minmax(0, 1fr); }
 #view-lab .mem-cards-container { grid-template-columns: minmax(0, 1fr); }
 #view-lab .mem-card-title-group { flex-wrap: wrap; }

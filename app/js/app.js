@@ -514,7 +514,7 @@ async function simulateCandidate(candidate, metadata = {}) {
   return { ok: true, simulated: true, result };
 }
 
-async function runCatalogueCandidate(candidateId) {
+async function runSingleDclCandidate(candidateId) {
   const candidate = Object.values(EXPERIMENT_CATALOGUE).find(item => item.id === candidateId);
   if (!candidate?.sendable) return;
   const demo = simulationSelected();
@@ -944,21 +944,6 @@ function wire() {
       renderApp(controller.state);
     });
   }
-  document.querySelectorAll("[data-lab-section]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const targetSec = button.dataset.labSection;
-      document.querySelectorAll("[data-lab-section]").forEach((b) => {
-        const isTarget = b === button;
-        b.classList.toggle("active", isTarget);
-        b.setAttribute("aria-selected", String(isTarget));
-      });
-      document.querySelectorAll(".lab-section").forEach((sec) => {
-        sec.hidden = sec.id !== `lab-sec-${targetSec}`;
-      });
-      // Keep the selected pill visible in the Lab's horizontal navigation on narrow phones.
-      button.scrollIntoView?.({ block: "nearest", inline: "center", behavior: "auto" });
-    });
-  });
   document.getElementById("connect-btn").addEventListener("click", () => { connect(); });
   document.getElementById("connect-settings").addEventListener("click", () => { connect(); });
   document.getElementById("stop-btn").addEventListener("click", () => controller.requestStop());
@@ -1003,12 +988,12 @@ function wire() {
     }
   });
   document.getElementById("dcl-probe-select").addEventListener("change", () => renderSingleProbe(controller.state));
-  document.addEventListener("dcl:run-candidate", event => { void runCatalogueCandidate(event.detail?.candidateId); });
+  document.addEventListener("dcl:run-candidate", event => { void runSingleDclCandidate(event.detail?.candidateId); });
   document.addEventListener("dcl:run-selected", event => { void runSelectedCandidateBatch(event.detail?.candidateIds || getSelectedDclCandidates()); });
   document.addEventListener("dcl:run-mem", event => { void runMemMatrix(event.detail?.experimentId); });
   document.addEventListener("dcl:run-mem-all", () => { void runMemMatrix(); });
   document.addEventListener("dcl:stop-mem", () => controller.stopMemExperiments());
-  document.addEventListener("dcl:run-procedure", event => { void runCatalogueCandidate(event.detail?.procedureId); });
+  document.addEventListener("dcl:run-procedure", event => { void runSingleDclCandidate(event.detail?.procedureId); });
   document.addEventListener("dcl:procedure-next", () => controller.nextFactoryProcedureStep());
   document.addEventListener("dcl:procedure-stop", () => controller.stopFactoryProcedure());
   document.getElementById("dcl-stop-selected").addEventListener("click", () => controller.stopCandidateBatch());
@@ -1070,7 +1055,7 @@ function wire() {
     const spec = DCL_PROBE_VARIANTS[variant];
     if (!spec) return;
     const candidate = Object.values(EXPERIMENT_CATALOGUE).find(item => item.variantKey === variant);
-    if (candidate) void runCatalogueCandidate(candidate.id);
+    if (candidate) void runSingleDclCandidate(candidate.id);
   });
   document.getElementById("dcl-probe-export").addEventListener("click", async () => {
     if (controller.state.phase !== "idle" || controller.state.op) {
@@ -1201,9 +1186,12 @@ function wire() {
   const initialView = new URLSearchParams(window.location.search).get("view") || "live";
   showView(initialView);
   const initialLabSec = new URLSearchParams(window.location.search).get("labSec");
-  if (initialLabSec) {
-    const pill = document.querySelector(`[data-lab-section="${initialLabSec}"]`);
-    if (pill) pill.click();
+  if (["explorer", "discovery", "mem", "procedures", "bridge", "reference"].includes(initialLabSec)) {
+    const section = document.getElementById(`lab-sec-${initialLabSec}`);
+    const workflow = section?.closest(".lab-workflow-card");
+    const advanced = section?.closest("#lab-advanced-panel");
+    if (workflow) workflow.open = true;
+    if (advanced) advanced.open = true;
   }
   renderApp(controller.state);
   wired = true;
