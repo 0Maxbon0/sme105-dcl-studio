@@ -8,12 +8,15 @@ import { createKoerGuide } from "./koer-guide.js";
 import { BleTransport, bluetoothAvailable } from "./ble.js";
 import { WifiTransport, DIRECT_AP_SSID } from "./wifi.js";
 import { createController, candidateRequiresOperatorConfirmation, candidateRequiredStateText } from "./controller.js";
-import { APP_VERSION, createLineBuffer, DCL_BLOCKED_CANDIDATES, EXPERIMENT_CATALOGUE, MEM_EXPERIMENTS, firmwareCompatibility } from "./protocol.js";
+import { createCartDecoder } from "./cart.js";
+import { APP_VERSION, createLineBuffer, DCL_BLOCKED_CANDIDATES, EXPERIMENT_CATALOGUE, MEM_EXPERIMENTS, VARIANTS, firmwareCompatibility, parseLine } from "./protocol.js";
+import { createSession, noteSessionLine } from "./session.js";
+import { pidSetForVariant } from "./pids.js";
 import { createMockTransport, createReplay } from "./mock-transport.js";
 import { STR } from "./strings.js";
-import { createRecording, exportDiscoveryPassArchive, exportAllExperimentsArchive, listRecordings, recordingBlob, recoverInterruptedRecordings } from "./recording.js";
+import { createRecording, exportDiscoveryPassArchive, exportAllExperimentsArchive, listRecordings, recordingBlob, recoverInterruptedRecordings, takeoverRecording } from "./recording.js";
 import { applyStaticStrings, confirmDialog, exportCsv, exportLog, reorderPinnedSensor, pinnedSensors, getSelectedDclCandidates, isDashboardArranging, toggleDashboardArrangement, setDashboardDensity, setDashboardColumns, toggleDashboardFocus, inspectSensorChart, closeSensorDetails, openSensorDetails, refreshDashboardCharts, render, renderDclCommandExplorer, wireDclCommandExplorer, renderEventHistory, renderWarningHistory, setSensorChartRange, showView, toggleSensorPin } from "./ui.js";
-import { closeDiagnosticRun, flushDiagnosticQueue, diagnosticHistory, recentDiagnosticEvents, recordDiagnosticEvent, recordDiagnosticWarning, setDiagnosticStorageErrorHandler, startDiagnosticRun } from "./diagnostics.js";
+import { closeDiagnosticRun, flushDiagnosticQueue, diagnosticHistory, recentDiagnosticEvents, recordDiagnosticEvent, recordDiagnosticSample, recordDiagnosticWarning, setDiagnosticStorageErrorHandler, startDiagnosticRun } from "./diagnostics.js";
 import { exportDiagnosticZip, exportGroupCsv, exportSensorCsv, saveOrShare } from "./exports.js";
 import { lookupCode } from "./codes-db.js";
 import { sensorFreshnessTransitions } from "./live-dashboard.js";
@@ -36,8 +39,13 @@ const previousFreshness = new Map();
 let wired = false;
 let resumeWork = null;
 let protectedCapture = false;
+let trackedArchiveId = "";
 let operatorSave = Promise.resolve(false);
 let analysisUI = null;
+const RECOVERY_SNAPSHOT_KEY = "sme105-recovery-snapshot";
+const WEBVIEW_RECOVERY_REASON = "WebView was recreated before the active controller state could be restored";
+const RECOVERY_SNAPSHOT_FIELDS = ["recordingId", "variant", "bootId", "sessionId", "lastSeq", "savedAt", "operatorStop"];
+let restoredRecovery = null;
 const koerGuide = createKoerGuide({ journal: (type, detail) => {
   const pending = recordDiagnosticEvent(type, detail, "koer");
   if (type === "KOER_OPERATOR_EVENT") operatorSave = pending;
@@ -46,9 +54,237 @@ const koerGuide = createKoerGuide({ journal: (type, detail) => {
 let koerEvidenceCount = 0;
 const nativeApp = () => !!window.Capacitor?.isNativePlatform?.();
 
+function isLiveVariant(variant) {
+  return VARIANTS[variant]?.kind === "live";
+}
+
+function readRecoverySnapshot() {
+  try {
+    const value = JSON.parse(readStorage(RECOVERY_SNAPSHOT_KEY) || "null");
+    return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function validRecoverySnapshot(snapshot, recordingId, variant, at = Date.now()) {
+  if (!snapshot || Object.keys(snapshot).length !== RECOVERY_SNAPSHOT_FIELDS.length ||
+      !RECOVERY_SNAPSHOT_FIELDS.every(key => Object.prototype.hasOwnProperty.call(snapshot, key))) return false;
+  const validIdentifier = value => (typeof value === "string" && value.length > 0 && value.length <= 128) ||
+    (Number.isSafeInteger(value) && value >= 0);
+  return snapshot.recordingId === recordingId && snapshot.variant === variant && isLiveVariant(snapshot.variant) &&
+    validIdentifier(snapshot.bootId) && validIdentifier(snapshot.sessionId) &&
+    (snapshot.lastSeq === null || (Number.isSafeInteger(snapshot.lastSeq) && snapshot.lastSeq >= 0)) &&
+    Number.isFinite(snapshot.savedAt) && snapshot.savedAt <= at && at - snapshot.savedAt < 30_000 &&
+    typeof snapshot.operatorStop === "boolean";
+}
+
+function clearRecoverySnapshot() {
+  writeStorage(RECOVERY_SNAPSHOT_KEY, "");
+}
+
+function persistRecoverySnapshot(state = controller.state) {
+  const op = state.op;
+  const archive = state.archive;
+  if (op?.kind !== "live" || !isLiveVariant(op.variant) || !archive?.id || archive.closed) {
+    clearRecoverySnapshot();
+    return;
+  }
+  const session = op.session;
+  const snapshot = {
+    recordingId: archive.id,
+    variant: op.variant,
+    bootId: session?.bootId ?? null,
+    sessionId: session?.sessionId ?? session?.epoch ?? null,
+    lastSeq: Number.isSafeInteger(session?.lastSeq) && session.lastSeq >= 0 ? session.lastSeq : null,
+    savedAt: Date.now(),
+    operatorStop: !!op.operatorStop,
+  };
+  writeStorage(RECOVERY_SNAPSHOT_KEY, JSON.stringify(snapshot));
+}
+
+function createRecoveryCart(variant, archive, sampleGate) {
+  return createCartDecoder(pidSetForVariant(variant), {
+    historyLimit: 512,
+    onSample(sample) {
+      if (!sampleGate.enabled) return;
+      sample.receivedAt = Date.now();
+      archive.sample(sample);
+      recordDiagnosticSample(sample, { variant, source: "bridge" });
+    },
+  });
+}
+
+export async function restoreCaptureHistory(archive, snapshot) {
+  const session = createSession();
+  const sampleGate = { enabled: false };
+  const cart = createRecoveryCart(snapshot.variant, archive, sampleGate);
+  const savedGaps = archive.sequenceGaps || [];
+  session.sequenceGaps = savedGaps.map(gap => ({
+    lost: gap.lost, from: gap.from, to: gap.to, source: "archive",
+  }));
+  const hasGap = gap => session.sequenceGaps.some(item =>
+    item.lost === gap.lost && item.from === gap.from && item.to === gap.to);
+  const addGap = (lost, from, to, source) => {
+    const gap = { lost, from, to, source };
+    if (hasGap(gap)) return;
+    session.sequenceGaps.push(gap);
+    archive.recordGap(lost, from, to);
+  };
+  let found = false;
+  const consumeLine = line => {
+    const parsed = parseLine(line);
+    if (parsed.type === "session_start") {
+      const sessionId = parsed.fields?.session_id ?? parsed.fields?.epoch;
+      if (String(parsed.fields?.boot_id ?? "").toUpperCase() !== String(snapshot.bootId).toUpperCase() ||
+          String(sessionId ?? "").toUpperCase() !== String(snapshot.sessionId).toUpperCase()) return;
+      if (!found) {
+        noteSessionLine(session, parsed);
+        session.sessionId = sessionId ?? null;
+        session.sequenceGaps ||= [];
+        session.lastSeq = null;
+        found = true;
+      }
+      return;
+    }
+    if (!found) return;
+    if (parsed.type === "rx" || parsed.type === "rx_batch") {
+      const events = parsed.type === "rx" ? [parsed] : parsed.events;
+      const accepted = [];
+      for (const event of events) {
+        const sequence = event.seq;
+        if (sequence != null && session.lastSeq != null && sequence <= session.lastSeq) continue;
+        if (sequence != null && session.lastSeq != null && sequence > session.lastSeq + 1) {
+          addGap(sequence - session.lastSeq - 1, session.lastSeq + 1, sequence - 1, "sequence");
+        }
+        if (sequence != null) session.lastSeq = sequence;
+        accepted.push(event);
+      }
+      if (!accepted.length) return;
+      noteSessionLine(session, parsed.type === "rx" ? accepted[0] : { ...parsed, events: accepted });
+      for (const event of accepted) cart.pushRx(event.t_us, event.byte, null);
+      return;
+    }
+    if (parsed.type === "event" && parsed.raw.startsWith("EVENT telemetry_gap ")) {
+      const lost = Number(parsed.fields?.lost), from = Number(parsed.fields?.from), to = Number(parsed.fields?.to);
+      if (Number.isSafeInteger(lost) && lost > 0 && Number.isSafeInteger(from) && Number.isSafeInteger(to)) {
+        addGap(lost, from, to, "telemetry_gap");
+        if (session.lastSeq == null || to > session.lastSeq) session.lastSeq = to;
+      }
+    }
+    const sequenceGap = /^EVENT sequence_gap lost=(\d+) from=(\d+|unknown) to=(\d+|unknown)$/.exec(parsed.raw);
+    if (sequenceGap) {
+      addGap(Number(sequenceGap[1]), sequenceGap[2] === "unknown" ? null : Number(sequenceGap[2]),
+        sequenceGap[3] === "unknown" ? null : Number(sequenceGap[3]), "archive");
+    }
+    noteSessionLine(session, parsed);
+  };
+
+  const blob = await recordingBlob(archive.id, "raw");
+  if (typeof blob.stream === "function") {
+    const reader = blob.stream().getReader();
+    const decoder = new TextDecoder();
+    let pending = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      pending += decoder.decode(value, { stream: true });
+      let newline;
+      while ((newline = pending.indexOf("\n")) >= 0) {
+        consumeLine(pending.slice(0, newline).replace(/\r$/, ""));
+        pending = pending.slice(newline + 1);
+      }
+    }
+    pending += decoder.decode();
+    if (pending) consumeLine(pending.replace(/\r$/, ""));
+  } else {
+    for (const line of (await blob.text()).split(/\r?\n/)) if (line) consumeLine(line);
+  }
+  if (!found) {
+    Object.assign(session, {
+      started: true,
+      bootId: snapshot.bootId,
+      sessionId: snapshot.sessionId,
+      epoch: snapshot.sessionId,
+      sequenceGaps: session.sequenceGaps || [],
+    });
+  }
+  // Resume strictly from the last sequence durably persisted in the archive.
+  // Do NOT advance session.lastSeq to the optimistic in-memory snapshot sequence,
+  // and do NOT fabricate a gap before resume. Resuming from the durable archive cursor
+  // allows the bridge's replay ring to redeliver uncommitted records; any duplicates
+  // will be filtered by the controller's sequence deduplication, and a GAP is recorded
+  // only if the bridge indicates the range was evicted.
+  // If no sequences were ever committed to the archive, session.lastSeq remains null,
+  // which maps to sentinel 0 when issuing RESUME.
+  sampleGate.enabled = true;
+  return { session, cart };
+}
+
+function attachRecoveryFinishPolicy(archive, recovery) {
+  const finish = archive.finish.bind(archive);
+  archive.finish = (verdict, ...args) => {
+    if (!recovery.resumeAcknowledged && verdict?.valid !== true) {
+      recovery.finalizationFailed = true;
+      verdict = {
+        ...verdict,
+        valid: false,
+        status: "INCOMPLETE",
+        reasons: [WEBVIEW_RECOVERY_REASON],
+        end: verdict?.end || null,
+      };
+    }
+    return finish(verdict, ...args);
+  };
+}
+
+async function restoreControllerForRecovery(archive, snapshot) {
+  const { session, cart } = await restoreCaptureHistory(archive, snapshot);
+  const recovery = { archive, resumeAcknowledged: false, connectionNotified: false, finalizationFailed: false };
+  attachRecoveryFinishPolicy(archive, recovery);
+  const state = controller.state;
+  state.archive = archive;
+  state.cart = cart;
+  state.op = {
+    variant: snapshot.variant,
+    kind: "live",
+    source: "bridge",
+    startedAt: archive.started || snapshot.savedAt,
+    operatorStop: snapshot.operatorStop,
+    forceStatus: null,
+    forceReason: "",
+    session,
+  };
+  state.link = "reconnecting";
+  state.phase = snapshot.operatorStop ? "stopping" : "read";
+  state.transport = "wifi";
+  state.transportStatus = "reconnecting";
+  state.wifiAuthenticated = false;
+  state.recoveryDeadline = Date.now() + 30_000;
+  state.resuming = false;
+  state.message = "Restored the active recording; waiting for authenticated Wi-Fi recovery";
+  restoredRecovery = recovery;
+  trackedArchiveId = archive.id;
+}
+
+async function finalizeUnrestorableRecording(recordingId, variant) {
+  const archive = await takeoverRecording(recordingId, error => {
+    recordDiagnosticEvent("RECORDING_TAKEOVER_ERROR", { recordingId, message: error.message }, "recording");
+  });
+  archive.line("EVENT webview_recreated controller_state_restored=0");
+  await archive.finish({ valid: false, status: "INCOMPLETE", reasons: [WEBVIEW_RECOVERY_REASON] });
+  recordDiagnosticEvent("RECORDING_TAKEN_OVER_INCOMPLETE", { recordingId, variant }, "recording");
+}
+
 const controller = createController({
   send(command) {
-    if (!transport || controller.state.link !== "ready") return;
+    if (!transport) return;
+    if (controller.state.link !== "ready") {
+      if (command === "STOP" && controller.state.op) {
+        controller.state.op.operatorStop = true;
+      }
+      return;
+    }
     void transport.write(command).catch(() => {});
   },
 });
@@ -79,52 +315,21 @@ function renderApp(state) {
   renderDclCommandExplorer(state);
 }
 
-function incompleteLinkLossVerdict(verdict) {
-  const reason = "Link lost during capture";
-  return {
-    ...(verdict || {}),
-    valid: false,
-    status: "INCOMPLETE",
-    reasons: [reason, ...(verdict?.reasons || []).filter(item => item !== reason)],
-  };
-}
-
 function handleTransportDisconnect(message = "") {
   const state = controller.state;
   const captureInterrupted = !!state.op || !!state.combined?.active;
   const archive = state.archive;
-  let originalFinish = null;
-  let wrappedFinish = null;
-
-  // Finalize the raw recording before controller disconnect handling can label
-  // the session FAILED. This does not send STOP, replay a command, or re-arm.
-  if (captureInterrupted && archive && !archive.closed && typeof archive.finish === "function") {
-    originalFinish = archive.finish;
-    wrappedFinish = function (verdict, details) {
-      const incomplete = incompleteLinkLossVerdict(verdict);
-      if (state.lastSession) state.lastSession.verdict = incomplete;
-      return originalFinish.call(this, incomplete, details);
-    };
-    archive.finish = wrappedFinish;
-  }
-
   controller.onDisconnected();
-
-  if (archive && wrappedFinish && archive.finish === wrappedFinish) archive.finish = originalFinish;
-  if (captureInterrupted && archive && !archive.closed) {
-    if (state.lastSession) state.lastSession.verdict = incompleteLinkLossVerdict(state.lastSession.verdict);
-    archive.finished = archive.finish(incompleteLinkLossVerdict(null)).catch(error => {
-      state.message = `Recording storage failed while finalizing the incomplete capture: ${error.message}`;
-      return null;
-    });
-  }
-
   state.recovering = false;
-  state.transportStatus = /denied|auth/i.test(message) ? "denied" : "disconnected";
+  const recoveryPending = state.link === "reconnecting";
+  state.transportStatus = recoveryPending ? "reconnecting"
+    : /denied|auth/i.test(message) ? "denied" : "disconnected";
   state.wifiAuthenticated = false;
   if (state.transportStatus === "denied") state.link = "denied";
-  if (captureInterrupted) {
-    state.message = "INCOMPLETE: link lost during capture; raw recording finalized.";
+  if (recoveryPending) {
+    state.message = "Live data link interrupted; reconnect within 30 seconds to resume the session.";
+    recordDiagnosticEvent("CAPTURE_LINK_INTERRUPTED", { recordingId: archive?.id || null }, "transport");
+  } else if (captureInterrupted) {
     recordDiagnosticEvent("CAPTURE_LINK_LOST", { recordingId: archive?.id || null }, "transport");
   } else if (message) {
     state.message = message;
@@ -155,6 +360,12 @@ const wifi = new WifiTransport({
   },
   onStatus(status) {
     controller.state.transportStatus = status;
+    renderApp(controller.state);
+  },
+  onReconnected(metadata) {
+    if (restoredRecovery && !restoredRecovery.resumeAcknowledged) restoredRecovery.connectionNotified = true;
+    controller.onConnected("ESP32 Wi-Fi", "wifi", { reconnected: true, ...metadata });
+    void syncRecordingProtection(wifi);
     renderApp(controller.state);
   },
 });
@@ -208,7 +419,31 @@ function auditState(state) {
   }
 
   state.koerGuide = koerGuide.state;
-  const capturing = !!state.op;
+  if (state.archive?.id && !state.archive.closed) {
+    trackedArchiveId = state.archive.id;
+    writeStorage("eeciv-active-recording-id", trackedArchiveId);
+  } else if (trackedArchiveId && readStorage("eeciv-active-recording-id") === trackedArchiveId) {
+    writeStorage("eeciv-active-recording-id", "");
+    trackedArchiveId = "";
+  }
+  if (restoredRecovery?.archive === state.archive && !state.resuming && state.op && state.phase === "read" &&
+      /^Live data resumed(?:;|$)/.test(state.message)) {
+    restoredRecovery.resumeAcknowledged = true;
+  }
+  if (restoredRecovery?.archive === state.archive && restoredRecovery.finalizationFailed && !state.op && state.lastSession) {
+    state.lastSession.verdict = {
+      ...state.lastSession.verdict,
+      valid: false,
+      status: "INCOMPLETE",
+      reasons: [WEBVIEW_RECOVERY_REASON],
+      end: state.lastSession.verdict?.end || null,
+    };
+    state.message = `INCOMPLETE: ${WEBVIEW_RECOVERY_REASON}`;
+    restoredRecovery = null;
+  }
+  if (restoredRecovery?.archive === state.archive && !state.op && state.archive?.closed) restoredRecovery = null;
+  persistRecoverySnapshot(state);
+  const capturing = !!state.op || !!state.combined?.active;
   if (capturing !== protectedCapture) {
     protectedCapture = capturing;
     if (typeof transport?.setRecording === "function") Promise.resolve(transport.setRecording(capturing)).catch(error => {
@@ -249,6 +484,7 @@ function auditState(state) {
     integrity: session.integrity, ecuEvidence: session.ecuEvidence,
     codes: session.codes, blocks25: session.blocks25, blocks26: session.blocks26,
     rx: session.verdict?.end?.ro_bytes ?? null, parityRejects: session.parityRejects,
+    sequenceGaps: session.sequenceGaps || [], sequenceGapCount: session.sequenceGapCount || 0,
     codeParityRejects: session.codeParityRejects,
   };
   recordDiagnosticEvent("SESSION_RESULT", evidence, "session").then(refreshTestHistory);
@@ -263,6 +499,18 @@ function auditState(state) {
       await state.archive?.finished;
       await refreshPendingIgnition(true);
     })().catch(error => { state.message = `Could not save confirmation: ${error.message}`; renderApp(state); });
+  }
+}
+
+async function syncRecordingProtection(activeTransport) {
+  const state = controller.state;
+  const capturing = !!state.op || !!state.combined?.active;
+  protectedCapture = capturing;
+  if (typeof activeTransport?.setRecording !== "function") return;
+  try {
+    await activeTransport.setRecording(capturing);
+  } catch (error) {
+    if (capturing) controller.failRecording(`Background recording protection failed: ${error.message}`);
   }
 }
 
@@ -288,6 +536,12 @@ function readStorage(key) {
 
 function writeStorage(key, value) {
   try { localStorage.setItem(key, value); } catch { /* private mode */ }
+}
+
+function trackRecording(archive) {
+  trackedArchiveId = archive?.id || "";
+  if (trackedArchiveId) writeStorage("eeciv-active-recording-id", trackedArchiveId);
+  return archive;
 }
 
 let simulatedWifiPassword = "";
@@ -405,21 +659,32 @@ async function reconcileBridgeConnection() {
   resumeWork = (async () => {
     const result = await active.reconcile();
     recordDiagnosticEvent(`${activeKey.toUpperCase()}_FOREGROUND_CHECK`, { connected: result.connected, reconnected: !!result.reconnected }, activeKey);
-    if (result.connected && (result.reconnected || controller.state.link === "disconnected")) {
+    const restoringWifi = !!restoredRecovery && activeKey === "wifi" &&
+      !restoredRecovery.resumeAcknowledged && !restoredRecovery.connectionNotified;
+    if (result.connected && (!restoredRecovery || active.authenticated === true)) await syncRecordingProtection(active);
+    if (restoringWifi && result.connected && active.authenticated !== true) {
+      controller.state.wifiAuthenticated = false;
+      controller.state.message = "Wi-Fi is connected but not authenticated; waiting for native recovery";
+      return;
+    }
+    if (result.connected && (result.reconnected || ["disconnected", "reconnecting"].includes(controller.state.link) || restoringWifi)) {
       const connection = result.connection || result.conn || result.device || active.connection || active.device || {};
       const fallbackName = activeKey === "wifi" ? "ESP32 Wi-Fi" : "SME105-DCL";
-      controller.onConnected(connection.name || fallbackName, activeKey);
-      controller.state.transportStatus = "authenticating";
-      controller.state.wifiAuthenticated = activeKey === "wifi" && (active.authenticated === true || result.connected);
-      if (controller.state.wifiAuthenticated) controller.state.identity.auth = "OK";
-      // onConnected sends only HELLO/PINS/STATUS. Interrupted vehicle operations
-      // remain saved and are never automatically armed or started again.
+      if (restoringWifi) restoredRecovery.connectionNotified = true;
+      const connectionState = controller.onConnected(connection.name || fallbackName, activeKey, {
+        reconnected: restoringWifi ? true : !!result.reconnected,
+      });
+      if (!connectionState?.reattached) {
+        controller.state.transportStatus = connectionState?.resumed ? "connected" : "authenticating";
+        controller.state.wifiAuthenticated = activeKey === "wifi" && active.authenticated === true;
+        if (controller.state.wifiAuthenticated) controller.state.identity.auth = "OK";
+      }
     }
   })().catch(async error => {
-    if (typeof active.discardNative === "function") await active.discardNative();
-    else await active.disconnect?.();
-    handleTransportDisconnect(`${activeKey === "wifi" ? "Wi-Fi" : "Bluetooth"} recovery failed: ${error.message}. Tap Connect to retry.`);
-    recordDiagnosticEvent(`${activeKey.toUpperCase()}_RECOVERY_FAILED`, { reason: error.message }, "error");
+    const message = `${activeKey === "wifi" ? "Wi-Fi" : "Bluetooth"} recovery check failed: ${error.message}. Native reconnect will continue in the background.`;
+    controller.state.message = message;
+    if (controller.state.link !== "ready") controller.state.transportStatus = "reconnecting";
+    recordDiagnosticEvent(`${activeKey.toUpperCase()}_RECOVERY_FAILED`, { reason: error.message, backgroundReconnectPreserved: true }, "error");
   }).finally(() => {
     controller.state.recovering = false;
     resumeWork = null;
@@ -481,8 +746,8 @@ async function connect() {
         passwordInput.value = "";
         controller.state.wifiPasswordConfigured = true;
       }
-      controller.onConnected(conn?.name || "ESP32 Wi-Fi", "wifi");
-      controller.state.transportStatus = "authenticating";
+      const connectionState = controller.onConnected(conn?.name || "ESP32 Wi-Fi", "wifi");
+      controller.state.transportStatus = connectionState?.resumed ? "connected" : "authenticating";
       controller.state.wifiAuthenticated = wifi.authenticated === true;
       if (controller.state.wifiAuthenticated) controller.state.identity.auth = "OK";
       recordDiagnosticEvent("WIFI_CONNECTED", { transport: "wifi", deviceName: conn?.name || "ESP32 Wi-Fi", host: config.host, port: config.port }, "wifi");
@@ -491,11 +756,12 @@ async function connect() {
       renderApp(controller.state);
       transport = ble;
       const device = await ble.connect();
-      controller.onConnected(device.name || "SME105", "ble");
-      controller.state.transportStatus = "authenticating";
+      const connectionState = controller.onConnected(device.name || "SME105", "ble");
+      controller.state.transportStatus = connectionState?.resumed ? "connected" : "authenticating";
       controller.state.wifiAuthenticated = false;
       recordDiagnosticEvent("BLE_CONNECTED", { transport: window.Capacitor?.isNativePlatform?.() ? "native" : "web-bluetooth", deviceName: device.name || "SME105", mtu: device.mtu ?? null }, "bluetooth");
     }
+    await syncRecordingProtection(transport);
   } catch (error) {
     controller.state.message = error?.message || String(error);
     controller.state.transportStatus = /denied|auth/i.test(controller.state.message) ? "denied" : "disconnected";
@@ -566,7 +832,7 @@ async function startLive() {
   if (controller.state.review?.active) return { ok: false, error: "Exit offline review before starting a recording" };
   const variant = selectedLive();
   try {
-    const archive = await createRecording(variant, error => controller.failRecording(`Recording stopped: ${error.message}`), readStorage("eeciv-unit-system") || "metric");
+    const archive = trackRecording(await createRecording(variant, error => controller.failRecording(`Recording stopped: ${error.message}`), readStorage("eeciv-unit-system") || "metric"));
     if (controller.state.phase !== "idle" || controller.state.link !== "ready") {
       await archive.finish({ valid: false, reasons: ["Connection changed while opening recording"] });
       return { ok: false, error: "Connect the bridge before starting a recording" };
@@ -585,11 +851,11 @@ async function startLive() {
 async function startVehicleOperation(variant, experimentMetadata = {}) {
   if (controller.state.review?.active) return { ok: false, error: "Exit offline review before starting a vehicle operation" };
   try {
-    const archive = await createRecording(variant, error => controller.failRecording(`Recording stopped: ${error.message}`), readStorage("eeciv-unit-system") || "metric", {
+    const archive = trackRecording(await createRecording(variant, error => controller.failRecording(`Recording stopped: ${error.message}`), readStorage("eeciv-unit-system") || "metric", {
       appVersion: APP_VERSION,
       firmwareIdentity: firmwareIdentitySnapshot(),
       ...experimentMetadata,
-    });
+    }));
     archive.line(`CAPTURE_START variant=${variant} started=${archive.started}`);
     for (const line of [controller.state.identity.hello, controller.state.identity.pins, controller.state.status?.raw]) if (line) archive.line(line);
     if (controller.state.phase !== "idle" || controller.state.link !== "ready") {
@@ -619,7 +885,7 @@ async function createExperimentRecording(variant, candidate, runMetadata = {}) {
     procedureId: runMetadata.procedureId || "",
     ...runMetadata,
   };
-  const archive = await createRecording(variant, error => controller.failRecording(`Experiment recording stopped: ${error.message}`), readStorage("eeciv-unit-system") || "metric", metadata);
+  const archive = trackRecording(await createRecording(variant, error => controller.failRecording(`Experiment recording stopped: ${error.message}`), readStorage("eeciv-unit-system") || "metric", metadata));
   archive.line(`EXPERIMENT_START candidate=${metadata.experimentCandidateId || metadata.procedureId} variant=${variant} command=${metadata.commandWord || candidate?.commandWord || ""} started=${archive.started}`);
   for (const line of [controller.state.identity.hello, controller.state.identity.pins, controller.state.status?.raw]) if (line) archive.line(line);
   return archive;
@@ -853,7 +1119,7 @@ function firmwareIdentitySnapshot() {
 }
 
 async function createDiscoveryRecording(variant, candidate, pass) {
-  const archive = await createRecording(
+  const archive = trackRecording(await createRecording(
     variant,
     error => controller.failRecording(`Discovery recording stopped: ${error.message}`),
     readStorage("eeciv-unit-system") || "metric",
@@ -864,7 +1130,7 @@ async function createDiscoveryRecording(variant, candidate, pass) {
       appVersion: APP_VERSION,
       firmwareIdentity: firmwareIdentitySnapshot(),
     },
-  );
+  ));
   archive.line(`DISCOVERY_PASS id=${pass.id} candidate=${candidate.id} command=${candidate.commandWord}`);
   archive.line(`CAPTURE_START variant=${variant} started=${archive.started}`);
   for (const line of [controller.state.identity.hello, controller.state.identity.pins, controller.state.status?.raw]) if (line) archive.line(line);
@@ -939,6 +1205,7 @@ async function exportSavedTests(all = false) {
 }
 
 async function restoreLastDiagnosticResult() {
+  if (controller.state.op) return;
   const events = await diagnosticHistory();
   const resultEvent = events.filter(event => event.type === "SESSION_RESULT").at(-1);
   if (!resultEvent?.detail) return;
@@ -1345,9 +1612,10 @@ function wire() {
     });
   };
   controller.subscribe(state => { scheduleRender(); auditState(state); });
-  setInterval(() => { if (!controller.state.recovering) controller.tick(); void reviewControls.player.tick().catch(error => { controller.state.message = `Playback failed: ${error.message}`; renderApp(controller.state); }); }, 250);
+  setInterval(() => { controller.tick(); void reviewControls.player.tick().catch(error => { controller.state.message = `Playback failed: ${error.message}`; renderApp(controller.state); }); }, 250);
   setInterval(() => {
     if (controller.state.combined || controller.state.op?.kind === "live" || !document.getElementById("sensor-drawer").hidden) scheduleRender();
+    persistRecoverySnapshot(controller.state);
     auditFreshness(controller.state);
   }, 1000);
   document.addEventListener("visibilitychange", () => {
@@ -1401,6 +1669,63 @@ async function boot() {
   });
   try {
     await startDiagnosticRun();
+    const activeRecordingId = nativeApp() ? readStorage("eeciv-active-recording-id") : "";
+    if (activeRecordingId) {
+      const activeCapture = (await listRecordings()).find(item => item.id === activeRecordingId);
+      if (activeCapture && !activeCapture.ended) {
+        const recoverySnapshot = readRecoverySnapshot();
+        if (validRecoverySnapshot(recoverySnapshot, activeRecordingId, activeCapture.variant)) {
+          let archive = null;
+          try {
+            archive = await takeoverRecording(activeRecordingId, error => {
+              recordDiagnosticEvent("RECORDING_TAKEOVER_ERROR", { recordingId: activeRecordingId, message: error.message }, "recording");
+            });
+            archive.line("EVENT webview_recreated controller_state_restored=1");
+            await restoreControllerForRecovery(archive, recoverySnapshot);
+            writeStorage("eeciv-active-recording-id", activeRecordingId);
+            persistRecoverySnapshot(controller.state);
+            recordDiagnosticEvent("RECORDING_TAKEN_OVER_FOR_RESUME", {
+              recordingId: activeRecordingId, variant: activeCapture.variant,
+            }, "recording");
+          } catch (error) {
+            recordDiagnosticEvent("RECORDING_TAKEOVER_ERROR", { recordingId: activeRecordingId, message: error.message }, "recording");
+            try {
+              if (archive && !archive.closed) {
+                archive.line("EVENT webview_recreated controller_state_restored=0");
+                await archive.finish({ valid: false, status: "INCOMPLETE", reasons: [WEBVIEW_RECOVERY_REASON] });
+              } else {
+                await finalizeUnrestorableRecording(activeRecordingId, activeCapture.variant);
+              }
+            } catch (finalizeError) {
+              recordDiagnosticEvent("RECORDING_RECOVERY_FINALIZE_ERROR", {
+                recordingId: activeRecordingId, message: finalizeError.message,
+              }, "recording");
+            }
+            controller.state.op = null;
+            controller.state.archive = null;
+            controller.state.cart = null;
+            controller.state.message = `Could not restore the active recording: ${error.message}`;
+          }
+        } else {
+          try {
+            await finalizeUnrestorableRecording(activeRecordingId, activeCapture.variant);
+            controller.state.message = `INCOMPLETE: ${WEBVIEW_RECOVERY_REASON}`;
+          } catch (error) {
+            recordDiagnosticEvent("RECORDING_RECOVERY_FINALIZE_ERROR", { recordingId: activeRecordingId, message: error.message }, "recording");
+            controller.state.message = `Could not finalize the unrestorable recording: ${error.message}`;
+          }
+        }
+      } else {
+        clearRecoverySnapshot();
+      }
+      if (!controller.state.op) {
+        writeStorage("eeciv-active-recording-id", "");
+        trackedArchiveId = "";
+        clearRecoverySnapshot();
+      }
+    } else {
+      clearRecoverySnapshot();
+    }
     await recoverInterruptedRecordings();
     await restoreLastDiagnosticResult();
     for (const item of await listRecordings()) if (item.operatorConfirmation && item.session) await reconcileOutcome(item);
@@ -1424,6 +1749,8 @@ async function boot() {
   wire();
 }
 
-boot().catch(error => {
-  document.getElementById("message").textContent = `Startup failed: ${error.message}`;
-});
+if (typeof document !== "undefined" && !globalThis.__NO_AUTO_BOOT__) {
+  boot().catch(error => {
+    document.getElementById("message").textContent = `Startup failed: ${error.message}`;
+  });
+}

@@ -12,6 +12,9 @@ function harness({ connectError = null, hasPasswordResult = false } = {}) {
   let disconnects = 0;
   let statusConnected = false;
   let statusAuthenticated = false;
+  let statusReconnecting = false;
+  let statusConnecting = false;
+  let statusGeneration = 0;
   let tokenResult = { hasToken: true };
   let passwordResult = hasPasswordResult;
   let maxConcurrentWrites = 0;
@@ -24,16 +27,19 @@ function harness({ connectError = null, hasPasswordResult = false } = {}) {
       const handle = { eventName, callback, active: true };
       if (!listeners.has(eventName)) listeners.set(eventName, []);
       listeners.get(eventName).push(handle);
-      return { remove: async () => { handle.active = false; } };
+      return { eventName, remove: async () => { handle.active = false; } };
     },
     async connect(options) {
       calls.push(['connect', options]);
       if (connectError) throw connectError;
+      statusGeneration += 1;
       statusConnected = true;
       statusAuthenticated = true;
-      return { connected: true, authenticated: true };
+      statusReconnecting = false;
+      statusConnecting = false;
+      return { connected: true, authenticated: true, generation: statusGeneration };
     },
-    async disconnect() { calls.push(['disconnect']); statusConnected = false; statusAuthenticated = false; },
+    async disconnect() { calls.push(['disconnect']); statusConnected = false; statusAuthenticated = false; statusReconnecting = false; statusConnecting = false; },
     async write({ data }) {
       activeWrites += 1;
       maxConcurrentWrites = Math.max(maxConcurrentWrites, activeWrites);
@@ -49,7 +55,13 @@ function harness({ connectError = null, hasPasswordResult = false } = {}) {
       }
     },
     async setRecording({ active }) { calls.push(['recording', active]); },
-    async getStatus() { return { connected: statusConnected, authenticated: statusAuthenticated }; },
+    async getStatus() {
+      return {
+        connected: statusConnected, authenticated: statusAuthenticated,
+        reconnecting: statusReconnecting, connecting: statusConnecting,
+        generation: statusGeneration,
+      };
+    },
     async saveToken({ token }) { calls.push(['saveToken', token]); },
     async hasToken() { return tokenResult; },
     async clearToken() { calls.push(['clearToken']); },
@@ -75,9 +87,12 @@ function harness({ connectError = null, hasPasswordResult = false } = {}) {
     writeAttempts,
     get disconnects() { return disconnects; },
     get maxConcurrentWrites() { return maxConcurrentWrites; },
-    setStatus(connected, authenticated = connected) {
+    setStatus(connected, authenticated = connected, state = {}) {
       statusConnected = connected;
       statusAuthenticated = authenticated;
+      statusReconnecting = state.reconnecting ?? false;
+      statusConnecting = state.connecting ?? false;
+      if (state.generation !== undefined) statusGeneration = state.generation;
     },
     setTokenResult(result) { tokenResult = result; },
     setWriteBehavior(fn) { writeBehavior = fn; },
@@ -263,8 +278,9 @@ test('disconnect invalidates old event callbacks and notifies once', async () =>
   const oldLine = h.callbacks('line')[0];
   const oldDisconnect = h.callbacks('disconnect')[0];
   const generation = h.transport.generation;
+  h.setStatus(false, false);
   h.emit('disconnect');
-  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.transport.connected, false);
   assert.equal(h.transport.authenticated, false);
   assert.equal(h.transport.generation, generation + 1);
@@ -318,6 +334,166 @@ test('reconcile clears state and listeners when the native connection is not aut
   assert.equal(h.listenerHandles('line').every(handle => !handle.active), true);
 });
 
+test('healthy native reconciliation restores every listener after a WebView lifecycle reset', async () => {
+  const h = harness();
+  h.setStatus(true, true);
+
+  assert.deepEqual(await h.transport.reconcile(), { connected: true, reconnected: false });
+  assert.equal(h.transport.connected, true);
+  assert.equal(h.transport.authenticated, true);
+  assert.deepEqual(h.transport.listenerHandles.map(handle => handle.eventName), [
+    'line', 'disconnect', 'error', 'reconnecting', 'reconnected', 'diagnostic',
+  ]);
+  h.emit('line', { line: 'AUTH OK transport=WIFI' });
+  assert.deepEqual(h.lines, ['AUTH OK transport=WIFI']);
+});
+
+test('concurrent reconcile calls share one status check and preserve reconnect intent after a dropout', async () => {
+  const h = harness();
+  await h.transport.connect({ mode: 'sta', host: '192.168.4.1', token: '0123456789abcdef0123456789abcdef' });
+  const remembered = { ...h.transport.remembered };
+  const disconnect = h.callbacks('disconnect')[0];
+  disconnect();
+  h.setStatus(false, false);
+
+  let releaseStatus;
+  const statusGate = new Promise(resolve => { releaseStatus = resolve; });
+  let statusCalls = 0;
+  h.WifiBridge.getStatus = async () => {
+    statusCalls += 1;
+    await statusGate;
+    return { connected: false, authenticated: false };
+  };
+  const first = h.transport.reconcile();
+  const second = h.transport.reconcile();
+  assert.equal(first, second);
+  releaseStatus();
+  const result = await first;
+
+  assert.equal(result.reconnected, true);
+  assert.equal(h.transport.connectionWanted, true);
+  assert.deepEqual(h.transport.remembered, remembered);
+  assert.equal(statusCalls, 1);
+  assert.equal(h.calls.filter(call => call[0] === 'connect').length, 2);
+});
+
+test('reconcile respects native reconnect ownership and retains listeners for reconnected', async () => {
+  const h = harness();
+  await h.transport.connect({ mode: 'sta', host: '192.168.4.1' });
+  const connectCount = h.calls.filter(call => call[0] === 'connect').length;
+  const listenerHandles = [...h.transport.listenerHandles];
+  h.setStatus(false, false, { connecting: true, generation: 2 });
+  assert.deepEqual(await h.transport.reconcile(), { connected: false, reconnecting: true });
+  h.setStatus(false, false, { reconnecting: true, generation: 2 });
+  assert.deepEqual(await h.transport.reconcile(), { connected: false, reconnecting: true });
+  assert.equal(h.calls.filter(call => call[0] === 'connect').length, connectCount);
+  assert.equal(h.transport.connectionWanted, true);
+  assert.equal(h.listenerHandles('line').every(handle => handle.active), true);
+
+  const reconnected = [];
+  h.transport.handlers.onReconnected = metadata => reconnected.push(metadata);
+  h.setStatus(true, true, { generation: 2 });
+  h.emit('reconnected', { bootId: 7, sessionId: 'tcp-recovered', seq: 12 });
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(h.transport.connected, true);
+  assert.equal(h.transport.authenticated, true);
+  assert.deepEqual(reconnected, [{ bootId: 7, sessionId: 'tcp-recovered', seq: 12 }]);
+  assert.deepEqual(h.transport.listenerHandles, listenerHandles);
+  assert.equal(h.listenerHandles('line').every(handle => handle.active), true);
+});
+
+test('native epochs reject stale diagnostics and advance during an owned reconnect', async () => {
+  const h = harness();
+  await h.transport.connect({ mode: 'sta', host: '192.168.4.1' });
+  const diagnostics = [];
+  h.transport.handlers.onDiagnostic = event => diagnostics.push(event);
+
+  h.emit('diagnostic', { generation: 0, linkHealth: 'stale' });
+  h.setStatus(false, false, { reconnecting: true, generation: 1 });
+  h.emit('reconnecting', { reason: 'Wi-Fi network lost' });
+  h.emit('diagnostic', { generation: 2, linkHealth: 'healthy' });
+
+  assert.deepEqual(diagnostics, [{ generation: 2, linkHealth: 'healthy' }]);
+  assert.equal(h.transport.nativeEpoch, 2);
+  assert.equal(h.listenerHandles('line').every(handle => handle.active), true);
+
+  h.setStatus(true, true, { generation: 2 });
+  await h.callbacks('reconnected')[0]({ bootId: 8, sessionId: 'tcp-next', seq: 3 });
+  assert.equal(h.transport.connected, true);
+  assert.equal(h.transport.nativeEpoch, 2);
+});
+
+test('an explicit native client disconnect clears reconnect intent and listeners', async () => {
+  const h = harness();
+  await h.transport.connect({ mode: 'sta', host: '192.168.4.1' });
+  h.setStatus(false, false);
+
+  h.emit('disconnect', { reason: 'Disconnected by client' });
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(h.transport.connectionWanted, false);
+  assert.equal(h.transport.connected, false);
+  assert.equal(h.transport.listenerHandles.length, 0);
+  assert.equal(h.listenerHandles('line').every(handle => !handle.active), true);
+  assert.equal(h.disconnects, 1);
+});
+
+test('an untagged stale native error cannot tear down a healthy adopted socket', async () => {
+  const h = harness();
+  await h.transport.connect({ mode: 'sta', host: '192.168.4.1' });
+  h.emit('error', { error: 'late old-socket failure' });
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepEqual(h.errors, []);
+  assert.equal(h.transport.connected, true);
+  assert.equal(h.transport.authenticated, true);
+});
+
+test('native reconnected events advance the write generation and publish connection metadata', async () => {
+  const h = harness();
+  await h.transport.connect({ password: AP_PASSWORD });
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  let releaseWrite;
+  const writeGate = new Promise(resolve => { releaseWrite = resolve; });
+  h.setWriteBehavior(async data => {
+    if (data === 'HELD\n') {
+      markStarted();
+      await writeGate;
+    }
+    h.calls.push(['write', data]);
+  });
+  const notifications = [];
+  h.transport.handlers.onReconnected = metadata => notifications.push(metadata);
+
+  const generation = h.transport.generation;
+  const inFlight = h.transport.write('HELD');
+  const staleQueued = h.transport.write('STALE_QUEUED');
+  await started;
+  h.setStatus(false, false, { reconnecting: true, generation: 2 });
+  h.emit('reconnecting', { reason: 'Wi-Fi network lost' });
+  h.setStatus(true, true, { generation: 2 });
+  await h.callbacks('reconnected')[0]({ bootId: 91, sessionId: 'tcp-2', seq: 7 });
+  const staleDisconnect = h.callbacks('disconnect')[0];
+  staleDisconnect();
+  const current = h.transport.write('CURRENT');
+  releaseWrite();
+
+  await assert.rejects(inFlight, /invalidated/);
+  await assert.rejects(staleQueued, /invalidated/);
+  await current;
+  assert.equal(h.transport.generation, generation + 1);
+  assert.equal(h.transport.connected, true);
+  assert.equal(h.transport.authenticated, true);
+  assert.deepEqual(h.transport.connectionMetadata, { bootId: 91, sessionId: 'tcp-2', seq: 7 });
+  assert.equal(h.transport.bootId, 91);
+  assert.equal(h.transport.sessionId, 'tcp-2');
+  assert.equal(h.transport.seq, 7);
+  assert.deepEqual(notifications, [{ bootId: 91, sessionId: 'tcp-2', seq: 7 }]);
+  assert.deepEqual(h.writeAttempts, ['HELD\n', 'CURRENT\n']);
+});
+
 test('validates and delegates token management', async () => {
   const h = harness();
   await assert.rejects(h.transport.saveToken('not-a-token'), /32 hexadecimal/);
@@ -361,6 +537,15 @@ test('reports a native connect failure and leaves transport disconnected', async
   assert.equal(h.transport.connected, false);
   assert.equal(h.transport.authenticated, false);
   assert.deepEqual(h.errors, [failure]);
+});
+
+test('concurrent Wi-Fi connect calls share one in-flight attempt', async () => {
+  const h = harness();
+  const first = h.transport.connect({ password: AP_PASSWORD });
+  const second = h.transport.connect({ mode: 'sta', host: '192.168.4.1' });
+  assert.equal(first, second);
+  await first;
+  assert.equal(h.calls.filter(call => call[0] === 'connect').length, 1);
 });
 
 test('wifiAvailable recognizes native Android and the simulation flag', () => {

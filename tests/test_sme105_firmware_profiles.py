@@ -345,7 +345,10 @@ class MemMapSyntheticTests(unittest.TestCase):
         self.assertIsNotNone(installed_version)
         self.assertEqual(f"fw={installed_version.group(1)}", "fw=29")
         self.assertIn("void IRAM_ATTR uart1ISR(void*)", SOURCE)
-        self.assertIn('"RXB t_us=%lu data="', SOURCE)
+        self.assertTrue(
+            '"RXB t_us=%lu seq_start=%lu data="' in SOURCE
+            or '"RXB t_us=%lu data="' in SOURCE
+        )
         self.assertIn('"RX t_us=%lu byte=%02X\\n"', SOURCE)
         self.assertNotRegex(SOURCE, r"(?:HEX|WRITE_RAW|TX_RAW)\s*<")
         self.assertNotIn("command_deferred_not_sendable", SOURCE)

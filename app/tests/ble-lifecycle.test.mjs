@@ -6,7 +6,7 @@ import { EXPECTED_HELLO, EXPECTED_PINS } from '../js/protocol.js';
 
 function harness() {
   const calls = [], disconnects = [], notifications = [], lines = [], errors = [];
-  let connected = [], failWrite = false, lost = 0, servicesReady = false;
+  let connected = [], failWrite = false, lost = 0, servicesReady = false, mtuBehavior = null;
   const device = { deviceId: 'test-bridge', name: 'SME105-DCL' };
   const BleClient = {
     initialize: async () => {},
@@ -16,7 +16,7 @@ function harness() {
     connect: async (id, callback) => { calls.push(['connect', id]); connected = [device]; disconnects.push(callback); },
     discoverServices: async id => { calls.push(['discover', id]); servicesReady = true; },
     startNotifications: async (id, service, characteristic, callback) => { assert.equal(servicesReady, true, 'notifications must wait for service discovery'); calls.push(['notify', id]); notifications.push(callback); },
-    getMtu: async () => 185,
+    getMtu: async id => { calls.push(['mtu', id]); return mtuBehavior ? mtuBehavior(id) : 185; },
     getConnectedDevices: async () => connected,
     write: async (id, service, characteristic, data) => {
       calls.push(['write', new TextDecoder().decode(data)]);
@@ -32,7 +32,7 @@ function harness() {
     { isNative: () => true, loadNative: async () => ({ Capacitor: { isNativePlatform: () => true }, BleClient, BridgeConnection }) });
   const emit = (callback, line) => { const data = new TextEncoder().encode(line + '\n'); callback(new DataView(data.buffer)); };
   return { transport, calls, device, disconnects, notifications, lines, errors, emit,
-    lose() { connected = []; }, failWrite(value) { failWrite = value; }, get lost() { return lost; } };
+    lose() { connected = []; }, failWrite(value) { failWrite = value; }, setMtuBehavior(fn) { mtuBehavior = fn; }, get lost() { return lost; } };
 }
 
 test('foreground reconciliation preserves an established link and its notification stream', async () => {
@@ -61,6 +61,22 @@ test('a stale native link is closed and reconnected once; old callbacks cannot c
   assert.equal(h.transport.nativeDeviceId, h.device.deviceId);
   assert.deepEqual(h.lines, ['current']);
   assert.equal(h.lost, 1);
+});
+
+test('a BLE notification stops delivering a batch when its handler invalidates the link generation', async () => {
+  const h = harness();
+  await h.transport.connect();
+  const delivered = [];
+  h.transport.handlers.onLine = line => {
+    delivered.push(line);
+    if (line === 'INVALIDATE') void h.transport.disconnect();
+  };
+
+  h.emit(h.notifications[0], 'INVALIDATE\nSTALE');
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepEqual(delivered, ['INVALIDATE']);
+  assert.equal(h.transport.generation > 0, true);
 });
 
 test('write failure releases the real GATT handle and permits recovery without replaying commands', async () => {
@@ -97,6 +113,22 @@ test('concurrent connection requests share one native connection attempt', async
   assert.equal(h.calls.filter(call => call[0] === 'connect').length, 1);
 });
 
+test('concurrent foreground reconciliation shares one reconnect attempt', async () => {
+  const h = harness();
+  await h.transport.connect();
+  h.lose();
+
+  const first = h.transport.reconcile();
+  const second = h.transport.reconcile();
+  assert.equal(first, second);
+  const results = await Promise.all([first, second]);
+
+  assert.equal(results[0].reconnected, true);
+  assert.equal(results[1].reconnected, true);
+  assert.equal(h.calls.filter(call => call[0] === 'connect').length, 2);
+  assert.equal(h.lost, 1);
+});
+
 test('a restored controller link performs identity checks without arming a vehicle operation', () => {
   const sent = [];
   const controller = createController({ send: command => sent.push(command) });
@@ -114,4 +146,71 @@ test('an early connect/MTU completion cannot start notifications before UART ser
   const steps = h.calls.map(call => call[0]);
   assert.ok(steps.indexOf('connect') < steps.indexOf('discover'));
   assert.ok(steps.indexOf('discover') < steps.indexOf('notify'));
+});
+
+test('an MTU completion from a disconnected generation cannot mark BLE connected', async () => {
+  const h = harness();
+  let markMtuStarted;
+  const mtuStarted = new Promise(resolve => { markMtuStarted = resolve; });
+  let releaseMtu;
+  const mtuGate = new Promise(resolve => { releaseMtu = resolve; });
+  h.setMtuBehavior(async () => {
+    markMtuStarted();
+    await mtuGate;
+    return 185;
+  });
+
+  const connecting = h.transport.connect();
+  await mtuStarted;
+  const generation = h.transport.generation;
+  h.disconnects[0]();
+  assert.equal(h.transport.generation, generation + 1);
+  releaseMtu();
+
+  await assert.rejects(connecting, /disconnected during MTU negotiation/);
+  assert.equal(h.transport.nativeDeviceId, null);
+  assert.equal(h.transport.device, null);
+  assert.equal(h.transport.mtu, null);
+});
+
+test('browser BLE notifications and disconnection callbacks are scoped to their link generation', async () => {
+  const lines = [], lost = [];
+  const listeners = new Map();
+  const characteristicListeners = new Map();
+  const rx = { async writeValueWithResponse() {} };
+  const tx = {
+    addEventListener(name, listener) { characteristicListeners.set(listener, name); },
+    removeEventListener(name, listener) { characteristicListeners.delete(listener); },
+    async startNotifications() {},
+  };
+  const device = {
+    name: 'browser-bridge',
+    addEventListener(name, listener) { listeners.set(listener, name); },
+    removeEventListener(name, listener) { listeners.delete(listener); },
+    gatt: {
+      connected: true,
+      async connect() {
+        return { async getPrimaryService() { return { async getCharacteristic(uuid) { return uuid.endsWith('0002') ? rx : tx; } }; } };
+      },
+      disconnect() { this.connected = false; },
+    },
+  };
+  const transport = new BleTransport({ onLine: line => lines.push(line), onDisconnect: () => lost.push(true) }, {
+    isNative: () => false,
+  });
+
+  await transport.attach(device);
+  const notification = [...characteristicListeners.keys()][0];
+  const disconnect = [...listeners.keys()][0];
+  const data = new TextEncoder().encode('RX t_us=1 byte=12\n');
+  notification({ target: { value: new DataView(data.buffer) } });
+  assert.deepEqual(lines, ['RX t_us=1 byte=12']);
+
+  await transport.disconnect();
+  const generation = transport.generation;
+  notification({ target: { value: new DataView(data.buffer) } });
+  disconnect();
+  assert.equal(transport.generation, generation);
+  assert.deepEqual(lines, ['RX t_us=1 byte=12']);
+  assert.equal(lost.length, 1);
 });

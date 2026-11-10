@@ -681,15 +681,19 @@ export function parseLine(line) {
   const raw = String(line).replace(/\r$/, "");
   if (raw.startsWith("KLINE ")) return { type: "kline", raw, channel: "KLINE", hardwareVerified: false, fields: parseFields(raw) };
   if (raw.startsWith("RXB ")) {
-    const match = raw.match(/^RXB t_us=(\d{1,10}) data=([0-9A-F]{2,32}) dt=(\d+(?:,\d+)*)$/);
+    const match = raw.match(/^RXB t_us=(\d{1,10}) (?:seq_start=(\d{1,20}) )?data=([0-9A-F]{2,32}) dt=(\d+(?:,\d+)*)(?: seq_start=(\d{1,20}))?$/);
     if (match) {
       const base = Number(match[1]);
-      const offsets = match[3].split(",").map(Number);
-      if (base <= 0xffffffff && match[2].length % 2 === 0 &&
-          offsets.length === match[2].length / 2 && offsets[0] === 0 &&
+      const data = match[3];
+      const offsets = match[4].split(",").map(Number);
+      const seqText = match[2] ?? match[5] ?? null;
+      const seqStart = seqText == null ? null : Number(seqText);
+      if (base <= 0xffffffff && data.length % 2 === 0 &&
+          offsets.length === data.length / 2 && offsets[0] === 0 &&
           offsets.every((n, i) => Number.isSafeInteger(n) && n >= 0 && n <= 0xffffffff && (!i || n >= offsets[i - 1]))) {
         return { type: "rx_batch", raw, events: offsets.map((dt, i) => ({
-          type: "rx", t_us: (base + dt) >>> 0, byte: parseInt(match[2].slice(i * 2, i * 2 + 2), 16),
+          type: "rx", t_us: (base + dt) >>> 0, byte: parseInt(data.slice(i * 2, i * 2 + 2), 16),
+          seq: seqStart != null ? seqStart + i : null,
         })) };
       }
     }
@@ -746,9 +750,11 @@ export function parseLine(line) {
     };
   }
   if (raw.startsWith("RX ")) {
-    const match = raw.match(/^RX t_us=(\d{1,10}) byte=([0-9A-F]{2})(?: seq=\d{1,20})?$/);
+    const match = raw.match(/^RX t_us=(\d{1,10}) byte=([0-9A-F]{2})(?: seq=(\d{1,20}))?$/);
     if (!match || Number(match[1]) > 0xffffffff) return { type: "fault", raw, reason: "RX_FORMAT" };
-    return { type: "rx", raw, t_us: Number(match[1]), byte: Number.parseInt(match[2], 16) };
+    const sequence = match[3] == null ? null : Number(match[3]);
+    return { type: "rx", raw, t_us: Number(match[1]), byte: Number.parseInt(match[2], 16),
+      seq: Number.isSafeInteger(sequence) ? sequence : null };
   }
   if (raw.startsWith("EVENT read_armed")) {
     const fields = parseFields(raw);

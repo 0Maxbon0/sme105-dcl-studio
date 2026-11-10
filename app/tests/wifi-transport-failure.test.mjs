@@ -238,7 +238,7 @@ test("H: lost vehicle-command acknowledgement fails closed and is never retried 
   assert.equal(h.controller.requestVehicle("LIVE").ok, true);
   assert.deepEqual(h.writes.slice(-2), ["STATUS", "ARM_LIVE"]);
   h.controller.onDisconnected();
-  assert.equal(h.controller.state.link, "disconnected");
+  assert.equal(h.controller.state.link, "reconnecting");
   assert.equal(h.writes.includes("READ_LIVE"), false);
 
   h.identify(); // a fresh identity check is allowed, replaying the lost request is not

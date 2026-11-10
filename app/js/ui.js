@@ -1257,6 +1257,7 @@ export function renderSettings(state) {
   const helloComplete = state.identity.helloOk === true && state.identity.pinsOk === true && !!state.status;
   let connectionState = state.transport === "demo" ? "Demo Replay" : "Disconnected";
   if (state.transport !== "demo" && (state.transportStatus === "denied" || state.link === "denied")) connectionState = "Denied";
+  else if (state.transport !== "demo" && (state.transportStatus === "reconnecting" || state.link === "reconnecting")) connectionState = "Reconnecting";
   else if (state.transport !== "demo" && (state.transportStatus === "connecting" || state.link === "connecting")) connectionState = "Connecting";
   else if (state.transport !== "demo" && connected && authenticated && helloComplete) connectionState = "Connected";
   else if (state.transport !== "demo" && connected) connectionState = "Authenticating";
@@ -1296,11 +1297,12 @@ export function render(state) {
   const activeTransport = state.transport === "wifi" || state.transport === "ble"
     ? state.transport : readStored("sme105-transport") === "ble" ? "ble" : "wifi";
   const connectionState = demoTransport ? "Demo Replay" : state.transportStatus === "denied" || state.link === "denied" ? "Denied"
+    : state.transportStatus === "reconnecting" || state.link === "reconnecting" ? "Reconnecting"
     : state.transportStatus === "connecting" || state.link === "connecting" ? "Connecting"
       : linked && authenticated && state.identity.helloOk === true && state.identity.pinsOk === true && state.status ? "Connected"
         : linked ? "Authenticating" : "Disconnected";
   $("link-pill").textContent = demoTransport ? "DEMO · REPLAY" : `${activeTransport === "wifi" ? "WI-FI" : "BLE"} · ${connectionState.toUpperCase()}`;
-  $("link-pill").dataset.state = linked ? "connected" : state.link === "denied" ? "error" : "disconnected";
+  $("link-pill").dataset.state = linked ? "connected" : state.link === "denied" ? "error" : state.link === "reconnecting" ? "reconnecting" : "disconnected";
   $("link-pill").title = state.deviceName || state.link;
   $("link-pill").setAttribute("aria-label", demoTransport ? "Demo replay; no hardware connection or vehicle communication" : `${activeTransport === "wifi" ? "ESP32 Wi-Fi" : "Bluetooth"} bridge: ${connectionState}`);
   $("stop-btn").disabled = !busy;

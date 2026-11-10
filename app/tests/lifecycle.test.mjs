@@ -105,7 +105,13 @@ test('manual Stop, link loss, corrupt provenance and transport faults do not ask
   for (const cause of ['manual', 'link', 'foreign', 'lost', 'pad', 'backpressure']) {
     const h = harness(); begin(h, 'LIVE'); const count = samples(h.c);
     if (cause === 'manual') h.c.requestStop();
-    if (cause === 'link') { h.c.onDisconnected(); assert.equal(h.c.state.lastSession.outcome, undefined); continue; }
+    if (cause === 'link') {
+      h.c.onDisconnected();
+      assert.equal(h.c.state.link, 'reconnecting');
+      assert.ok(h.c.state.op, 'the live operation remains available for RESUME');
+      assert.equal(h.c.state.op.session.end, null);
+      continue;
+    }
     h.c.handleLine(cause === 'pad' ? 'FAULT reason=11 cause=PAD_MISMATCH DE=LOW' : cause === 'backpressure' ? 'FAULT reason=17 cause=TRANSPORT_BACKPRESSURE DE=LOW' : 'FAULT reason=19 cause=RX_SILENCE DE=LOW');
     end(h.c, count, { boot: cause === 'foreign' ? 78 : 77, lost: cause === 'lost' ? 1 : 0 });
     assert.notEqual(h.c.state.lastSession.outcome, 'OPERATOR_CONFIRMATION_PENDING', cause);

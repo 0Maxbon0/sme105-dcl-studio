@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as fake from "fake-indexeddb";
 import "./test-env.mjs";
-import { createRecording, listRecordings, recoverInterruptedRecordings } from "../js/recording.js";
+import { createRecording, listRecordings, recoverInterruptedRecordings, takeoverRecording } from "../js/recording.js";
+import { restoreCaptureHistory } from "../js/app.js";
+import { createController } from "../js/controller.js";
 
 globalThis.indexedDB = new fake.IDBFactory();
 globalThis.IDBKeyRange = fake.IDBKeyRange;
@@ -187,6 +189,44 @@ test("normal finish releases writer ownership without recovery", async () => {
   } finally {
     clock.restore();
   }
+});
+
+test("a takeover request in the owning WebView reuses its active writer", async () => {
+  const recording = await createRecording("LIVE");
+  const adopted = await takeoverRecording(recording.id);
+  assert.equal(adopted, recording);
+  assert.equal((await readCapture(recording.id)).fencingGen, 1);
+  await adopted.finish({ valid: false, status: "INCOMPLETE", reasons: ["test cleanup"] });
+});
+
+test("a recreated WebView atomically takes over the writer and preserves an incomplete verdict", async () => {
+  const original = await createRecording("LIVE");
+  original.line("EVENT session=READ_CANDIDATE epoch=9 boot_id=77 session_id=31");
+  await original.export("raw");
+
+  const reopenedModule = await import(`../js/recording.js?webview=${crypto.randomUUID()}`);
+  const recovered = await reopenedModule.takeoverRecording(original.id);
+  const active = await readCapture(original.id);
+  assert.equal(active.fencingGen, 2);
+  assert.equal(active.writerTakeovers, 1);
+  assert.notEqual(active.writerToken, original.writerToken);
+
+  recovered.recordGap(2, 41, 42);
+  recovered.line("RX t_us=120 byte=AC seq=43");
+  await assert.rejects(original.finish({ valid: true, status: "VALID" }), /fenced/);
+  await recovered.finish({ valid: true, status: "INCOMPLETE", reasons: ["resume was denied"] });
+
+  const saved = await readCapture(original.id);
+  assert.equal(saved.verdict.valid, false);
+  assert.equal(saved.verdict.status, "INCOMPLETE");
+  assert.deepEqual(saved.sequenceGaps.map(({ lost, from, to }) => ({ lost, from, to })), [{ lost: 2, from: 41, to: 42 }]);
+  assert.equal(saved.sequenceGapCount, 2);
+  assert.equal(saved.writerToken, null);
+  const raw = await (await import("../js/recording.js")).recordingBlob(original.id, "raw").then(blob => blob.text());
+  assert.match(raw, /EVENT session=READ_CANDIDATE/);
+  assert.match(raw, /EVENT sequence_gap lost=2 from=41 to=42/);
+  assert.match(raw, /RX t_us=120 byte=AC seq=43/);
+  assert.doesNotMatch(raw, /^END /m);
 });
 
 test("heartbeat protects a writer through a delayed final flush beyond the lease", async () => {
@@ -405,4 +445,84 @@ test("heartbeat callback arriving after finalization does not resurrect capture 
     fake.IDBDatabase.prototype.transaction = originalTx;
     clock.restore();
   }
+});
+
+test("restoreCaptureHistory uses durable archive cursor instead of optimistic snapshot, replays uncommitted data, and creates no premature gap", async () => {
+  const recording = await createRecording("LIVE");
+  recording.line("EVENT read_armed variant=LIVE valid_ms=15000 no_tx_yet=1\n");
+  recording.line("EVENT session=READ_CANDIDATE epoch=9 boot_id=12345678 session_id=87654321\n");
+  recording.line("RX t_us=100 byte=3A seq=50\n");
+  recording.line("RX t_us=200 byte=41 seq=51\n");
+  await recording.export("raw");
+
+  // Optimistic in-memory snapshot was ahead at seq 55 before the crash
+  const snapshot = {
+    recordingId: recording.id,
+    variant: "LIVE",
+    bootId: "12345678",
+    sessionId: "87654321",
+    lastSeq: 55,
+    savedAt: Date.now(),
+    operatorStop: false,
+  };
+
+  const { session, cart } = await restoreCaptureHistory(recording, snapshot);
+
+  // 1. Persisted sequence 51 must be used, NOT the optimistic 55
+  assert.equal(session.lastSeq, 51, "Session cursor must be restored strictly from durable archive");
+  assert.equal(session.bootId, "12345678");
+  assert.equal(session.sessionId, "87654321");
+
+  // 2. No premature gap must be fabricated
+  assert.equal(session.sequenceGaps.length, 0, "No premature gap should be fabricated before replay");
+
+  // 3. Connect controller with restored state to verify RESUME cursor and replay of uncommitted data
+  const sent = [];
+  const ctrl = createController({
+    now: () => 10000,
+    send: (cmd) => sent.push(cmd),
+  });
+
+  ctrl.state.archive = recording;
+  ctrl.state.cart = cart;
+  ctrl.state.op = {
+    variant: "LIVE",
+    kind: "live",
+    source: "bridge",
+    startedAt: Date.now(),
+    operatorStop: false,
+    forceStatus: null,
+    forceReason: "",
+    session,
+  };
+  ctrl.state.link = "reconnecting";
+  ctrl.state.phase = "read";
+  ctrl.state.transport = "wifi";
+  ctrl.state.resuming = false;
+
+  // On reconnect, controller must issue RESUME using durable seq 51 (not 55)
+  ctrl.onConnected("TestBridge", "wifi", { reconnected: true });
+  ctrl.handleLine("AUTH OK retained=1");
+  const resumeCmd = sent.find(cmd => cmd.startsWith("RESUME"));
+  assert.equal(resumeCmd, "RESUME 12345678 87654321 51", "RESUME wire command must resume from durable archive sequence");
+
+  // Firmware acknowledges resume and indicates no ring gap
+  ctrl.handleLine("RESUME OK boot=12345678 session=87654321 gap=0 from=0 to=0 replaying=1");
+
+  // Retained uncommitted records (52, 53) are replayed and accepted
+  ctrl.handleLine("RX t_us=300000 byte=52 seq=52");
+  assert.equal(ctrl.state.op.session.lastSeq, 52);
+
+  ctrl.handleLine("RX t_us=400000 byte=53 seq=53");
+  assert.equal(ctrl.state.op.session.lastSeq, 53);
+
+  // Duplicate delivery of seq 51 must be dropped
+  ctrl.handleLine("RX t_us=200000 byte=41 seq=51");
+  assert.equal(ctrl.state.op.session.lastSeq, 53);
+
+  // Final check: exactly 4 records ingested (50, 51 from archive + 52, 53 replayed)
+  assert.equal(ctrl.state.op.session.rx, 4);
+  assert.equal(ctrl.state.op.session.sequenceGaps.length, 0, "No false gap should exist");
+
+  await recording.finish({ valid: true, status: "VALID", reasons: [] });
 });

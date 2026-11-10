@@ -10,10 +10,15 @@ public class BridgeConnectionPlugin extends Plugin {
     @PluginMethod public void start(PluginCall call) {
         try {
             Intent intent = new Intent(getContext(), BridgeConnectionService.class);
+            BridgeConnectionService.setBluetoothConnectionWanted(true);
             if (Build.VERSION.SDK_INT >= 26) getContext().startForegroundService(intent);
             else getContext().startService(intent);
             call.resolve();
-        } catch (Exception error) { call.reject("Cannot protect Bluetooth connection: " + error.getMessage(), error); }
+        } catch (Exception error) {
+            BridgeConnectionService.setBluetoothConnectionWanted(false);
+            BridgeConnectionService.stopIfUnowned(getContext());
+            call.reject("Cannot protect Bluetooth connection: " + error.getMessage(), error);
+        }
     }
     @PluginMethod public void setRecording(PluginCall call) {
         boolean active = call.getBoolean("active", false);
@@ -25,10 +30,13 @@ public class BridgeConnectionPlugin extends Plugin {
         });
     }
     @PluginMethod public void stop(PluginCall call) {
-        getContext().stopService(new Intent(getContext(), BridgeConnectionService.class));
+        BridgeConnectionService.setBluetoothConnectionWanted(false);
+        BridgeConnectionService.stopIfUnowned(getContext());
         call.resolve();
     }
     @Override protected void handleOnDestroy() {
-        getContext().stopService(new Intent(getContext(), BridgeConnectionService.class));
+        // Plugin and Activity teardown can happen while either transport still owns the
+        // process-wide foreground service or a recording still needs its wake lock.
+        BridgeConnectionService.stopIfUnowned(getContext());
     }
 }

@@ -12,6 +12,7 @@ void begin(const char* deviceName, uint32_t passkey);
 // Link up AND the current peer completed authenticated pairing.
 bool authenticatedLink();
 bool connected();
+uint32_t connectionEpoch();
 // Received command bytes from the authenticated peer; drained in loop().
 size_t read(uint8_t* out, size_t max);
 // Queue output for notification; returns bytes accepted (never blocks).

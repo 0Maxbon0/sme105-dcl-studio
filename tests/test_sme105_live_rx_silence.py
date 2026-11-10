@@ -136,6 +136,9 @@ bool slotInFlight = false, slotArmed = false, stopLatched = false;
 bool repeatDps = true, captureOnly = false, stopAtBlock = false;
 bool deHigh = true, slotTimerOn = true, deTimerOn = true;
 bool nativeOpen = true, referenceOpen = true;
+bool sessionRetained = false;
+uint32_t sessionDetachedAtMs = 0;
+bool telemetryReplayActive = false;
 Fault failure = NO_FAULT;
 struct {
   struct { int tx_done = 1; } int_ena;
@@ -164,6 +167,7 @@ void reset(uint8_t v = 2) {
 void checkSilenceShutdown() {
   assert(failure == RX_SILENCE && static_cast<int>(failure) == 19);
   assert(stage == FINISHING && stopLatched && armedVariant == 255);
+  assert(!sessionRetained && sessionDetachedAtMs == 0 && !telemetryReplayActive);
   assert(!deHigh && !slotTimerOn && !deTimerOn && !slotArmed && !slotInFlight);
   assert(!nativeOpen && !referenceOpen && !UART2.int_ena.tx_done);
   assert(!faultAllowsRearm(failure));

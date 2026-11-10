@@ -25,6 +25,23 @@ function unique(list) {
   return out;
 }
 
+const LIVE_RECOVERY_MS = 30_000;
+
+function isLiveVariant(variant) {
+  return VARIANTS[variant]?.kind === "live";
+}
+
+function parseResumeLine(raw) {
+  const match = /^RESUME (OK|DENIED)(?:\s+(.*))?$/.exec(String(raw));
+  if (!match) return null;
+  const fields = {};
+  for (const field of (match[2] || "").split(/\s+/).filter(Boolean)) {
+    const item = /^([A-Za-z_][A-Za-z0-9_]*)=(\S+)$/.exec(field);
+    if (item) fields[item[1]] = item[2];
+  }
+  return { ok: match[1] === "OK", fields };
+}
+
 const CATALOGUE_ENTRIES = Object.values(COMMAND_CATALOGUE);
 
 export function discoveryPassCandidates() {
@@ -96,6 +113,8 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     deadline: null,
     combined: null,
     archive: null,
+    recoveryDeadline: null,
+    resuming: false,
     discoveryPass: null,
     memMatrix: { status: "idle", activeId: "", stopRequested: false, results: [] },
     factoryProcedure: null,
@@ -191,6 +210,8 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       bridgeBlocks: state.op?.session?.bridgeBlocks ?? null,
       bridgeFaults: [...(state.op?.session?.faults || [])],
       bridgeProblems: [...(state.op?.session?.problems || [])],
+      sequenceGaps: [...(state.op?.session?.sequenceGaps || [])],
+      sequenceGapCount: (state.op?.session?.sequenceGaps || []).reduce((sum, gap) => sum + gap.lost, 0),
       operatorStop: !!state.op?.operatorStop,
       recordingError: state.archive?.error || "",
       offlineQuietUs: state.op?.session?.offlineQuietUs ?? null,
@@ -309,6 +330,8 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     if (verdict.valid && vbat != null) state.battery = vbat;
     state.phase = "idle";
     state.deadline = null;
+    state.recoveryDeadline = null;
+    state.resuming = false;
     state.op = null;
     const diagnosticRead = ["codes", "koeo", "koer"].includes(state.lastSession.kind);
     state.message = state.lastSession.dclProbe
@@ -323,6 +346,9 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     if (combined?.error) state.message = combined.error;
     if (state.lastSession.outcome === "OPERATOR_CONFIRMATION_PENDING") state.message = "Live data stopped. Operator confirmation is pending.";
     if (state.lastSession.outcome === "NOT_STARTED_ECU_NO_RESPONSE") state.message = ECU_NO_RESPONSE_MESSAGE;
+    if (state.lastSession.sequenceGapCount > 0) {
+      state.message += ` · ${state.lastSession.sequenceGapCount} missing telemetry sample(s) recorded`;
+    }
     touch();
   }
 
@@ -446,6 +472,13 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
   function ingestRead(parsed) {
     if (!state.op) return;
     if (!state.op.session) state.op.session = createSession();
+    const session = state.op.session;
+    if (parsed.type === "session_start" && session.started) {
+      const sameBoot = parsed.fields?.boot_id == null || parsed.fields.boot_id === session.bootId;
+      const sameSession = (parsed.fields?.session_id ?? parsed.fields?.epoch ?? null) == null ||
+        String(parsed.fields.session_id ?? parsed.fields.epoch) === String(session.sessionId ?? session.epoch);
+      if (sameBoot && sameSession) return;
+    }
     if (parsed.type === "session_start" && !state.op.session.started) {
       state.cart = createCartDecoder(pidSetForVariant(state.op.variant), state.archive ? {
         historyLimit: 512,
@@ -456,12 +489,44 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
         },
       } : {});
     }
-    noteSessionLine(state.op.session, parsed);
+    if (parsed.type === "session_start" && !session.started) {
+      session.sessionId = parsed.fields?.session_id ?? parsed.fields?.epoch ?? null;
+      session.sequenceGaps ||= [];
+      session.lastSeq = null;
+    }
+    let receivedEvents = null;
+    if ((parsed.type === "rx" || parsed.type === "rx_batch") && session.started) {
+      const events = parsed.type === "rx" ? [parsed] : parsed.events;
+      receivedEvents = [];
+      for (const event of events) {
+        const sequence = event.seq;
+        if (sequence != null && session.lastSeq != null && sequence <= session.lastSeq) continue;
+        if (sequence != null && session.lastSeq != null && sequence > session.lastSeq + 1) {
+          recordSequenceGap(sequence - session.lastSeq - 1, session.lastSeq + 1, sequence - 1, "sequence");
+        }
+        if (sequence != null) session.lastSeq = sequence;
+        receivedEvents.push(event);
+      }
+      if (!receivedEvents.length) return;
+    }
+    if (parsed.type === "event" && parsed.raw.startsWith("EVENT telemetry_gap ")) {
+      const lost = Number(parsed.fields?.lost);
+      const from = Number(parsed.fields?.from);
+      const to = Number(parsed.fields?.to);
+      if (Number.isSafeInteger(lost) && lost > 0 && Number.isSafeInteger(from) && Number.isSafeInteger(to)) {
+        recordSequenceGap(lost, from, to, "telemetry_gap");
+        if (session.lastSeq == null || to > session.lastSeq) session.lastSeq = to;
+      }
+    }
+    const ingested = receivedEvents == null || parsed.type === "rx"
+      ? parsed
+      : { ...parsed, events: receivedEvents };
+    noteSessionLine(state.op.session, ingested);
     if (state.factoryProcedure?.status === "running") state.factoryProcedure.responseBytes = state.op.session.rx;
     try {
       if (parsed.type === "rx" && state.cart) state.cart.pushRx(parsed.t_us, parsed.byte, now());
       if (parsed.type === "rx_batch" && state.cart) {
-        for (const event of parsed.events) state.cart.pushRx(event.t_us, event.byte, now());
+        for (const event of receivedEvents ?? parsed.events) state.cart.pushRx(event.t_us, event.byte, now());
       }
     } catch (error) {
       state.op.forceStatus = "INCOMPLETE";
@@ -483,12 +548,76 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
     }
   }
 
+  function recordSequenceGap(lost, from, to, source = "resume") {
+    const count = Number(lost);
+    if (!Number.isSafeInteger(count) || count <= 0) return null;
+    const gap = {
+      lost: count,
+      from: Number.isSafeInteger(Number(from)) ? Number(from) : null,
+      to: Number.isSafeInteger(Number(to)) ? Number(to) : null,
+      source,
+    };
+    const session = state.op?.session;
+    if (session) {
+      session.sequenceGaps ||= [];
+      if (session.sequenceGaps.some(item => item.lost === gap.lost && item.from === gap.from && item.to === gap.to)) return gap;
+      session.sequenceGaps.push(gap);
+    }
+    state.archive?.recordGap?.(gap.lost, gap.from, gap.to);
+    return gap;
+  }
+
+  function handleResumeResult(resume) {
+    if (!state.resuming || !state.op?.session) return;
+    const session = state.op.session;
+    if (!resume.ok) {
+      state.resuming = false;
+      state.recoveryDeadline = null;
+      state.transportStatus = "connected";
+      state.archive?.line?.("EVENT recovery_denied reason=Wi-Fi_session_expired_or_bridge_reset");
+      finalize({ status: "INCOMPLETE", reason: "Wi-Fi session expired or bridge reset" });
+      return;
+    }
+    const bootId = resume.fields.boot_id ?? resume.fields.boot;
+    const sessionId = resume.fields.session_id ?? resume.fields.session;
+    if ((bootId != null && String(bootId).toUpperCase() !== String(session.bootId).toUpperCase()) ||
+        (sessionId != null && String(sessionId).toUpperCase() !== String(session.sessionId ?? session.epoch).toUpperCase())) {
+      state.resuming = false;
+      state.recoveryDeadline = null;
+      state.transportStatus = "connected";
+      finalize({ status: "INCOMPLETE", reason: "Wi-Fi session expired or bridge reset" });
+      return;
+    }
+    const lost = Number(resume.fields.gap || 0);
+    if (Number.isSafeInteger(lost) && lost > 0) {
+      let from = resume.fields.from != null ? Number(resume.fields.from) : null;
+      let to = resume.fields.to != null ? Number(resume.fields.to) : null;
+      if (from == null && session.lastSeq != null) from = session.lastSeq + 1;
+      if (to == null && from != null) to = Number(from) + lost - 1;
+      const gap = recordSequenceGap(lost, from, to, "resume");
+      if (gap?.to != null) session.lastSeq = gap.to;
+    }
+    state.resuming = false;
+    state.recoveryDeadline = null;
+    state.transportStatus = "connected";
+    state.phase = "read";
+    state.message = lost > 0
+      ? `Live data resumed; ${lost} telemetry sample(s) were not retained by the bridge.`
+      : "Live data resumed";
+    touch();
+  }
+
   function handleLine(line) {
     const parsed = parseLine(line);
     recordBridgeRaw(parsed.raw, { source: state.op?.source || (state.transport === "demo" ? "simulation" : "bridge") });
     state.archive?.line(parsed.raw);
     state.log.push(parsed.raw);
     if (state.archive && state.log.length > 2100) state.log.splice(0, state.log.length - 2000);
+    const resume = parseResumeLine(parsed.raw);
+    if (resume) {
+      handleResumeResult(resume);
+      return;
+    }
     if (parsed.type === "auth") {
       state.identity.auth = parsed.ok ? "OK" : "DENIED";
       if (!parsed.ok) {
@@ -701,7 +830,48 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       return () => listeners.delete(fn);
     },
     handleLine,
-    onConnected(name = "", transport = "ble") {
+    onConnected(name = "", transport = "ble", connection = {}) {
+      const connectionRecovered = state.link === "reconnecting" || connection.reconnected === true;
+      if (connectionRecovered && (state.op?.operatorStop || state.phase === "stopping")) {
+        state.link = "ready";
+        state.deviceName = name || state.deviceName;
+        state.transport = transport;
+        state.resuming = false;
+        state.recoveryDeadline = null;
+        state.phase = "stopping";
+        state.message = "Stopping retained session";
+        arm(TIMEOUTS.stop);
+        send("STOP");
+        touch();
+        return { stopped: true };
+      }
+      if (state.link === "ready" && state.transport === transport && !connection.reconnected) {
+        return { reattached: true };
+      }
+      if (connectionRecovered && isLiveVariant(state.op?.variant) && state.op?.session?.started) {
+        state.link = "ready";
+        state.deviceName = name || state.deviceName;
+        state.transport = transport;
+        state.recoveryDeadline = now() + LIVE_RECOVERY_MS;
+        state.resuming = true;
+        state.phase = "read";
+        const session = state.op.session;
+        const bootId = session.bootId;
+        const sessionId = session.sessionId ?? session.epoch;
+        if (bootId == null || sessionId == null) {
+          state.resuming = false;
+          finalize({ status: "INCOMPLETE", reason: "Wi-Fi session expired or bridge reset" });
+          return { resumed: false };
+        }
+        state.message = "Rejoining the active live data session";
+        send(`RESUME ${bootId} ${sessionId} ${session.lastSeq ?? 0}`);
+        touch();
+        return { resumed: true };
+      }
+      if (connectionRecovered && state.op) {
+        finalize({ status: isLiveVariant(state.op.variant) ? "INCOMPLETE" : "FAILED",
+          reason: isLiveVariant(state.op.variant) ? "Wi-Fi session expired or bridge reset" : "link lost" });
+      }
       state.link = "ready";
       state.deviceName = name;
       state.transport = transport;
@@ -715,17 +885,30 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       state.battery = null;
       state.trust = "none";
       state.identity = { auth: "", hello: "", helloOk: null, pins: "", pinsOk: null };
+      state.recoveryDeadline = null;
+      state.resuming = false;
       state.phase = "identify_hello";
       state.message = "Checking bridge identity";
       arm(TIMEOUTS.identify);
       send("HELLO");
       touch();
+      return { reattached: false };
     },
     onDisconnected() {
+      const phase = state.phase;
+      if (state.link === "reconnecting") return;
+      if (isLiveVariant(state.op?.variant) && ["pre_status", "bench", "arm", "read", "stopping"].includes(phase)) {
+        state.link = "reconnecting";
+        state.recoveryDeadline = now() + LIVE_RECOVERY_MS;
+        state.resuming = false;
+        state.message = "Live data link interrupted; reconnect within 30 seconds to resume the session.";
+        touch();
+        return;
+      }
       if (state.combined) { state.combined.active = false; state.combined.nextPending = false; }
       if (state.link === "disconnected") return;
-      const phase = state.phase;
       state.link = "disconnected";
+      state.recoveryDeadline = null;
       state.identity.auth = "";
       state.deviceName = "";
       state.transport = "";
@@ -1315,6 +1498,33 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       touch();
     },
     tick() {
+      if (state.resuming && state.recoveryDeadline != null && now() >= state.recoveryDeadline) {
+        state.resuming = false;
+        state.recoveryDeadline = null;
+        state.link = "disconnected";
+        state.transportStatus = "disconnected";
+        state.transport = "";
+        state.deviceName = "";
+        state.identity.auth = "";
+        state.archive?.line?.("EVENT recovery_timeout reason=Wi-Fi_session_expired_or_bridge_reset");
+        finalize({ status: "INCOMPLETE", reason: "Wi-Fi session expired or bridge reset" });
+        return true;
+      }
+      if (state.resuming) return false;
+      if (state.link === "reconnecting") {
+        if (state.recoveryDeadline != null && now() >= state.recoveryDeadline) {
+          state.recoveryDeadline = null;
+          state.link = "disconnected";
+          state.transportStatus = "disconnected";
+          state.transport = "";
+          state.deviceName = "";
+          state.identity.auth = "";
+          state.archive?.line?.("EVENT recovery_timeout reason=Wi-Fi_session_expired_or_bridge_reset");
+          finalize({ status: "INCOMPLETE", reason: "Wi-Fi session expired or bridge reset" });
+          return true;
+        }
+        return false;
+      }
       const combined = state.combined;
       if (combined?.active) {
         if (now() >= combined.endAt) { stop(); return true; }

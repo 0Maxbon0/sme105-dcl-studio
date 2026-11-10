@@ -3,6 +3,8 @@
 #include "kline_rx.h"
 #include <HardwareSerial.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
+#include <esp_netif_sta_list.h>
 #include <Preferences.h>
 #include <ESPmDNS.h>
 #include <esp_system.h>
@@ -39,6 +41,7 @@
 #include <cstring>
 #include <algorithm>
 #include "live_all_map.h"
+#include "telemetry_ring.h"
 
 // Arduino ESP32 normally marks a freshly OTA-booted image VALID inside
 // initArduino(), BEFORE setup() can check our pins or Wi-Fi state. Deferring
@@ -56,6 +59,7 @@ extern "C" bool verifyRollbackLater(void) { return true; }
 // arbitrary-opcode interface is provided. Added candidates remain unverified
 // on this ECU and use the existing pad witness and bounded session machinery.
 namespace {
+struct WiFiApSnapshot;
 constexpr int kRO = 16, kDI = 17, kDE = 18;
 constexpr uint8_t kEchoId[] = {0, 0, 0, 0, 0, 1, 0x82, 0, 0, 0, 0x83};
 constexpr uint8_t kGoCart[] = {0, 0, 0, 0, 0, 1, 0x04, 0, 0, 0, 0x05};
@@ -75,8 +79,13 @@ constexpr uint32_t kSlotMinLeadUs = 180, kSlotMaxLeadUs = 1250;
 constexpr uint32_t kGapToleranceUs = 175;
 constexpr size_t kRxRingSize = 2048; // single producer ISR / single USB consumer
 constexpr uint16_t kWiFiPort = 8765;
+#ifdef SME105_BLE
+constexpr size_t kWireQueueSize = 4096; // BLE drains incrementally; keep SRAM for byte retention
+#else
 constexpr size_t kWireQueueSize = 16384; // bounded, no allocation/IO in ISR
+#endif
 constexpr uint32_t kAuthDeadlineMs = 5000;
+constexpr uint32_t kSessionRetentionMs = 30000;
 constexpr uint32_t kStaRetryMs = 10000;
 constexpr uint32_t kStaReinitMs = 60000; // escaped/failed reconnect: reapply NVS STA config
 constexpr uint32_t kListenerRetryMs = 3000;
@@ -388,6 +397,33 @@ RxEvent rxRing[kRxRingSize] = {};
 volatile bool frameLocked = false, captureOnly = false;
 volatile bool joinMode = false, repeatDps = false, stopAtBlock = false;
 volatile uint32_t dpsBlocks = 0;
+TelemetryRing telemetryRing;
+enum RecoveryState : uint8_t {
+  RECOVERY_IDLE,
+  RECOVERY_DETACHED,
+  RECOVERY_PENDING_RESUME,
+  RECOVERY_REPLAYING,
+  RECOVERY_LIVE,
+};
+RecoveryState recoveryState = RECOVERY_IDLE;
+uint32_t bootId = 0, sessionId = 0;
+bool sessionRetained = false;
+uint32_t sessionDetachedAtMs = 0;
+bool telemetryReplayActive = false;
+uint32_t telemetryReplaySeq = 0;
+struct TerminalOutcome {
+  bool valid;
+  uint32_t bootId;
+  uint32_t sessionId;
+  Fault failure;
+  uint32_t rxTotal;
+  uint32_t lostRx;
+  uint32_t uartErr;
+  uint8_t variant;
+  uint32_t dpsBlocks;
+  bool queued;
+};
+TerminalOutcome lastTerminalOutcome = {};
 // Live PID map words ride in IW2, 2.5ms after the DPS slot.
 volatile bool extraArmed = false, extraInFlight = false;
 volatile uint32_t extraTargetUs = 0, extraStartUs = 0;
@@ -423,11 +459,14 @@ uint8_t lastReportedBaseline = 0;
 // cursors. An authenticated TCP controller is the primary evidence recipient;
 // USB remains best-effort and skipped bytes are explicitly counted. When no
 // TCP controller is authenticated, USB alone constrains the bounded queue.
+// Live raw events have a separate retention ring so slow subscribers can be
+// detached without pausing ECU polling.
 class BridgeOutput : public Print {
  public:
   size_t write(uint8_t byte) override {
     if (used() >= kWireQueueSize) { ++overflow_; return 0; }
     bytes_[write_++ & (kWireQueueSize - 1)] = byte;
+    updateWatermark();
     return 1;
   }
   size_t write(const uint8_t* buffer, size_t count) override {
@@ -442,6 +481,12 @@ class BridgeOutput : public Print {
   uint32_t usbCursor() const { return usbRead_; }
   uint32_t tcpCursor() const { return tcpRead_; }
   uint32_t overflow() const { return overflow_; }
+  uint32_t tcpSendErrors() const { return tcpSendErrors_; }
+  uint32_t queueWatermark() const { return queueWatermark_; }
+  void skipUsbToCurrent() {
+    usbSkipped_ += write_ - usbRead_;
+    usbRead_ = write_;
+  }
   // During signed OTA, the authenticated TCP updater is the mandatory
   // recipient; serial is optional observation. A closed USB monitor must
   // not prevent the OTA reply from reaching the authenticated uploader.
@@ -500,25 +545,32 @@ class BridgeOutput : public Print {
     // availableForWrite() is the inherited default ZERO. Neither is safe
     // during a 10ms ECU frame cadence. Use lwIP nonblocking send directly.
     const int socket = client.fd();
-    if (socket < 0) { tcpSendFailed_ = true; return; }
+    if (socket < 0) { ++tcpSendErrors_; tcpSendFailed_ = true; return; }
     const size_t len = std::min(static_cast<size_t>(write_ - tcpRead_),
                         std::min(static_cast<size_t>(128),
                                  kWireQueueSize - (tcpRead_ & (kWireQueueSize - 1))));
     const int sent = ::send(socket, bytes_ + (tcpRead_ & (kWireQueueSize - 1)),
                             len, MSG_DONTWAIT);
     if (sent > 0) tcpRead_ += static_cast<uint32_t>(sent);
-    else if (sent == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
+    else if (sent == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+      ++tcpSendErrors_;
       tcpSendFailed_ = true;
+    }
   }
  private:
+  void updateWatermark() {
+    const uint32_t backlog = used();
+    if (backlog > queueWatermark_) queueWatermark_ = backlog;
+  }
   uint32_t used() const {
     // Authenticated TCP sessions (including live CART capture and OTA) must
-    // not be terminated by an unopened USB terminal. TCP still fails closed
-    // on its own send/backpressure failure. USB-only sessions remain bounded.
+    // not be terminated by an unopened USB terminal. Live transport loss is
+    // handled by session retention; all consumer cursors remain bounded.
     return tcpEnabled_ ? write_ - tcpRead_ : write_ - usbRead_;
   }
   uint8_t bytes_[kWireQueueSize] = {};
   uint32_t write_ = 0, usbRead_ = 0, tcpRead_ = 0, overflow_ = 0;
+  uint32_t tcpSendErrors_ = 0, queueWatermark_ = 0;
   bool tcpEnabled_ = false, tcpSendFailed_ = false, otaTcpPrimary_ = false;
   uint32_t usbSkipped_ = 0;
 };
@@ -529,6 +581,14 @@ WiFiClient wifiClient;
 bool wifiConfigured = false, tcpAuthenticated = false;
 bool wifiApMode = false, wifiApReady = false;
 bool tcpHadActiveSession = false;
+#ifndef SME105_BLE
+uint8_t tcpPeerMac[6] = {};
+bool tcpPeerMacValid = false;
+uint32_t tcpPeerAcceptedDisconnectSeq = 0;
+#endif
+#ifdef SME105_BLE
+uint32_t lastBleConnectionEpoch = 0;
+#endif
 // The single authenticated remote controller (tcpAuthenticated) is BLE.
 bool remoteIsBle = false;
 char bleLine[176] = {};
@@ -544,6 +604,7 @@ uint8_t wifiLineUsed = 0;
 bool wifiLineDiscard = false;
 uint32_t wifiAuthStartedMs = 0, wifiLastRetryMs = 0;
 uint32_t transportFaults = 0;
+uint32_t wifiConnectionEpochs = 0;
 // Wi-Fi event callbacks execute on Arduino's event task. They only record
 // fixed-width diagnostics, never touch UART/DE, NVS, sockets or Wi-Fi APIs.
 volatile uint32_t wifiDisconnectEvents = 0, wifiGotIpEvents = 0;
@@ -1255,6 +1316,7 @@ void confirmOtaBootFromNetwork(const char* cmd) {
   out.print(F("OTA_CONFIRM OK version=")); out.println(version);
 }
 void dropTcpClient(bool transportLost) {
+  bool retainedLiveSession = false;
   // The inactive partition remains unbootable after an interrupted upload;
   // abort the write handle rather than ever resuming an untrusted byte stream.
   if (signedOta.phase == OtaPhase::Receiving)
@@ -1264,7 +1326,19 @@ void dropTcpClient(bool transportLost) {
   if (isRequestVariant(armedVariant) && !armedFromUSB) armedVariant = 255;
   if (transportLost && tcpAuthenticated) {
     ++transportFaults;
-    if (busSessionActive()) stopEverything(HOST_STOP);
+    const bool allMapSafe = (variant != kVariantAllLive) ||
+                            (dpsBlocks >= 2 && pidWordsVerified >= kAllLiveMapWords &&
+                             !extraArmed && !extraInFlight);
+    if (isLiveVariant(variant) && stage == CART_READ && dpsBlocks >= 1 && allMapSafe) {
+      tcpAuthenticated = false;
+      sessionRetained = true;
+      sessionDetachedAtMs = millis();
+      telemetryReplayActive = false;
+      recoveryState = RECOVERY_DETACHED;
+      retainedLiveSession = true;
+    } else if (busSessionActive()) {
+      stopEverything(HOST_STOP);
+    }
   }
   tcpAuthenticated = false;
   tcpHadActiveSession = false;
@@ -1272,12 +1346,22 @@ void dropTcpClient(bool transportLost) {
   wifiLineDiscard = false;
   bleLineUsed = 0;
   bleLineDiscard = false;
+#ifndef SME105_BLE
+  tcpPeerMacValid = false;
+  tcpPeerAcceptedDisconnectSeq = 0;
+  memset(tcpPeerMac, 0, sizeof(tcpPeerMac));
+#endif
 #ifdef SME105_BLE
   if (remoteIsBle && !transportLost) ble_transport::disconnect();
 #endif
   remoteIsBle = false;
   if (wifiClient) wifiClient.stop();
   out.dropTcpAtCurrent();
+  if (retainedLiveSession) {
+    out.print(F("EVENT transport_loss session_retained=1 variant="));
+    out.print(variantName(variant));
+    out.print(F(" blocks=")); out.println(dpsBlocks);
+  }
 }
 bool tokenMatches(const char* supplied) {
   const char* expected = wifiApMode ? wifiApAuthToken : wifiToken;
@@ -1297,10 +1381,73 @@ void onStaDisconnect(WiFiEvent_t, WiFiEventInfo_t info) {
 void onStaGotIp(WiFiEvent_t, WiFiEventInfo_t) {
   ++wifiGotIpEvents;
 }
+#ifndef SME105_BLE
+volatile uint32_t wifiApStaDisconnectEvents = 0;
+uint32_t wifiLastHandledApStaDisconnectEvent = 0;
+constexpr size_t kApDisconnectQueueSize = 8;
+struct ApDisconnectEvent {
+  uint32_t sequence;
+  uint8_t mac[6];
+  bool valid;
+};
+ApDisconnectEvent wifiApDisconnectQueue[kApDisconnectQueueSize] = {};
+portMUX_TYPE wifiApDisconnectMux = portMUX_INITIALIZER_UNLOCKED;
+void onApStaDisconnect(WiFiEvent_t, WiFiEventInfo_t info) {
+  portENTER_CRITICAL(&wifiApDisconnectMux);
+  const uint32_t sequence = wifiApStaDisconnectEvents++;
+  ApDisconnectEvent& event = wifiApDisconnectQueue[sequence % kApDisconnectQueueSize];
+  event.sequence = sequence;
+  memcpy(event.mac, info.wifi_ap_stadisconnected.mac, sizeof(event.mac));
+  event.valid = true;
+  portEXIT_CRITICAL(&wifiApDisconnectMux);
+}
+bool apStationMacForClient(const WiFiClient& client, uint8_t mac[6]) {
+  wifi_sta_list_t wifiStations = {};
+  esp_netif_sta_list_t netifStations = {};
+  if (esp_wifi_ap_get_sta_list(&wifiStations) != ESP_OK ||
+      esp_netif_get_sta_list(&wifiStations, &netifStations) != ESP_OK)
+    return false;
+  const uint32_t remoteAddress = static_cast<uint32_t>(client.remoteIP());
+  for (int i = 0; i < netifStations.num; ++i) {
+    if (netifStations.sta[i].ip.addr == remoteAddress) {
+      memcpy(mac, netifStations.sta[i].mac, 6);
+      return true;
+    }
+  }
+  return false;
+}
+void pollApStaDisconnectEvents() {
+  uint32_t latestEvent;
+  portENTER_CRITICAL(&wifiApDisconnectMux);
+  latestEvent = wifiApStaDisconnectEvents;
+  portEXIT_CRITICAL(&wifiApDisconnectMux);
+
+  if (static_cast<uint32_t>(latestEvent - wifiLastHandledApStaDisconnectEvent) >
+      kApDisconnectQueueSize)
+    wifiLastHandledApStaDisconnectEvent = latestEvent - kApDisconnectQueueSize;
+  while (wifiLastHandledApStaDisconnectEvent != latestEvent) {
+    ApDisconnectEvent event = {};
+    portENTER_CRITICAL(&wifiApDisconnectMux);
+    const ApDisconnectEvent& queued = wifiApDisconnectQueue[
+        wifiLastHandledApStaDisconnectEvent % kApDisconnectQueueSize];
+    if (queued.sequence == wifiLastHandledApStaDisconnectEvent) event = queued;
+    portEXIT_CRITICAL(&wifiApDisconnectMux);
+    ++wifiLastHandledApStaDisconnectEvent;
+    if (tcpPeerMacValid && event.valid &&
+        event.sequence >= tcpPeerAcceptedDisconnectSeq &&
+        memcmp(event.mac, tcpPeerMac, sizeof(tcpPeerMac)) == 0) {
+      if (!remoteIsBle && (wifiClient.fd() >= 0 || tcpAuthenticated))
+        dropTcpClient(tcpAuthenticated);
+      wifiLastHandledApStaDisconnectEvent = latestEvent;
+      return;
+    }
+  }
+}
 void onApStop(WiFiEvent_t, WiFiEventInfo_t) {
   // Event task: counters only. Never touch sockets, NVS, ISR or vehicle bus.
   ++wifiApStopEvents;
 }
+#endif
 // Integral action result avoids Arduino's generated forward declarations
 // depending on a locally declared enum before it is defined.
 constexpr int kWiFiRecoveryNone = 0, kWiFiRecoveryReconnect = 1;
@@ -1402,6 +1549,7 @@ void initializeWiFi() {
 #else
   WiFi.onEvent(onStaDisconnect, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
   WiFi.onEvent(onStaGotIp, ARDUINO_EVENT_WIFI_STA_GOT_IP);
+  WiFi.onEvent(onApStaDisconnect, ARDUINO_EVENT_WIFI_AP_STADISCONNECTED);
   WiFi.onEvent(onApStop, ARDUINO_EVENT_WIFI_AP_STOP);
   prefsReady = wifiPrefs.begin("sme105wifi", false);
   if (!prefsReady) { WiFi.mode(WIFI_OFF); return; }
@@ -1604,6 +1752,41 @@ void printWiFiStatus() {
   // Actual mDNS resolution is opportunistic, never a safety authority.
   out.println(F(" host=sme105-bridge.local"));
 }
+struct WiFiApSnapshot {
+  uint8_t channel;
+  uint8_t stations;
+  int8_t rssi[10];
+};
+WiFiApSnapshot wifiApSnapshot() {
+  WiFiApSnapshot snapshot = {};
+  if (!wifiApMode) {
+    snapshot.channel = networkOnline() ? WiFi.channel() : 0;
+    return snapshot;
+  }
+  wifi_config_t config = {};
+  if (esp_wifi_get_config(WIFI_IF_AP, &config) == ESP_OK)
+    snapshot.channel = config.ap.channel;
+  else
+    snapshot.channel = 6;
+  if (!networkOnline()) return snapshot;
+  wifi_sta_list_t list = {};
+  if (esp_wifi_ap_get_sta_list(&list) != ESP_OK) return snapshot;
+  snapshot.stations = list.num < 10 ? list.num : 10;
+  for (uint8_t i = 0; i < snapshot.stations; ++i)
+    snapshot.rssi[i] = list.sta[i].rssi;
+  return snapshot;
+}
+void printWiFiApTelemetry(const WiFiApSnapshot& snapshot) {
+  out.print(F(" stations=")); out.print(snapshot.stations);
+  out.print(F(" channel=")); out.print(snapshot.channel);
+  for (uint8_t i = 0; i < snapshot.stations; ++i) {
+    out.print(F(" sta")); out.print(i);
+    out.print(F("_rssi=")); out.print(snapshot.rssi[i]);
+  }
+  out.print(F(" connection_epochs=")); out.print(wifiConnectionEpochs);
+  out.print(F(" socket_send_errors=")); out.print(out.tcpSendErrors());
+  out.print(F(" queue_watermark=")); out.print(out.queueWatermark());
+}
 void printWiFiDiag() {
   // Diagnostic fields are intentionally numeric and secret-free. Reason is
   // the native ESP-IDF Wi-Fi disconnect code, NOT a proven physical cause.
@@ -1619,16 +1802,26 @@ void printWiFiDiag() {
   out.print(F(" offline_ms=")); out.print(wifiWasOffline ? millis() - wifiOfflineSinceMs : 0);
   out.print(F(" rssi=")); out.print(!wifiApMode && networkOnline() ? WiFi.RSSI() : 0);
   out.print(F(" mode=")); out.print(wifiApMode ? F("AP") : F("STA"));
-  out.print(F(" ap_clients=")); out.print(wifiApMode && networkOnline() ? WiFi.softAPgetStationNum() : 0);
+  const WiFiApSnapshot snapshot = wifiApSnapshot();
+  out.print(F(" ap_clients=")); out.print(snapshot.stations);
+  out.print(F(" channel=")); out.print(snapshot.channel);
+  for (uint8_t i = 0; i < snapshot.stations; ++i) {
+    out.print(F(" sta")); out.print(i);
+    out.print(F("_rssi=")); out.print(snapshot.rssi[i]);
+  }
+  out.print(F(" connection_epochs=")); out.print(wifiConnectionEpochs);
+  out.print(F(" socket_send_errors=")); out.print(out.tcpSendErrors());
+  out.print(F(" queue_watermark=")); out.print(out.queueWatermark());
   out.print(F(" ap_stops=")); out.println(wifiApStopEvents);
 }
 void printWiFiApStatus() {
   // AP SSID is a public radio name; PSK and control token never leave NVS.
+  const WiFiApSnapshot snapshot = wifiApSnapshot();
   out.print(F("WIFI_AP_STATUS mode=")); out.print(wifiApMode ? F("AP") : F("STA"));
   out.print(F(" state=")); out.print(wifiApMode && networkOnline() ? F("ACTIVE") : F("INACTIVE"));
   out.print(F(" ip=")); out.print(wifiApMode && networkOnline() ? WiFi.softAPIP() : IPAddress(0,0,0,0));
-  out.print(F(" stations=")); out.print(wifiApMode && networkOnline() ? WiFi.softAPgetStationNum() : 0);
-  out.println(F(" channel=6 port=8765 wpa2=1"));
+  printWiFiApTelemetry(snapshot);
+  out.println(F(" port=8765 wpa2=1"));
 }
 bool decodeWiFiCredentials(const char* command, size_t prefixLen,
                             char (&ssid)[33], char (&password)[64],
@@ -2291,6 +2484,9 @@ void closeReference() {
 }
 void stopEverything(Fault reason) {
   armedVariant = 255; // A stopped/faulted session never preserves pending authority
+  sessionRetained = false;
+  sessionDetachedAtMs = 0;
+  telemetryReplayActive = false;
   portENTER_CRITICAL(&txLock);
   stopLatched = true;
   deOff(); disableSlotTimer(); disableDeTimer();
@@ -2823,6 +3019,14 @@ void beginSession(Stage target, uint8_t kind) {
   }
   if (offline) offlineConsumed = true; // before any DPS TX
   else if (target == CART_READ) transmitConsumed = true; // before any 2400 TX
+  const uint32_t randomSession = esp_random();
+  sessionId = randomSession ? randomSession : 1;
+  sessionRetained = false;
+  sessionDetachedAtMs = 0;
+  telemetryReplayActive = false;
+  telemetryReplaySeq = 0;
+  recoveryState = RECOVERY_IDLE;
+  telemetryRing.reset();
   armedVariant = 255;
   stopLatched = true;
   failure = NO_FAULT;
@@ -2845,7 +3049,10 @@ void beginSession(Stage target, uint8_t kind) {
     if (!openNative()) { stopEverything(CART_INIT); out.println(F("FAULT reason=CART_INIT")); return; }
     stopLatched = false;
     stage = CART_PASSIVE; captureStartedMs = millis();
-    out.print(F("EVENT session=LISTEN_9600 origin=RO_ONLY no_tx=1 epoch=")); out.print(padEvidence.epoch); out.print(F(" boot_id=")); out.println(padEvidence.boot);
+    out.print(F("EVENT session=LISTEN_9600 origin=RO_ONLY no_tx=1 epoch=")); out.print(padEvidence.epoch);
+    out.print(F(" boot_id=")); printHex32(out, bootId);
+    out.print(F(" session_id=")); printHex32(out, sessionId);
+    out.println();
     return;
   }
   if (offline) {
@@ -2856,7 +3063,10 @@ void beginSession(Stage target, uint8_t kind) {
     framePeriodUs = 0;
     stopLatched = false;
     stage = CART_READ; captureStartedMs = millis();
-    out.print(F("EVENT session=OFFLINE_JOIN no_handshake=1 epoch=")); out.print(padEvidence.epoch); out.print(F(" boot_id=")); out.println(padEvidence.boot);
+    out.print(F("EVENT session=OFFLINE_JOIN no_handshake=1 epoch=")); out.print(padEvidence.epoch);
+    out.print(F(" boot_id=")); printHex32(out, bootId);
+    out.print(F(" session_id=")); printHex32(out, sessionId);
+    out.println();
     return;
   }
   if (!openReference()) { stopEverything(CART_INIT); return; }
@@ -2866,7 +3076,9 @@ void beginSession(Stage target, uint8_t kind) {
   out.print(F("EVENT session="));
   out.print(target == CART_READ ? F("READ_CANDIDATE") : F("OBSERVE"));
   out.print(F(" epoch=")); out.print(padEvidence.epoch);
-  out.print(F(" boot_id=")); out.println(padEvidence.boot);
+  out.print(F(" boot_id=")); printHex32(out, bootId);
+  out.print(F(" session_id=")); printHex32(out, sessionId);
+  out.println();
 }
 
 bool sendReference(const uint8_t (&bytes)[11]) {
@@ -2989,19 +3201,39 @@ void flushPadReports() {
     out.print(F(" complete=")); out.println(record.completed ? 1 : 0);
   }
 }
-void flushRaw() {
+uint32_t retainTelemetryEvent(const RxEvent& event) {
+  if (!sessionId) return 0;
+  return telemetryRing.push(event.at, event.value);
+}
+
+void flushRaw(bool allowDrop = false) {
+  const bool liveSession = sessionId && isLiveVariant(variant);
+  const bool bufferOnly = recoveryState == RECOVERY_DETACHED ||
+      recoveryState == RECOVERY_PENDING_RESUME ||
+      recoveryState == RECOVERY_REPLAYING;
   if (variant == kVariantAllLive) {
-    // Lossless compact batches keep the 39-channel stream below the USB
-    // 115200-baud budget. Each byte retains its original MCU timestamp.
+    // Compact batches keep the 39-channel stream below the USB 115200-baud
+    // budget. The retention ring separately keeps sequenced raw byte records.
     // Flush within 2 ms of the last byte or at 16 events, including at END.
     const uint16_t available = (rxWrite - rxRead) & (kRxRingSize - 1);
     if (!available) return;
     if (available < 16 && (stage == CART_READ || stage == CART_PASSIVE) &&
         static_cast<uint32_t>(esp_timer_get_time()) - lastRxAtUs < 2000) return;
     const uint16_t count = std::min(available, static_cast<uint16_t>(16));
+    uint32_t seqStart = 0;
+    for (uint16_t i = 0; i < count; ++i) {
+      const uint32_t seq = retainTelemetryEvent(
+          rxRing[(rxRead + i) & (kRxRingSize - 1)]);
+      if (!i) seqStart = seq;
+    }
+    if (!seqStart) {
+      rxRead = (rxRead + count) & (kRxRingSize - 1);
+      return;
+    }
     char line[320];
     const uint32_t base = rxRing[rxRead].at;
-    int len = snprintf(line, sizeof(line), "RXB t_us=%lu data=", static_cast<unsigned long>(base));
+    int len = snprintf(line, sizeof(line), "RXB t_us=%lu seq_start=%lu data=",
+        static_cast<unsigned long>(base), static_cast<unsigned long>(seqStart));
     for (uint16_t i = 0; i < count; ++i)
       len += snprintf(line + len, sizeof(line) - len, "%02X", rxRing[(rxRead + i) & (kRxRingSize - 1)].value);
     len += snprintf(line + len, sizeof(line) - len, " dt=");
@@ -3009,19 +3241,36 @@ void flushRaw() {
       len += snprintf(line + len, sizeof(line) - len, "%s%lu", i ? "," : "",
           static_cast<unsigned long>(rxRing[(rxRead + i) & (kRxRingSize - 1)].at - base));
     len += snprintf(line + len, sizeof(line) - len, "\n");
-    if (len <= 0 || len >= static_cast<int>(sizeof(line)) || out.freeBytes() < static_cast<size_t>(len)) return;
-    out.write(reinterpret_cast<const uint8_t*>(line), len);
+    if (len <= 0 || len >= static_cast<int>(sizeof(line))) return;
+    const bool suppressForReplay = bufferOnly || telemetryReplayActive;
+    const bool room = out.freeBytes() >= static_cast<size_t>(len);
+    if (!suppressForReplay && room)
+      out.write(reinterpret_cast<const uint8_t*>(line), len);
+    else if (!allowDrop && !liveSession)
+      return;
     rxRead = (rxRead + count) & (kRxRingSize - 1);
     return;
   }
-  char line[45];
-  while (rxRead != rxWrite) {
+  char line[64];
+  const size_t maxBatch = 64;
+  size_t drained = 0;
+  while (rxRead != rxWrite && ++drained <= maxBatch) {
     const RxEvent value = rxRing[rxRead];
-    const int len = snprintf(line, sizeof(line), "RX t_us=%lu byte=%02X\n",
-                             static_cast<unsigned long>(value.at), value.value);
+    if (!liveSession && !allowDrop && !telemetryReplayActive && out.freeBytes() < sizeof(line))
+      break;
+    const uint32_t seq = retainTelemetryEvent(value);
+    const int len = seq ? snprintf(line, sizeof(line), "RX t_us=%lu byte=%02X seq=%lu\n",
+                                   static_cast<unsigned long>(value.at), value.value,
+                                   static_cast<unsigned long>(seq)) :
+                          snprintf(line, sizeof(line), "RX t_us=%lu byte=%02X\n",
+                                   static_cast<unsigned long>(value.at), value.value);
     if (len <= 0 || len >= static_cast<int>(sizeof(line))) break;
-    if (out.freeBytes() < static_cast<size_t>(len)) break; // bounded, never block either transport
-    out.write(reinterpret_cast<const uint8_t*>(line), static_cast<size_t>(len));
+    const bool suppressForReplay = bufferOnly || telemetryReplayActive;
+    const bool room = out.freeBytes() >= static_cast<size_t>(len);
+    if (!suppressForReplay && room)
+      out.write(reinterpret_cast<const uint8_t*>(line), static_cast<size_t>(len));
+    else if (!allowDrop && !liveSession)
+      break; // bounded, never block either transport
     rxRead = (rxRead + 1) & (kRxRingSize - 1);
   }
 }
@@ -3093,37 +3342,79 @@ void pollActive() {
   }
 }
 void reportEnd() {
-  // Raw events MUST be drained before END. Retain bounded capture on USB host.
+  // Drain raw events before END when possible; bounded forced drops prevent a
+  // missing USB reader from holding the session in FINISHING indefinitely.
   flushPadReports();
-  flushRaw();
+  // USB can be unplugged or its host can stop reading at a queue boundary.
+  // FINISHING must still consume the bounded RX ring and emit END eventually.
+  flushRaw(true);
   if (rxRead != rxWrite) return;
+
+  char terminalBuf[512];
+  char* p = terminalBuf;
+  size_t rem = sizeof(terminalBuf);
+  int n;
   if (isLiveVariant(variant)) {
-    out.print(F("EVENT live_pid_map set="));
-    if (variant == kVariantAllLive) out.print(F("ALL"));
-    else out.print(variant == kVariantLive2 ? 2 : variant == kVariantLive3 ? 3 : 1);
-    out.print(F(" sent=")); out.print(pidWordsStarted);
-    out.print(F(" verified=")); out.println(pidWordsVerified);
+    const char* setStr = (variant == kVariantAllLive) ? "ALL" :
+                         (variant == kVariantLive2) ? "2" :
+                         (variant == kVariantLive3) ? "3" : "1";
+    n = snprintf(p, rem, "EVENT live_pid_map set=%s sent=%u verified=%u\n",
+        setStr, static_cast<unsigned>(pidWordsStarted), static_cast<unsigned>(pidWordsVerified));
+    if (n > 0 && static_cast<size_t>(n) < rem) { p += n; rem -= n; }
   }
   if (repeatDps) {
-    out.print(F("EVENT dps_blocks_complete=")); out.print(dpsBlocks + (wordsVerified == 4 ? 1 : 0));
-    out.print(F(" frame_period_us=")); out.println(framePeriodUs);
+    n = snprintf(p, rem, "EVENT dps_blocks_complete=%lu frame_period_us=%lu\n",
+        static_cast<unsigned long>(dpsBlocks + (wordsVerified == 4 ? 1 : 0)),
+        static_cast<unsigned long>(framePeriodUs));
+    if (n > 0 && static_cast<size_t>(n) < rem) { p += n; rem -= n; }
   }
   if (variant == kVariantOffline && wordsVerified == 4) {
     const uint32_t now = static_cast<uint32_t>(esp_timer_get_time());
-    out.print(F("EVENT offline_quiet_us=")); out.print(now - lastRxAtUs);
-    out.print(F(" last_tx_us=")); out.println(txDoneUs[3]);
+    n = snprintf(p, rem, "EVENT offline_quiet_us=%lu last_tx_us=%lu\n",
+        static_cast<unsigned long>(now - lastRxAtUs),
+        static_cast<unsigned long>(txDoneUs[3]));
+    if (n > 0 && static_cast<size_t>(n) < rem) { p += n; rem -= n; }
   }
-  out.print(F("END reason=")); out.print(static_cast<unsigned>(failure));
-  out.print(F(" ro_bytes=")); out.print(rxTotal);
-  out.print(F(" ro_lost=")); out.print(lostRx);
-  out.print(F(" uart_errors=")); out.print(uartErr);
-  out.print(F(" evidence=2 epoch=")); out.print(padEvidence.epoch);
-  out.print(F(" boot_id=")); out.print(padEvidence.boot);
-  out.print(F(" witness_started=")); out.print(padEvidence.started);
-  out.print(F(" witness_verified=")); out.print(padEvidence.verified);
-  out.print(F(" pad_verified=")); out.print(wordsVerified);
-  out.print(F(" words_started=")); out.print(wordsStarted);
-  out.println(F(" ecu_verified=0 dtc_verified=0 DE=LOW"));
+  n = snprintf(p, rem,
+      "END reason=%u ro_bytes=%lu ro_lost=%lu uart_errors=%lu evidence=2 epoch=%lu boot_id=%08lX witness_started=%u witness_verified=%u pad_verified=%u words_started=%u ecu_verified=0 dtc_verified=0 DE=LOW\n",
+      static_cast<unsigned>(failure),
+      static_cast<unsigned long>(rxTotal),
+      static_cast<unsigned long>(lostRx),
+      static_cast<unsigned long>(uartErr),
+      static_cast<unsigned long>(padEvidence.epoch),
+      static_cast<unsigned long>(padEvidence.boot),
+      static_cast<unsigned>(padEvidence.started),
+      static_cast<unsigned>(padEvidence.verified),
+      static_cast<unsigned>(wordsVerified),
+      static_cast<unsigned>(wordsStarted));
+  if (n > 0 && static_cast<size_t>(n) < rem) { p += n; rem -= n; }
+
+  const size_t totalLen = p - terminalBuf;
+  if (out.freeBytes() < totalLen) {
+    if (tcpAuthenticated && !remoteIsBle) out.drainTCP(wifiClient);
+#ifdef SME105_BLE
+    else if (remoteIsBle) out.drainBLE();
+#endif
+    out.drainUSB();
+    if (out.freeBytes() < totalLen) {
+      // Cannot admit entire terminal block atomically yet; stay in FINISHING and retry on next loop.
+      return;
+    }
+  }
+
+  out.write(reinterpret_cast<const uint8_t*>(terminalBuf), totalLen);
+
+  lastTerminalOutcome.valid = true;
+  lastTerminalOutcome.bootId = bootId;
+  lastTerminalOutcome.sessionId = sessionId;
+  lastTerminalOutcome.failure = failure;
+  lastTerminalOutcome.rxTotal = rxTotal;
+  lastTerminalOutcome.lostRx = lostRx;
+  lastTerminalOutcome.uartErr = uartErr;
+  lastTerminalOutcome.variant = variant;
+  lastTerminalOutcome.dpsBlocks = dpsBlocks + (wordsVerified == 4 ? 1 : 0);
+  lastTerminalOutcome.queued = true;
+
   // CART_READ only. LISTEN/OBSERVE keep their own one-shot flags.
   // tx2BenchPassed stays valid for the rest of this boot.
   if (variant != kVariantOffline && isRequestVariant(variant) &&
@@ -3132,6 +3423,13 @@ void reportEnd() {
     transmitConsumed = false;
   }
   stage = IDLE;
+  sessionId = 0;
+  sessionRetained = false;
+  sessionDetachedAtMs = 0;
+  telemetryReplayActive = false;
+  telemetryReplaySeq = 0;
+  telemetryRing.reset();
+  recoveryState = RECOVERY_IDLE;
 }
 void printStatus() {
   out.print(F("STATUS SME105_USB_BRIDGE_V1 stage=")); out.print(static_cast<unsigned>(stage));
@@ -3145,6 +3443,10 @@ void printStatus() {
   out.print(F(" observe_used=")); out.print(observeConsumed ? 1 : 0);
   out.print(F(" transport_lost=")); out.print(transportFaults);
   out.print(F(" out_overflow=")); out.print(out.overflow());
+  out.print(F(" session=")); out.print(sessionId);
+  out.print(F(" telemetry_seq=")); out.print(sessionId ? telemetryRing.latestSeq() : 0);
+  out.print(F(" telemetry_dropped=")); out.print(telemetryRing.dropped());
+  out.print(F(" session_retained=")); out.print(sessionRetained ? 1 : 0);
   out.print(F(" usb_skipped=")); out.print(out.usbSkipped());
   out.print(F(" offline_used=")); out.print(offlineConsumed ? 1 : 0);
   out.print(F(" armed="));
@@ -3155,6 +3457,11 @@ void printStatus() {
   else out.print(F("NONE"));
   out.print(F(" fault=")); out.print(static_cast<unsigned>(failure));
   out.print(F(" live_all=1 rx_batch=1 pad_evidence=2 mem_off0=1 kline_hw=0 kline_tx=0 kline_rx_backend=NONE"));
+  if (lastTerminalOutcome.valid) {
+    out.print(F(" last_session=")); printHex32(out, lastTerminalOutcome.sessionId);
+    out.print(F(" last_end=")); out.print(static_cast<unsigned>(lastTerminalOutcome.failure));
+    out.print(F(" last_term_queued=")); out.print(lastTerminalOutcome.queued ? 1 : 0);
+  }
   out.print(F(" fw=")); out.println(kUsbInstalledBuildVersion);
 }
 void printPins() {
@@ -3244,9 +3551,238 @@ void printOtaDiag() {
     out.write(reinterpret_cast<const uint8_t*>(line), count);
   }
 }
+
+void printHex32(Print& target, uint32_t value) {
+  char text[9];
+  snprintf(text, sizeof(text), "%08lX", static_cast<unsigned long>(value));
+  target.print(text);
+}
+
+bool validPingNonce(const char* nonce) {
+  const size_t length = nonce ? strlen(nonce) : 0;
+  if (length < 1 || length > 16) return false;
+  for (size_t i = 0; i < length; ++i) {
+    const char c = nonce[i];
+    if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ||
+          (c >= 'a' && c <= 'z'))) return false;
+  }
+  return true;
+}
+
+bool handlePingLine(const char* line) {
+  if (strncmp(line, "PING", 4) || (line[4] && line[4] != ' ')) return false;
+  const char* nonce = line[4] == ' ' ? line + 5 : "";
+  if (!validPingNonce(nonce) || strchr(nonce, ' ')) {
+    out.println(F("DENIED ping_format"));
+    return true;
+  }
+  char response[96];
+  const int count = snprintf(response, sizeof(response),
+      "PONG %s boot=%08lX session=%08lX seq=%lu\n", nonce,
+      static_cast<unsigned long>(bootId),
+      static_cast<unsigned long>(sessionId),
+      static_cast<unsigned long>(sessionId ? telemetryRing.latestSeq() : 0));
+  if (count > 0 && count < static_cast<int>(sizeof(response)))
+    out.write(reinterpret_cast<const uint8_t*>(response), static_cast<size_t>(count));
+  return true;
+}
+
+bool parseResumeArgs(char* line, uint32_t& requestedBoot,
+                     uint32_t& requestedSession, uint32_t& lastSeq) {
+  if (strncmp(line, "RESUME ", 7)) return false;
+  char* bootText = line + 7;
+  char* separator = strchr(bootText, ' ');
+  if (!separator || separator == bootText) return false;
+  *separator++ = 0;
+  char* sessionText = separator;
+  separator = strchr(sessionText, ' ');
+  if (!separator || separator == sessionText) return false;
+  *separator++ = 0;
+  char* seqText = separator;
+  if (!*seqText || strchr(seqText, ' ')) return false;
+
+  auto parseHex = [](const char* text, uint32_t& value) {
+    const size_t length = strlen(text);
+    if (length < 1 || length > 8) return false;
+    value = 0;
+    for (size_t i = 0; i < length; ++i) {
+      const char c = text[i];
+      const uint8_t digit = c >= '0' && c <= '9' ? c - '0' :
+                            c >= 'a' && c <= 'f' ? c - 'a' + 10 :
+                            c >= 'A' && c <= 'F' ? c - 'A' + 10 : 16;
+      if (digit > 15) return false;
+      value = (value << 4) | digit;
+    }
+    return true;
+  };
+  return parseHex(bootText, requestedBoot) &&
+         parseHex(sessionText, requestedSession) &&
+         parseUnsignedDecimal(seqText, lastSeq);
+}
+
+void denyResume(const char* reason = "session_expired") {
+  out.print(F("RESUME DENIED reason=")); out.print(reason);
+  out.print(F(" boot="));
+  printHex32(out, bootId);
+  out.print(F(" boot_id="));
+  printHex32(out, bootId);
+  out.print(F(" session="));
+  printHex32(out, sessionId);
+  out.print(F(" session_id="));
+  printHex32(out, sessionId);
+  out.println();
+}
+
+void processRecoveryLine(char* line) {
+  if (!strcmp(line, "PING") || !strncmp(line, "PING ", 5)) {
+    (void)handlePingLine(line);
+    return;
+  }
+  if (!strcmp(line, "STATUS")) {
+    printStatus();
+    return;
+  }
+  if (!strcmp(line, "STOP")) {
+    armedVariant = 255;
+    stopEverything(HOST_STOP);
+    out.println(F("EVENT stop=accepted DE=LOW"));
+    return;
+  }
+  if (!strncmp(line, "RESUME", 6)) {
+    uint32_t requestedBoot = 0, requestedSession = 0, lastSeq = 0;
+    if (!parseResumeArgs(line, requestedBoot, requestedSession, lastSeq) ||
+        requestedBoot != bootId || requestedSession != sessionId ||
+        !sessionId || !busSessionActive() ||
+        recoveryState != RECOVERY_PENDING_RESUME) {
+      denyResume();
+      return;
+    }
+
+    const TelemetryRing::Range range = telemetryRing.range(lastSeq);
+    if (range.future) {
+      denyResume("future_cursor");
+      return;
+    }
+
+    char resumeBuf[256];
+    char* p = resumeBuf;
+    size_t rem = sizeof(resumeBuf);
+    int n = snprintf(p, rem,
+        "RESUME OK boot=%08lX boot_id=%08lX session=%08lX session_id=%08lX first_seq=%lu latest_seq=%lu gap=%lu from=%lu to=%lu variant=%s stage=%u\n",
+        static_cast<unsigned long>(bootId),
+        static_cast<unsigned long>(bootId),
+        static_cast<unsigned long>(sessionId),
+        static_cast<unsigned long>(sessionId),
+        static_cast<unsigned long>(range.first),
+        static_cast<unsigned long>(range.latest),
+        static_cast<unsigned long>(range.gap),
+        static_cast<unsigned long>(range.gap ? range.from : 0),
+        static_cast<unsigned long>(range.gap ? range.to : 0),
+        variantName(variant),
+        static_cast<unsigned>(stage));
+    if (n > 0 && static_cast<size_t>(n) < rem) {
+      p += n;
+      rem -= n;
+    }
+    if (range.gap) {
+      n = snprintf(p, rem, "EVENT telemetry_gap lost=%lu from=%lu to=%lu\n",
+          static_cast<unsigned long>(range.gap),
+          static_cast<unsigned long>(range.from),
+          static_cast<unsigned long>(range.to));
+      if (n > 0 && static_cast<size_t>(n) < rem) {
+        p += n;
+        rem -= n;
+      }
+    }
+    const size_t totalLen = p - resumeBuf;
+    if (out.freeBytes() < totalLen) {
+      if (tcpAuthenticated && !remoteIsBle) out.drainTCP(wifiClient);
+#ifdef SME105_BLE
+      else if (remoteIsBle) out.drainBLE();
+#endif
+      if (out.tcpSendFailed() || out.freeBytes() < totalLen) {
+        denyResume("buffer_congested");
+        return;
+      }
+    }
+    sessionRetained = false;
+    sessionDetachedAtMs = 0;
+    recoveryState = RECOVERY_REPLAYING;
+    telemetryReplaySeq = range.replayFrom;
+    telemetryReplayActive = range.replayFrom != 0 &&
+                            !TelemetryRing::sequenceAfter(range.replayFrom,
+                                                          range.latest);
+    out.write(reinterpret_cast<const uint8_t*>(resumeBuf), totalLen);
+    return;
+  }
+  out.println(F("DENIED recovering"));
+}
+
+void serviceTelemetryReplay() {
+  if (recoveryState != RECOVERY_REPLAYING || !sessionId) return;
+  if (!telemetryReplayActive) {
+    recoveryState = RECOVERY_LIVE;
+    return;
+  }
+  for (uint8_t budget = 0; budget < 24; ++budget) {
+    const uint32_t latest = telemetryRing.latestSeq();
+    if (!telemetryReplaySeq || !latest ||
+        TelemetryRing::sequenceAfter(telemetryReplaySeq, latest)) {
+      telemetryReplayActive = false;
+      recoveryState = RECOVERY_LIVE;
+      return;
+    }
+    const uint32_t first = telemetryRing.firstSeq();
+    if (first && TelemetryRing::sequenceAfter(first, telemetryReplaySeq)) {
+      const uint32_t lost = TelemetryRing::sequenceDistance(telemetryReplaySeq, first);
+      char gapLine[64];
+      const int gapLen = snprintf(gapLine, sizeof(gapLine),
+          "EVENT telemetry_gap lost=%lu from=%lu to=%lu\n",
+          static_cast<unsigned long>(lost),
+          static_cast<unsigned long>(telemetryReplaySeq),
+          static_cast<unsigned long>(TelemetryRing::previousSequence(first)));
+      if (gapLen > 0 && gapLen < static_cast<int>(sizeof(gapLine))) {
+        if (out.freeBytes() < static_cast<size_t>(gapLen)) {
+          if (tcpAuthenticated && !remoteIsBle) out.drainTCP(wifiClient);
+#ifdef SME105_BLE
+          else if (remoteIsBle) out.drainBLE();
+#endif
+          if (out.tcpSendFailed() || out.freeBytes() < static_cast<size_t>(gapLen)) {
+            // Saturated buffer: cannot safely enqueue gap line; do NOT advance cursor.
+            return;
+          }
+        }
+        out.write(reinterpret_cast<const uint8_t*>(gapLine), static_cast<size_t>(gapLen));
+      }
+      telemetryReplaySeq = first;
+    }
+
+    TelemetryRing::Record record;
+    if (!telemetryRing.get(telemetryReplaySeq, record)) return;
+    char line[64];
+    const int count = snprintf(line, sizeof(line), "RX t_us=%lu byte=%02X seq=%lu\n",
+        static_cast<unsigned long>(record.at), record.value,
+        static_cast<unsigned long>(record.seq));
+    if (count <= 0 || count >= static_cast<int>(sizeof(line))) {
+      telemetryReplaySeq = TelemetryRing::nextSequence(telemetryReplaySeq);
+      continue;
+    }
+    if (out.freeBytes() < static_cast<size_t>(count)) {
+      if (tcpAuthenticated && !remoteIsBle) out.drainTCP(wifiClient);
+#ifdef SME105_BLE
+      else if (remoteIsBle) out.drainBLE();
+#endif
+      if (out.tcpSendFailed() || out.freeBytes() < static_cast<size_t>(count)) return;
+    }
+    out.write(reinterpret_cast<const uint8_t*>(line), static_cast<size_t>(count));
+    telemetryReplaySeq = TelemetryRing::nextSequence(telemetryReplaySeq);
+  }
+}
+
 void processTcpLine(char* line) {
   if (!tcpAuthenticated) {
-    if (stage != IDLE || otaUpdating() ||
+    const bool retainedRecovery = sessionRetained && busSessionActive();
+    if ((!retainedRecovery && stage != IDLE) || otaUpdating() ||
         strncmp(line, "AUTH ", 5) || !tokenMatches(line + 5)) {
       // Never return session output or device data to an unauthenticated peer.
       const char deny[] = "DENIED auth\n";
@@ -3256,9 +3792,15 @@ void processTcpLine(char* line) {
       return;
     }
     tcpAuthenticated = true;
+    if (retainedRecovery) recoveryState = RECOVERY_PENDING_RESUME;
     out.markTcpAuthenticated();
     // Host's security handshake requires EXACT LF, not Arduino Print CRLF.
-    out.print(F("AUTH OK\n"));
+    out.print(retainedRecovery ? F("AUTH OK retained=1\n") : F("AUTH OK\n"));
+    return;
+  }
+  if (handlePingLine(line)) return;
+  if (recoveryState == RECOVERY_PENDING_RESUME) {
+    processRecoveryLine(line);
     return;
   }
   commandFromUSB = false;
@@ -3269,25 +3811,44 @@ void processTcpLine(char* line) {
 void processBleLine(char* line) {
   if (!tcpAuthenticated) {
     // The link itself is passkey-authenticated. Claim the single remote
-    // controller role only while idle and when no TCP controller exists.
-    if (stage != IDLE || otaUpdating() || wifiClient.connected()) {
+    // controller role only while idle, except for the bounded retained-live
+    // recovery admission window.
+    const bool retainedRecovery = sessionRetained && busSessionActive();
+    if ((!retainedRecovery && stage != IDLE) || otaUpdating() || wifiClient.connected()) {
       static const char deny[] = "DENIED remote_busy\n";
       ble_transport::write(reinterpret_cast<const uint8_t*>(deny), sizeof(deny) - 1);
       return;
     }
     tcpAuthenticated = true;
+    if (retainedRecovery) recoveryState = RECOVERY_PENDING_RESUME;
     remoteIsBle = true;
     out.markTcpAuthenticated();
-    out.print(F("AUTH OK transport=BLE\n"));
+    out.print(retainedRecovery ? F("AUTH OK retained=1 transport=BLE\n") :
+                                 F("AUTH OK transport=BLE\n"));
     if (!strcmp(line, "AUTH BLE")) return;
+  }
+  if (handlePingLine(line)) return;
+  if (recoveryState == RECOVERY_PENDING_RESUME) {
+    processRecoveryLine(line);
+    return;
   }
   commandFromUSB = false;
   runCommand(line);
   commandFromUSB = true;
 }
 void pollBle() {
+#ifdef SME105_BLE
+  const uint32_t currentBleEpoch = ble_transport::connectionEpoch();
+  if (currentBleEpoch != lastBleConnectionEpoch) {
+    lastBleConnectionEpoch = currentBleEpoch;
+    if (remoteIsBle || tcpAuthenticated) {
+      dropTcpClient(true);
+      return;
+    }
+  }
+#endif
   if (remoteIsBle && !ble_transport::authenticatedLink()) {
-    dropTcpClient(true); // link loss mid-session stops the vehicle session
+    dropTcpClient(true); // eligible live sessions retain polling for recovery
     return;
   }
   if (ble_transport::authenticatedLink()) {
@@ -3333,6 +3894,8 @@ void pollWiFi() {
     // before revoking a controller. Genuine loss is also checked below.
     if (!networkOnline()) wifiApReady = false;
   }
+  if (wifiApMode && wifiApStaDisconnectEvents != wifiLastHandledApStaDisconnectEvent)
+    pollApStaDisconnectEvents();
   if (!networkOnline()) {
     if (signedOta.phase == OtaPhase::Receiving) abortSignedOta("wifi_disconnected");
     if (!remoteIsBle && (wifiClient.fd() >= 0 || tcpAuthenticated))
@@ -3345,7 +3908,8 @@ void pollWiFi() {
       // Never scan/reassociate with the distant router while in direct mode.
       // Restart a stopped AP only from the normal task loop, never inside
       // the event callback or while an ECU timing session is active.
-      if (directApRetryDue(now, wifiLastApAttemptMs, busSessionActive()))
+      if (busSessionActive()) return;
+      if (directApRetryDue(now, wifiLastApAttemptMs, false))
         startDirectAp();
       return;
     }
@@ -3381,7 +3945,7 @@ void pollWiFi() {
   if (!wifiServerStarted) {
     // mDNS and socket initialization are task-level potentially costly;
     // never start them during the phase-critical live CART sequence.
-    if (busSessionActive()) return;
+    if (busSessionActive() && !sessionRetained) return;
     const uint32_t now = millis();
     if (listenerRetryDue(now, wifiLastServerAttemptMs)) {
       wifiLastServerAttemptMs = now;
@@ -3419,12 +3983,20 @@ void pollWiFi() {
   if (tcpAuthenticated && !wifiClient.connected()) dropTcpClient(true);
   WiFiClient incoming = wifiServer.accept();
   if (incoming) {
-    if (wifiClient.connected() || busSessionActive() || stage == FINISHING ||
+    if (wifiClient.connected() || (busSessionActive() && !sessionRetained) ||
+        stage == FINISHING ||
         otaUpdating())
       incoming.stop(); // at most one; no connection takeover of live UART
     else {
       dropTcpClient(false);
       wifiClient = incoming;
+      tcpPeerMacValid = wifiApMode && apStationMacForClient(wifiClient, tcpPeerMac);
+#ifndef SME105_BLE
+      portENTER_CRITICAL(&wifiApDisconnectMux);
+      tcpPeerAcceptedDisconnectSeq = wifiApStaDisconnectEvents;
+      portEXIT_CRITICAL(&wifiApDisconnectMux);
+#endif
+      ++wifiConnectionEpochs;
       wifiClient.setNoDelay(true);
       wifiAuthStartedMs = millis();
       wifiLineUsed = 0;
@@ -3791,7 +4363,11 @@ void pollUsb() {
       if (commandUsed) {
         commandBuffer[commandUsed] = 0;
         commandFromUSB = true;
-        runCommand(commandBuffer);
+        if (sessionRetained) {
+          processRecoveryLine(commandBuffer);
+        } else {
+          runCommand(commandBuffer);
+        }
         clearSecrets(commandBuffer, sizeof commandBuffer);
         commandUsed = 0;
       }
@@ -3809,6 +4385,7 @@ void setup() {
   pinMode(kDI, INPUT);
   gpio_set_direction(GPIO_NUM_18, GPIO_MODE_OUTPUT);
   deOff();
+  bootId = esp_random();
   padEvidence.boot = esp_random();
   Serial.begin(115200);
   deTimer = timerBegin(0, 80, true);
@@ -3842,6 +4419,11 @@ void setup() {
 void loop() {
   serviceSignedOtaTimeout(); // works even when Wi-Fi socket polling exits early
   serviceOtaHealthAndRestart();
+  if (sessionRetained &&
+      static_cast<uint32_t>(millis() - sessionDetachedAtMs) >= kSessionRetentionMs) {
+    sessionRetained = false;
+    stopEverything(CAPTURE_TIMEOUT);
+  }
   pollUsb();
   pollWiFi();
 #ifdef SME105_BLE
@@ -3850,12 +4432,17 @@ void loop() {
   if (stage == QUIET || stage == ECHO_TX || stage == ACK_WAIT || stage == GO_TX) pollHandshake();
   pollActive();
   flushRaw();
-  // A slow/hostile transport cannot silently force unbounded buffering or
-  // authorize further ECU slots. Disconnect TCP on backpressure: its host
-  // sees no END and must mark the session incomplete. USB retains evidence.
-  if (out.freeBytes() < 128 || out.overflow()) {
-    if (busSessionActive()) stopEverything(TRANSPORT_BACKPRESSURE);
-    if (tcpAuthenticated) dropTcpClient(false);
+  serviceTelemetryReplay();
+  // A slow subscriber is detached in a live session; the bounded telemetry
+  // ring keeps the ECU polling path independent of socket and USB cursors.
+  if (out.freeBytes() < 128) {
+    if (sessionId && isLiveVariant(variant) && stage == CART_READ) {
+      out.skipUsbToCurrent();
+      if (tcpAuthenticated) dropTcpClient(true);
+    } else if (busSessionActive()) {
+      stopEverything(TRANSPORT_BACKPRESSURE);
+      if (tcpAuthenticated) dropTcpClient(false);
+    }
   }
   if (stage == FAULTED) {
     const Fault reason = failure;

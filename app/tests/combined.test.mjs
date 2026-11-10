@@ -120,7 +120,13 @@ test("disconnect, denial, missing END and overall duration limit cannot continue
   for (const failure of ["disconnect", "denied", "missing-end", "duration"]) {
     const h = harness();
     h.c.requestSurvey(); begin(h, "LIVE"); samples(h);
-    if (failure === "disconnect") h.c.onDisconnected();
+    if (failure === "disconnect") {
+      h.c.onDisconnected();
+      assert.equal(h.c.state.link, "reconnecting", failure);
+      assert.equal(h.c.state.combined.active, true, failure);
+      h.c.onConnected("test");
+      h.c.handleLine("RESUME DENIED reason=session_expired");
+    }
     if (failure === "denied") h.c.handleLine("DENIED test");
     if (failure === "missing-end") {
       h.advance(GROUP_WINDOW_MS); h.c.tick();

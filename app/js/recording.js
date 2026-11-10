@@ -167,40 +167,47 @@ export async function recordingBlob(id, kind, extras = []) {
   return new Blob([...parts, ...extras], { type: kind === "csv" ? "text/csv" : "text/plain" });
 }
 
-export async function createRecording(variant, onError = () => {}, unitSystem = "metric", extraMetadata = {}) {
+export async function createRecording(variant, onError = () => {}, unitSystem = "metric", extraMetadata = {}, writerContext = null) {
   const database = await db();
-  const isContinuous = ["LIVE", "LIVE2", "LIVE3", "ALL"].includes(variant);
-  const requiredSpace = isContinuous ? 1024 ** 3 : 20 * 1024 ** 2;
-  let estimate = null;
-  try { estimate = await storageManager()?.estimate?.(); } catch { estimate = null; }
-  if (estimate && estimate.quota - estimate.usage < requiredSpace) {
-    const msg = isContinuous
-      ? "Less than 1 GB of recording space is available. Free phone storage before a long capture."
-      : "Less than 20 MB of recording space is available. Free phone storage before starting an experiment.";
-    throw new Error(msg);
+  let metadata;
+  if (writerContext?.takeover) {
+    metadata = writerContext.metadata;
+  } else {
+    const isContinuous = ["LIVE", "LIVE2", "LIVE3", "ALL"].includes(variant);
+    const requiredSpace = isContinuous ? 1024 ** 3 : 20 * 1024 ** 2;
+    let estimate = null;
+    try { estimate = await storageManager()?.estimate?.(); } catch { estimate = null; }
+    if (estimate && estimate.quota - estimate.usage < requiredSpace) {
+      const msg = isContinuous
+        ? "Less than 1 GB of recording space is available. Free phone storage before a long capture."
+        : "Less than 20 MB of recording space is available. Free phone storage before starting an experiment.";
+      throw new Error(msg);
+    }
+    // The browser decides whether persistence can be granted. No data is deleted.
+    let persistent = false;
+    try { persistent = !!(await storageManager()?.persist?.()); } catch { persistent = false; }
+    const id = new Date().toISOString() + "-" + crypto.randomUUID();
+    const writerToken = crypto.randomUUID();
+    metadata = {
+      id, sessionId: id, variant, persistent, unitSystem, started: Date.now(),
+      ...extraMetadata,
+      sequenceGaps: [],
+      writerToken, writerHeartbeat: Date.now(), fencingGen: 1,
+    };
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction("captures", "readwrite");
+      transaction.objectStore("captures").add(metadata);
+      transaction.oncomplete = resolve;
+      transaction.onabort = () => reject(transaction.error);
+    });
   }
-  // The browser decides whether persistence can be granted. No data is deleted.
-  let persistent = false;
-  try { persistent = !!(await storageManager()?.persist?.()); } catch { persistent = false; }
-  const id = new Date().toISOString() + "-" + crypto.randomUUID();
-  const writerToken = crypto.randomUUID();
-  const fencingGen = 1;
-  const metadata = {
-    id, sessionId: id, variant, persistent, unitSystem, started: Date.now(),
-    ...extraMetadata,
-    writerToken, writerHeartbeat: Date.now(), fencingGen,
-  };
-  await new Promise((resolve, reject) => {
-    const transaction = database.transaction("captures", "readwrite");
-    transaction.objectStore("captures").add(metadata);
-    transaction.oncomplete = resolve;
-    transaction.onabort = () => reject(transaction.error);
-  });
-  let raw = [], csv = [], pendingBytes = 0, seq = 0, failure = null;
+  const { id, writerToken, fencingGen } = metadata;
+  let recordedGaps = [...(metadata.sequenceGaps || [])];
+  let raw = [], csv = [], pendingBytes = 0, seq = writerContext?.nextChunkSeq || 0, failure = null;
   let flushing = false, closed = false, finalizing = false, finishPromise = null, fenced = false;
   let fenceError = null;
   let inFlightHeartbeat = null, heartbeatStopped = false;
-  let sampleCount = 0, duration = 0;
+  let sampleCount = Number(metadata.sampleCount) || 0, duration = Number(metadata.duration) || 0;
   const queue = [];
   let idle = Promise.resolve();
   const fail = error => {
@@ -307,6 +314,20 @@ export async function createRecording(variant, onError = () => {}, unitSystem = 
       const line = rowsToCsv([sample], { unitSystem }).slice(HEADER.length);
       csv.push(line); checkBacklog(line.length);
     },
+    recordGap(lost, from, to) {
+      if (closed || fenced) return null;
+      const count = Number(lost);
+      if (!Number.isSafeInteger(count) || count <= 0) return null;
+      const first = from != null && Number.isSafeInteger(Number(from)) ? Number(from) : null;
+      const last = to != null && Number.isSafeInteger(Number(to)) ? Number(to) : null;
+      if (recordedGaps.some(gap => gap.lost === count && gap.from === first && gap.to === last)) return recordedGaps.find(gap => gap.lost === count && gap.from === first && gap.to === last);
+      const gap = { lost: count, from: first, to: last, recordedAt: Date.now() };
+      recordedGaps.push(gap);
+      const line = `EVENT sequence_gap lost=${count} from=${first ?? "unknown"} to=${last ?? "unknown"}`;
+      raw.push(`${line}\n`);
+      checkBacklog(line.length + 1);
+      return gap;
+    },
     finish(verdict, outcomeDetails = {}) {
       if (finishPromise) return finishPromise;
       finalizing = true;
@@ -338,11 +359,15 @@ export async function createRecording(variant, onError = () => {}, unitSystem = 
               transaction.abort();
               return;
             }
+            const suppliedVerdict = verdict || { valid: false, status: "INCOMPLETE", reasons: [] };
             const finalVerdict = failure
-              ? { ...verdict, valid: false, status: "INCOMPLETE", reasons: [...(verdict.reasons || []), failure.message] }
-              : verdict;
+              ? { ...suppliedVerdict, valid: false, status: "INCOMPLETE", reasons: [...(suppliedVerdict.reasons || []), failure.message] }
+              : suppliedVerdict.status === "INCOMPLETE"
+                ? { ...suppliedVerdict, valid: false }
+                : suppliedVerdict;
             store.put({
-              ...capture, ...metadata, sampleCount, duration, verdict: finalVerdict,
+              ...capture, ...metadata, sampleCount, duration, sequenceGaps: recordedGaps,
+              sequenceGapCount: recordedGaps.reduce((sum, gap) => sum + gap.lost, 0), verdict: finalVerdict,
               ...outcomeDetails, ...(failure ? { outcome: "STORAGE_FAILURE" } : {}),
               error: failure?.message || "", ended: Date.now(), writerToken: null,
               writerHeartbeat: null, fencingGen,
@@ -376,10 +401,60 @@ export async function createRecording(variant, onError = () => {}, unitSystem = 
     updateNotes(notes) { return saveRecordingNotes(id, notes); },
     attachAnalysis(analysis) { return attachRecordingAnalysis(id, analysis); },
     get closed() { return closed; },
+    get sequenceGaps() { return [...recordedGaps]; },
   };
   const activeEntry = { recording, get finishPromise() { return finishPromise; } };
   activeRecordings.set(id, activeEntry);
   return recording;
+}
+
+/** Reopen an unfinished recording after the prior WebView writer has gone away. */
+export async function takeoverRecording(id, onError = () => {}) {
+  const active = activeRecordings.get(id);
+  if (active && !active.recording.closed && !active.finishPromise) return active.recording;
+  if (active?.finishPromise) throw new Error(`Recording ${id} is already finalizing`);
+
+  const database = await db();
+  const writerToken = crypto.randomUUID();
+  const metadata = await new Promise((resolve, reject) => {
+    const transaction = database.transaction("captures", "readwrite");
+    const store = transaction.objectStore("captures");
+    const request = store.get(id);
+    let result = null;
+    request.onsuccess = () => {
+      const capture = request.result;
+      if (!capture) {
+        transaction.abort();
+        reject(new Error(`Recording ${id} not found`));
+        return;
+      }
+      if (capture.ended) {
+        transaction.abort();
+        reject(new Error(`Recording ${id} is already finalized`));
+        return;
+      }
+      result = {
+        ...capture,
+        writerToken,
+        writerHeartbeat: Date.now(),
+        fencingGen: (Number(capture.fencingGen) || 0) + 1,
+        writerTakeovers: (Number(capture.writerTakeovers) || 0) + 1,
+        writerTakeoverAt: Date.now(),
+      };
+      store.put(result);
+    };
+    transaction.oncomplete = () => resolve(result);
+    transaction.onabort = transaction.onerror = () => reject(transaction.error || new Error(`Recording ${id} could not be taken over`));
+  });
+
+  const nextChunkSeq = await new Promise((resolve, reject) => {
+    const request = database.transaction("chunks").objectStore("chunks").index("capture").getAll(IDBKeyRange.only(id));
+    request.onsuccess = () => resolve(request.result.reduce((next, chunk) => Math.max(next, Number(chunk.seq) + 1), 0));
+    request.onerror = () => reject(request.error || new Error(`Recording ${id} chunks could not be read`));
+  });
+  return createRecording(metadata.variant, onError, metadata.unitSystem || "metric", {}, {
+    takeover: true, metadata, nextChunkSeq,
+  });
 }
 
 // Resolve once in a single transaction; raw chunks and the integrity verdict never change.
