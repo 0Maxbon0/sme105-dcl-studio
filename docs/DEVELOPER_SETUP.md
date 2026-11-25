@@ -9,13 +9,13 @@ transmitting anything to an ECU.
 | Item | Where to verify | Local value at documentation time |
 | --- | --- | --- |
 | Git source | `git rev-parse --short HEAD` | Run the command; the local rebranding branch may be ahead of GitHub |
-| Android app version | `app/js/protocol.js` and `android/app/build.gradle` | `2.1.1` / build `29` |
+| Android app version | `app/js/protocol.js` and `android/app/build.gradle` | `2.2.0` / build `30` |
 | Firmware version | `kUsbInstalledBuildVersion` in `firmware/sme105_usb_bridge/sme105_usb_bridge.ino` | `30` |
 | Firmware profiles | `firmware/sme105_usb_bridge/platformio.ini` | `esp32dev` (Wi-Fi), `esp32dev_ble` (alternative BLE) |
 | Native package | `capacitor.config.json` | `com.maximizotech.sme105dclstudio` |
 
 **Important:** historical Android `1.8.17` acceptance evidence,
-the November 11 `1.8.18` debug APK, and today's `2.1.1` source
+the November 11 `1.8.18` debug APK, and today's `2.2.0` source
 are **different revisions**. Do not label older artifacts
 as fresh build outputs or assume the latest code was flashed/installed.
 

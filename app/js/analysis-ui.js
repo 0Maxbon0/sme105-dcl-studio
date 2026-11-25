@@ -1,3 +1,4 @@
+import { describeRecordingOption } from "./choice-sheet.js";
 import { listRecordings, getRecordingNotes, saveRecordingNotes, attachRecordingAnalysis, recordingBlob } from "./recording.js";
 import { parseRawTranscript, analyzeMemCycles, classifyCycles, decodeSelfTestMarkers, filterFrames, renderFrameInspectorCards } from "./frame-inspector.js";
 import { compareCaptures, compareReferencePair, exportComparisonJson, exportComparisonCsv } from "./capture-comparison.js";
@@ -208,6 +209,7 @@ export function initAnalysisUI({
       const option = document.createElement("option");
       option.value = recording.id;
       option.textContent = recordingLabel(recording);
+      describeRecordingOption(option,recording);
       return option;
     }));
     if (recordings.some(recording => recording.id === selectedValue)) select.value = selectedValue;

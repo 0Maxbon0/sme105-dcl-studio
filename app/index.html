@@ -12,7 +12,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=20">
+  <link rel="stylesheet" href="styles.css?v=21">
 </head>
 <body>
   <section id="startup-screen" class="startup-screen" aria-label="Starting EscortScope">
@@ -337,7 +337,7 @@
           <section class="product-about"><img class="about-product-icon" src="icons/icon.svg" alt=""><div><h3>EscortScope</h3><p class="help">Ford Escort SME-105 / EEC-IV diagnostics</p></div></section>
           <div class="about-owner"><img class="owner-logo logo-light" src="brand/logos/basita-ar-light.svg" alt="بسيطة" lang="ar"><img class="owner-logo logo-dark" src="brand/logos/basita-ar-dark.svg" alt="بسيطة" lang="ar"><div><strong>Developed by Basita</strong><p class="help">Independent Ford Escort SME-105 / EEC-IV diagnostic research. Not affiliated with Ford.</p></div></div>
           <details class="settings-subdetail"><summary>Basita motion &amp; sound</summary><p class="help">The official loading motion appears only while a connection is pending. Sound is silent by default. Preview the original sonic identity here.</p><div class="sound-preview"><button id="preview-brand-sound" type="button">Play signature</button><audio id="brand-sound" preload="none" src="brand/audio/basita-resolution-micro.mp3"></audio><span id="brand-sound-status" role="status" class="help"></span></div></details>
-          <p class="about-version-line"><span data-str="aboutVersion"></span> <strong id="about-version">2.1.1</strong></p>
+          <p class="about-version-line"><span data-str="aboutVersion"></span> <strong id="about-version">2.2.0</strong></p>
           <details class="settings-subdetail">
             <summary>Demo Mode Simulation</summary>
             <label class="check"><input id="demo-toggle" type="checkbox"> <span data-str="demoOn"></span></label>
@@ -680,6 +680,6 @@
     <button id="ignition-review" type="button" hidden>Ignition confirmation pending · Review</button>
   </div>
   <script src="vendor/jszip.min.js"></script>
-  <script type="module" src="js/app.js?v=29" onerror="document.getElementById('startup-status').textContent='Could not load the application.';document.getElementById('startup-retry').hidden=false"></script>
+  <script type="module" src="js/app.js?v=30" onerror="document.getElementById('startup-status').textContent='Could not load the application.';document.getElementById('startup-retry').hidden=false"></script>
 </body>
 </html>

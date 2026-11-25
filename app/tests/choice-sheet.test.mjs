@@ -1,0 +1,44 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { JSDOM } from 'jsdom';
+import { initChoiceSheets,describeRecordingOption } from '../js/choice-sheet.js';
+test('all application selects use a shared branded sheet with exact existing selection events', async()=>{
+  const dom=new JSDOM(readFileSync(new URL('../index.html',import.meta.url),'utf8'));
+  const d=dom.window.document, $=id=>d.getElementById(id);
+  const records=$('saved-recordings');
+  for(const [id,variant,valid,count] of [['a','LIVE',true,25],['b','KOEO',false,0],['c','ALL',false,42]]){
+    const option=d.createElement('option');option.value=id;option.textContent=variant;
+    describeRecordingOption(option,{id,variant,started:Date.UTC(2026,10,25),duration:43.8,sampleCount:count,verdict:{valid,status:valid?'VALID':'INCOMPLETE'}});
+    records.append(option);
+  }
+  const picker=initChoiceSheets(d), dialog=d.querySelector('.choice-sheet');
+  assert.equal(d.querySelectorAll('select.choice-native').length,d.querySelectorAll('select').length-1);
+  assert.equal($('live-set').classList.contains('choice-native'),false);
+  const trigger=$('choice-for-saved-recordings');
+  let changes=0,inputs=0;
+  records.addEventListener('change',()=>changes++);
+  records.addEventListener('input',()=>inputs++);
+  trigger.click();
+  assert.equal(dialog.open,true);
+  assert.equal(dialog.querySelectorAll('.choice-option').length,3);
+  assert.equal(dialog.querySelectorAll('.choice-date').length,1);
+  assert.match(dialog.querySelector('.choice-option-meta').textContent,/43.8s.*25 samples/);
+  dialog.querySelector('[data-filter=readings]').click();
+  assert.equal(dialog.querySelectorAll('.choice-option').length,2);
+  $('choice-search').value='INCOMPLETE';$('choice-search').dispatchEvent(new dom.window.Event('input'));
+  assert.equal(dialog.querySelectorAll('.choice-option').length,1);
+  dialog.querySelector('[data-choice-value=c]').click();
+  assert.equal(records.value,'c');assert.equal(changes,1);assert.equal(inputs,1);assert.equal(dialog.open,false);
+  trigger.click();dialog.querySelector('[data-choice-value=c]').click();
+  assert.equal(changes,2,'same selection still opens existing recording');
+  trigger.click();dialog.querySelector('.choice-cancel').click();assert.equal(changes,2);
+  trigger.click();records.disabled=true;await Promise.resolve();assert.equal(dialog.open,false);assert.equal(trigger.disabled,true);
+  records.disabled=false;await Promise.resolve();
+  $('choice-for-theme-mode').click();dialog.querySelector('[data-choice-value=dark]').click();
+  assert.equal($('theme-mode').value,'dark');
+  $('theme-mode').value='light';picker.sync();assert.match($('choice-for-theme-mode').textContent,/Light/);
+  $('choice-for-dashboard-columns').click();$('dashboard-columns').options[1].disabled=true;await Promise.resolve();
+  assert.equal(dialog.querySelector('[data-choice-value="1"]').disabled,true);
+  picker.close();dom.window.close();
+});

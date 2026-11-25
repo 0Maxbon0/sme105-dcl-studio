@@ -1,3 +1,4 @@
+import { initChoiceSheets, describeRecordingOption } from "./choice-sheet.js";
 import { createReviewControls } from "./review-controls.js";
 import { createIgnitionReview } from "./ignition-review.js";
 import { reconcileOutcome } from "./session-history.js";
@@ -45,6 +46,7 @@ let protectedCapture = false;
 let trackedArchiveId = "";
 let operatorSave = Promise.resolve(false);
 let analysisUI = null;
+let choiceSheets = null;
 const RECOVERY_SNAPSHOT_KEY = "sme105-recovery-snapshot";
 const WEBVIEW_RECOVERY_REASON = "WebView was recreated before the active controller state could be restored";
 const RECOVERY_SNAPSHOT_FIELDS = ["recordingId", "variant", "bootId", "sessionId", "lastSeq", "savedAt", "operatorStop"];
@@ -316,6 +318,7 @@ function renderApp(state) {
   reviewControls.update();
   render(state);
   renderDclCommandExplorer(state);
+  choiceSheets?.sync();
 }
 
 function handleTransportDisconnect(message = "") {
@@ -1392,7 +1395,8 @@ async function refreshTestHistory() {
     select.replaceChildren(...savedTests.map((event, index) => {
       const probe = event.detail.dclProbe;
       const detail = probe ? `${probe.word} · ${probe.responseBytes ?? "?"} RO bytes` : `${event.detail.codes?.length || 0} codes`;
-      return new Option(`${new Date(event.detail.completedAt).toLocaleString()} · ${event.detail.variant} · ${detail} · ${event.detail.verdict?.status || "UNKNOWN"}`, index);
+      const option = new Option(`${new Date(event.detail.completedAt).toLocaleString()} · ${event.detail.variant} · ${detail} · ${event.detail.verdict?.status || "UNKNOWN"}`, index);
+      describeRecordingOption(option, event.detail, detail); return option;
     }));
     const index = prior ? savedTests.findIndex(event => event.id === prior.id && event.runId === prior.runId) : -1;
     if (index >= 0) select.value = String(index);
@@ -2028,6 +2032,7 @@ async function boot() {
   });
   startupStatus("Preparing dashboard and saved recordings…");
   const initialData = wire();
+  choiceSheets = initChoiceSheets();
   // A recovered capture must expose Stop immediately; the bridge recovery
   // and optional history loading continue independently.
   if (!controller.state.op && !controller.state.combined?.active) await initialData;

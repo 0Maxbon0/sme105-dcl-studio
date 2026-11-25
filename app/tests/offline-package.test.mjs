@@ -8,10 +8,10 @@ test("every runtime local module is present and pre-cached for offline use",()=>
   const app=fileURLToPath(new URL("../",import.meta.url));
   const sw=readFileSync(resolve(app,"sw.js"),"utf8");
   const androidBuild=readFileSync(resolve(app,"../android/app/build.gradle"),"utf8");
-  assert.equal(APP_VERSION,"2.1.1");
-  assert.match(sw,/const CACHE_NAME = 'eeciv-v2\.1\.1';/);
-  assert.match(androidBuild,/versionCode\s+29/);
-  assert.match(androidBuild,/versionName\s+"2\.1\.1"/);
+  assert.equal(APP_VERSION,"2.2.0");
+  assert.match(sw,/const CACHE_NAME = 'eeciv-v2\.2\.0';/);
+  assert.match(androidBuild,/versionCode\s+30/);
+  assert.match(androidBuild,/versionName\s+"2\.2\.0"/);
   const cached=new Set([...sw.matchAll(/"(\.\/[^"?]+)(?:\?[^"\n]*)?"/g)].map(m=>resolve(app,m[1])));
   const seen=new Set(),queue=[resolve(app,"js/app.js")];
   while(queue.length){const path=queue.pop();if(seen.has(path))continue;seen.add(path);

@@ -1,3 +1,4 @@
+import { describeRecordingOption } from "./choice-sheet.js";
 import { createKlineSession, importKline, klineCsv } from "./kline.js";
 import { diagnosticHistory, recordDiagnosticEvent } from "./diagnostics.js";
 import { saveOrShare } from "./exports.js";
@@ -12,7 +13,7 @@ export function wireKline() {
       records: events.filter(e => e.type === "KLINE_RX" && e.detail.sessionId === session.id).map(e => e.detail),
     });
     $("kline-history").replaceChildren(...sessions.reverse().map(s => {
-      const option = document.createElement("option"); option.value = s.id; option.textContent = `${s.startedAt} · ${s.source} · ${s.records.length} records · ${s.status}`; return option;
+      const option = document.createElement("option"); option.value = s.id; option.textContent = `${s.startedAt} · ${s.source} · ${s.records.length} records · ${s.status}`; describeRecordingOption(option,s,s.records.length+" records"); return option;
     }));
     function select() {
       selected = sessions.find(s => s.id === $("kline-history").value);

@@ -6,7 +6,7 @@ import { wireKline } from "../js/kline-ui.js";
 test("K-Line UI records, stops, restores and exports only its own explicitly simulated session",async()=>{
   globalThis.indexedDB=new fake.IDBFactory();globalThis.IDBKeyRange=fake.IDBKeyRange;globalThis.window={};
   const nodes=new Map();
-  globalThis.document={getElementById(id){if(!nodes.has(id))nodes.set(id,{value:"",textContent:"",disabled:false,replaceChildren(...children){this.children=children;this.value=children[0]?.value||"";}});return nodes.get(id);},createElement:()=>({value:"",textContent:"",click(){}})};
+  globalThis.document={getElementById(id){if(!nodes.has(id))nodes.set(id,{value:"",textContent:"",disabled:false,replaceChildren(...children){this.children=children;this.value=children[0]?.value||"";}});return nodes.get(id);},createElement:()=>({value:"",textContent:"",dataset:{},click(){}})};
   const originalInterval=globalThis.setInterval,originalClear=globalThis.clearInterval,originalUrl=URL.createObjectURL;
   let tick,exported;
   globalThis.setInterval=fn=>{tick=fn;return 1;};globalThis.clearInterval=()=>{tick=null;};URL.createObjectURL=blob=>{exported=blob;return originalUrl(blob);};

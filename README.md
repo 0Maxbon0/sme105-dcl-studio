@@ -43,7 +43,7 @@ EscortScope, developed by Basita, is an effort to build a transparent chain from
 
 ## Current engineering status
 
-**Current release (25 November 2026):** Android **v2.1.1** (build **29**) and ESP32 firmware **v30**. EscortScope was installed in place on a Samsung Galaxy A52s; the original package identity and saved recordings were retained. The compact live dashboard exposes readings earlier and offers direct data-set selection. The startup screen follows actual initialization and the original Basita Unravel credit loops silently every 7.63 seconds in both themes.
+**Current release (26 November 2026):** Android **v2.2.0** (build **30**) and ESP32 firmware **v30**. EscortScope was installed in place on a Samsung Galaxy A52s; the original package identity and saved recordings were retained. The compact live dashboard exposes readings earlier and offers direct data-set selection. All application select lists now use the branded choice sheet; saved recordings support grouped dates, search and status/reading filters. The startup screen follows actual initialization and the original Basita Unravel credit loops silently every 7.63 seconds in both themes.
 
 **Physical bridge validation:** v30 BLE was flashed and verified by USB. With the ECU disconnected, the phone completed TX2 self-test and reached the initial DCL transmission. The former v29 BLE output reservation could never fit in its 4 KiB queue. v30 reserves a bounded report in an 8 KiB queue without bypassing electrical safety gates. Vehicle ECU response remains unverified.
 

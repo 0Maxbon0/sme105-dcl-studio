@@ -1,6 +1,6 @@
 # EscortScope — product identity and release
 
-**25 November 2026 · Android v2.1.1 (build 29) · ESP32 firmware v30**
+**26 November 2026 · Android v2.2.0 (build 30) · ESP32 firmware v30**
 
 EscortScope is an independent Ford Escort SME-105 / EEC-IV diagnostic research product made by Basita (بسيطة). Product-specific steel blue, a gauge icon and automotive layouts distinguish it from the company brand; original Basita typography, semantic colors, motion and sonic identity provide a consistent endorsement. The company identity is not replaced by the product and neither identity implies Ford affiliation.
 
@@ -29,3 +29,7 @@ The current remote is [sme105-dcl-studio](https://github.com/0Maxbon0/sme105-dcl
 ## v2.1.1 — historical results and recording access
 
 Restored diagnostic verdicts remain historical and do not raise a live-capture warning at startup. Invalid recordings retain their original verdict and explicit warning during offline review. Saved recordings are accessible directly below the live controls and through History, including during connection-only background recovery. Playback controls are enabled only after the initial sample is ready. Vehicle operation guards remain intact. Android in-place installation and cold launch, 135 retained recordings, opening an existing 43.8-second session, seeking to 21.9 seconds, and returning to live mode were verified on the connected phone. JavaScript: 324 passed, 3 skipped. No new vehicle test performed.
+
+## v2.2.0 — shared interaction components
+
+All 22 ordinary application select fields use the same EscortScope/Basita-themed choice sheet; the remaining data-set selector already uses direct segmented buttons. Original field values, change handlers, disabled states and storage are retained. Recording lists show structured metadata grouped by date with search and All / With readings / Valid / Unverified filters. Settings toggles, range controls, progress indicators, disclosure controls and related list surfaces use the same design foundations. Native Android file and date pickers remain OS-owned. The browser matrix passed 48 screen checks and 128 opened-picker checks (16 available pickers, four widths, both themes); unavailable/disabled fields retain their guards. Android v2.2.0 build 30 was installed in place. On the phone, all 135 original recording entries appeared across eight date groups; the With readings filter found 18 entries and offline review loaded an existing 43.8-second capture. JavaScript: 325 passed, 3 skipped, no failures. No firmware change or new vehicle test.

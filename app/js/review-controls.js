@@ -1,3 +1,4 @@
+import { describeRecordingOption } from './choice-sheet.js';
 import { formatReplayTime } from './display-format.js';
 import { listRecordings } from './recording.js';
 import { createRecordingPlayer, recordingLabel } from './recording-review.js';
@@ -44,7 +45,7 @@ export function createReviewControls({ state, render, closeDetails = () => {}, d
     try {
       entries = (await list()).sort((a,b) => (b.started || Date.parse(b.id) || 0) - (a.started || Date.parse(a.id) || 0) || b.id.localeCompare(a.id));
       node('saved-recordings').replaceChildren(...entries.map(item => {
-        const option = doc.createElement('option'); option.value = item.id; option.textContent = recordingLabel(item); return option;
+        const option = doc.createElement('option'); option.value = item.id; option.textContent = recordingLabel(item); describeRecordingOption(option,item); return option;
       }));
       const remembered = restore ? player.remembered() : prior;
       const exists = entries.some(e => e.id === remembered);
