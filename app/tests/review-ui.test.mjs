@@ -47,7 +47,12 @@ test('real dashboard DOM selects older/newer recordings, plays/seeks, shows norm
   assert.equal($('live-start').disabled,true);
   assert.match($('review-selected').textContent,/INCOMPLETE/);
   assert.equal(percent(),'—');
-  $('saved-recordings').value=older.id; $('saved-recordings').dispatchEvent(new window.Event('change'));
+  state.recovering=true; paint(); // Background connection only, no active capture.
+  assert.equal($('saved-recordings').disabled,false);
+  assert.equal($('review-open').disabled,false);
+  $('saved-recordings').value=older.id; $('review-open').click();
+  state.recovering=false;
+
   await until(()=>state.review.metadata.id===older.id && !state.review.loading);
   $('review-position').value=2; $('review-position').dispatchEvent(new window.Event('input'));
   await until(()=>state.review.position===2);
@@ -89,6 +94,9 @@ test('real dashboard DOM selects older/newer recordings, plays/seeks, shows norm
   click('review-restart'); await until(()=>state.review.position===0); assert.equal(state.review.playing,false);
   click('review-play'); now=2000; await review.player.tick(); click('review-pause'); now=4000; await review.player.tick(); assert.equal(state.review.position,1);
   assert.deepEqual(commands,[]);
+  state.op={variant:'LIVE'}; paint();
+  assert.equal($('review-open').disabled,true);
+  state.op=null; paint();
   assert.equal(controller.requestVehicle('LIVE').ok,false); assert.deepEqual(commands,[]);
   $('live-set').value='LIVE3'; paint();
   assert.equal(card(),null); assert.equal($('throttle-percent-card'),null); // LIVE3 does not request ITP.

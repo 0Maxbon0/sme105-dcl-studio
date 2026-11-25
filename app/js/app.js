@@ -1416,14 +1416,15 @@ async function exportSavedTests(all = false) {
 }
 
 async function restoreLastDiagnosticResult() {
-  if (controller.state.op) return;
+  if (controller.state.op || controller.state.combined?.active || controller.state.lastSession) return;
   const events = await diagnosticHistory();
   const resultEvent = events.filter(event => event.type === "SESSION_RESULT").at(-1);
   if (!resultEvent?.detail) return;
   const detail = { ...resultEvent.detail };
   const recording = (await listRecordings()).find(item => item.id === detail.recordingId);
   if (recording?.outcome) Object.assign(detail, { outcome: recording.outcome, operatorConfirmation: recording.operatorConfirmation });
-  controller.state.lastSession = { ...detail, rows: [], pids: {}, mem: {}, rom: null, totalRows: 0 };
+  if (controller.state.op || controller.state.combined?.active || controller.state.lastSession) return;
+  controller.state.lastSession = { ...detail, historical: true, rows: [], pids: {}, mem: {}, rom: null, totalRows: 0 };
   if (detail.dclProbe) controller.state.lastDclProbe = {
     ...detail.dclProbe, variant: detail.variant, startedAt: detail.startedAt,
     completedAt: detail.completedAt, verdict: detail.verdict, rawLines: [],
@@ -1433,7 +1434,8 @@ async function restoreLastDiagnosticResult() {
       responseBytes: detail.dclProbe.responseBytes, completedAt: detail.completedAt,
     },
   };
-  controller.state.trust = detail.verdict?.valid ? "valid" : "untrusted";
+  // The persisted verdict belongs to a previous session, not this launch.
+  // Preserve its evidence for History/Faults without activating a live warning.
   if (detail.variant === "KOER") Object.assign(koerGuide.state, { phase: "ENDED_UNVERIFIED", sessionId: detail.startedAt, prompt: null, verifiedSuccess: false });
   previousSessionKey = `${detail.variant}:${detail.startedAt}:${detail.completedAt}`;
 }

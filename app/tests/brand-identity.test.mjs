@@ -30,8 +30,8 @@ test("new name matches across web, Android, Capacitor and keeps the existing pac
   assert.equal(STR.shortTitle, "FORD ESCORT · SME-105");
   assert.equal(capacitor.appId, "com.maximizotech.sme105dclstudio");
   assert.match(build, /applicationId "com\.maximizotech\.sme105dclstudio"/);
-  assert.equal(APP_VERSION, "2.1.0");
-  assert.match(build, /versionCode\s+28/);
+  assert.equal(APP_VERSION, "2.1.1");
+  assert.match(build, /versionCode\s+29/);
 });
 
 test("official Basita assets are pinned, unchanged, and offline", () => {

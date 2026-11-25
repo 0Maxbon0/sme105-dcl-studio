@@ -129,8 +129,12 @@ export function createRecordingPlayer({ load = async id => {
         state.metadata = metadata;
         const built = await indexRecording(blob, { cancelled: () => token !== generation, progress: p => { state.count = p.count; changed(state); } });
         if (token !== generation) return;
-        index = built; Object.assign(state, { duration: index.duration, count: index.count, invalid: index.invalid, loading: false });
-        await seek(0);
+        // Keep playback controls disabled until the initial sample is actually ready.
+        const initial = await built.at(0);
+        if (token !== generation) return;
+        index = built;
+        Object.assign(state, initial, { duration: index.duration, count: index.count, invalid: index.invalid, loading: false });
+        anchoredPosition = state.position; anchor = now(); changed(state);
       } catch (error) { if (token === generation) { state.loading = false; state.error = error.message; state.pids = {}; changed(state); } }
     },
     seek,

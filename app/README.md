@@ -1,6 +1,6 @@
 # Escort SME-105 Diagnostic Lab — Android application
 
-**Current source and verified installation:** EscortScope by Basita, Android **v2.1.0 / build 28**, installed in place via ADB on 25 November 2026. ESP32 firmware **v30** has Wi-Fi and BLE profiles; BLE v30 was physically verified on an isolated bench, not on the vehicle. This directory is the **canonical HTML/CSS/JavaScript source for the native Android app** packaged through Capacitor `webDir: "app"`. **It must not be removed as a legacy website.** See [identity and release notes](../docs/BRANDING_RELEASE.md).
+**Current source and verified installation:** EscortScope by Basita, Android **v2.1.1 / build 29**, installed in place via ADB on 25 November 2026. ESP32 firmware **v30** has Wi-Fi and BLE profiles; BLE v30 was physically verified on an isolated bench, not on the vehicle. This directory is the **canonical HTML/CSS/JavaScript source for the native Android app** packaged through Capacitor `webDir: "app"`. **It must not be removed as a legacy website.** See [identity and release notes](../docs/BRANDING_RELEASE.md).
 
 The rebrand changes the launcher label, color palette, app icons and new export directory. The `applicationId` and IndexedDB keys remain unchanged; existing recordings and older files in `Downloads/SME105 DCL Studio` are not moved or deleted. See [rebranding and update notes](../docs/BRANDING_RELEASE.md).
 

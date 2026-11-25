@@ -1354,7 +1354,23 @@ export function render(state) {
   };
   banner($("codes-banner"));
   banner($("live-banner"));
-  if (state.review?.active) { $("live-banner").hidden = false; $("live-banner").className = "banner"; $("live-banner").textContent = `Recorded Data — Offline Review · ${state.review.metadata?.verdict?.status || "Unfinished"}`; }
+  const historical = !state.op && state.lastSession?.historical;
+  if (historical && !state.review?.active && state.trust === "none") {
+    const old = state.lastSession;
+    const node = $("codes-banner");
+    node.hidden = false;
+    node.className = old.verdict?.valid ? "banner" : "banner warn";
+    node.textContent = `Previous saved result · ${old.verdict?.status || "Unknown"} · ${old.completedAt ? new Date(old.completedAt).toLocaleString() : "Date unavailable"}. No new test has run.${old.verdict?.valid ? "" : " This saved result is not a verified diagnosis."}`;
+  }
+  if (state.review?.active) {
+    const verdict = state.review.metadata?.verdict;
+    const invalid = verdict && !verdict.valid;
+    for (const node of [$("live-banner"), $("codes-banner")]) {
+      node.hidden = false;
+      node.className = invalid ? "banner warn" : "banner";
+      node.textContent = `Recorded Data — Offline Review · ${verdict?.status || "Unfinished"}${invalid ? " · Saved capture failed validity checks; do not treat it as a diagnosis." : ""}`;
+    }
+  }
   const pct = progressValue(state);
   const variant = state.op?.variant || state.lastSession?.variant;
   $("codes-progress").value = ["KOEO", "KOER", "0E", "A4"].includes(variant) ? pct : 0;
@@ -1391,7 +1407,7 @@ export function render(state) {
   $("codes-meta").textContent = codeMeta.join(" · ");
   const list = $("codes-list");
   const codes = activeCodes(state);
-  list.classList.toggle("untrusted", state.trust === "untrusted");
+  list.classList.toggle("untrusted", state.review?.active ? !!(result?.verdict && !result.verdict.valid) : state.trust === "untrusted" || !!(historical && result?.verdict && !result.verdict.valid));
   list.replaceChildren();
   if (!codes.length) {
     const empty = document.createElement("li");
@@ -1449,7 +1465,7 @@ export function render(state) {
   $("export-group-btn").disabled = !!state.review?.active;
   $("drawer-export-sensor").disabled = !!state.review?.active;
   const captureTime = state.archive?.started || result?.startedAt;
-  $("live-meta").textContent = state.review?.active ? `Recorded Data — Offline Review · ${state.review.metadata?.id} · ${formatReplayTime(state.review.position)}` : activeStream(state) ? 'Recording automatically on this device' : captureTime ? `Capture · ${new Date(captureTime).toLocaleString()}` : '';
+  $("live-meta").textContent = state.review?.active ? `Recorded Data — Offline Review · ${state.review.metadata?.id} · ${formatReplayTime(state.review.position)}` : activeStream(state) ? 'Recording automatically on this device' : captureTime && !historical ? `Capture · ${new Date(captureTime).toLocaleString()}` : '';
   $("recording-status").textContent = state.archive?.error
     ? `Saving needs attention: ${state.archive.error}`
     : `${activeStream(state) ? "Recording and saving automatically. Stop ends this session. " : "Saved sessions remain on this phone. "}New exports save to Downloads/Escort SME-105 Diagnostic Lab. Older exports remain in their original folder.`;
@@ -1467,6 +1483,7 @@ export function render(state) {
   if (activeView === "log") {
     const verdict = result?.verdict;
     const summary = [];
+    if (historical && !state.review?.active) summary.push("Previous saved result — no new test has run.");
     if (result?.outcome) summary.push(`Session ending: ${result.outcome.replaceAll("_", " ").toLowerCase()}`);
     if (result?.operatorConfirmation) summary.push(`Operator response saved: ${new Date(result.operatorConfirmation.confirmedAt).toLocaleString()}`);
     if (!verdict) summary.push(STR.notKnown);

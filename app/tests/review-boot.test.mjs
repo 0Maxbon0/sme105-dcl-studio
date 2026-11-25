@@ -5,6 +5,7 @@ import { JSDOM } from 'jsdom';
 import * as fake from 'fake-indexeddb';
 import './test-env.mjs';
 import { createRecording, listRecordings } from '../js/recording.js';
+import { startDiagnosticRun, recordDiagnosticEvent, closeDiagnosticRun } from '../js/diagnostics.js';
 const until = async fn => { for(let i=0;i<200;i++){if(fn())return;await new Promise(r=>setTimeout(r,5));}throw new Error('App did not finish booting'); };
 test('actual app entry boots existing recording into offline dashboard and wires review and normal throttle card', async () => {
   const dom=new JSDOM(readFileSync(new URL('../index.html',import.meta.url),'utf8'),{url:'https://offline.test/'});
@@ -15,6 +16,9 @@ test('actual app entry boots existing recording into offline dashboard and wires
   Object.defineProperty(globalThis,'navigator',{configurable:true,value:{storage:{estimate:async()=>({quota:10*1024**3,usage:0})}}});
   const rec=await createRecording('ALL');
   rec.sample({t:0,name:'ITP',raw:179,value:179});rec.sample({t:5,name:'ITP',raw:970,value:970}); await rec.finish({valid:false,status:'INCOMPLETE',reasons:['END reason=19']});
+  await startDiagnosticRun();
+  await recordDiagnosticEvent('SESSION_RESULT', {variant:'ALL', recordingId:rec.id, startedAt:Date.now()-10000, completedAt:Date.now()-5000, verdict:{valid:false,status:'FAILED',reasons:['fixture previous failure']}}, 'session');
+  await closeDiagnosticRun('fixture');
   const previous=setInterval,clear=clearInterval;const callbacks=[];
   globalThis.setInterval=(fn)=>{callbacks.push(fn);return callbacks.length;}; globalThis.clearInterval=()=>{};
   try {
@@ -25,8 +29,21 @@ test('actual app entry boots existing recording into offline dashboard and wires
     await import('../js/app.js');
     const $=id=>document.getElementById(id);
     const percent=()=>$('throttle-percent-value').textContent;
-    await until(()=>$('saved-recordings').options.length>=2);
-    $('saved-recordings').value=rec.id;$('saved-recordings').dispatchEvent(new window.Event('change'));
+    await until(()=>$('startup-screen').hidden && $('saved-recordings').options.length>=2);
+    assert.equal($('live-banner').hidden,true, 'historical failed result must not appear as a new live warning');
+    assert.equal($('live-meta').textContent,'');
+    assert.match($('codes-banner').textContent,/Previous saved result.*FAILED.*No new test has run/);
+    assert.equal($('review-mode').hidden,true);
+    assert.equal($('saved-recording-count').textContent,'2');
+    assert.ok($('offline-review-panel').compareDocumentPosition($('dashboard-overview')) & window.Node.DOCUMENT_POSITION_FOLLOWING);
+    document.querySelector('nav [data-view="log"]').click();
+    assert.match($('log-summary').textContent,/Previous saved result/);
+    $('open-recording-review').click();
+    assert.equal($('view-live').hidden,false);
+    assert.equal($('offline-review-panel').open,true);
+    $('saved-recordings').value=rec.id;
+    assert.equal($('review-open').disabled,false);
+    $('review-open').click();
     await until(()=>$('review-selected').textContent.includes('2 samples') && percent()==='0');
     const recovered=(await listRecordings()).find(item=>item.id===interrupted.id);
     assert.ok(recovered?.ended);
@@ -52,7 +69,8 @@ test('actual app entry boots existing recording into offline dashboard and wires
     assert.match($('dcl-probe-blocked').textContent,/FF5F/);
     $('review-position').value=5; $('review-position').dispatchEvent(new window.Event('input'));
     await until(()=>percent()==='100');
-    assert.match($('live-banner').textContent,/INCOMPLETE/);
+    assert.match($('live-banner').textContent,/INCOMPLETE.*failed validity checks/);
+    assert.equal($('live-banner').classList.contains('warn'),true);
     // The derived card uses the same handlers and persisted order as real channels.
     const grid=$('pinned-readings');
     const order=()=>[...grid.children].map(n=>n.dataset.pid);
@@ -137,6 +155,7 @@ test('actual app entry boots existing recording into offline dashboard and wires
     const restored=(await import('../js/dashboard-layout.js')).normalizeDashboardPrefs(saved());
     assert.deepEqual(restored.layouts.ALL,order());
     $('review-exit').click();assert.equal($('review-mode').hidden,true);
+    assert.equal($('live-banner').hidden,true);
     assert.ok(callbacks.length>=2);
     assert.doesNotMatch($('message').textContent,/Application error|failed|unavailable/);
   } finally { globalThis.setInterval=previous;globalThis.clearInterval=clear; }

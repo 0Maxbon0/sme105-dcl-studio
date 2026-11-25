@@ -7,9 +7,13 @@ export function createReviewControls({ state, render, closeDetails = () => {}, d
   state.review = player.state;
   let entries = [];
   let wasReviewActive = false;
+  // Connection-only recovery and identification do not require vehicle access.
+  const canReview = () => !state.op && !state.combined?.active && !state.resuming && ['idle', 'identify_hello', 'identify_pins', 'identify_status'].includes(state.phase);
   function update() {
-    const s = player.state, busy = state.phase !== 'idle' || !!state.combined?.active;
+    const s = player.state, busy = !canReview();
     node('saved-recordings').disabled = busy;
+    node('review-open').disabled = busy || !entries.length || !node('saved-recordings').value;
+    node('saved-recording-count').textContent = String(entries.length);
     node('review-controls').hidden = !s.active;
     node('review-mode').hidden = !s.active;
     if (s.active && !wasReviewActive && node('offline-review-panel')) node('offline-review-panel').open = true;
@@ -27,7 +31,7 @@ export function createReviewControls({ state, render, closeDetails = () => {}, d
     node('saved-log').disabled = !entries.length;
   }
   async function select(id) {
-    if (state.op || state.combined?.active || !['idle', 'identify_hello', 'identify_pins', 'identify_status'].includes(state.phase)) return;
+    if (!id || !canReview()) return;
     closeDetails();
     // ALL layout exposes retained channels through the same dashboard; hidden channels remain hidden.
     const item = entries.find(e => e.id === id);
@@ -45,7 +49,7 @@ export function createReviewControls({ state, render, closeDetails = () => {}, d
       const remembered = restore ? player.remembered() : prior;
       const exists = entries.some(e => e.id === remembered);
       if (exists) node('saved-recordings').value = remembered;
-      if (restore && (entries.length || remembered) && !state.op && ['idle', 'identify_hello', 'identify_pins', 'identify_status'].includes(state.phase)) {
+      if (restore && (entries.length || remembered) && canReview()) {
         if (remembered && !exists) {
           // Keep the missing selection identifiable rather than showing a different recording.
           const option = doc.createElement('option'); option.value = remembered; option.textContent = `Unavailable recording · ${remembered}`;
@@ -58,6 +62,7 @@ export function createReviewControls({ state, render, closeDetails = () => {}, d
   }
   function wire() {
     node('saved-recordings').addEventListener('change', () => select(node('saved-recordings').value));
+    node('review-open').addEventListener('click', () => select(node('saved-recordings').value));
     node('review-play').addEventListener('click', () => player.play());
     node('review-pause').addEventListener('click', () => player.pause());
     node('review-restart').addEventListener('click', () => player.restart());

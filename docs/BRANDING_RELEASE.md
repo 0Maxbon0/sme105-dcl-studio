@@ -1,6 +1,6 @@
 # EscortScope — product identity and release
 
-**25 November 2026 · Android v2.1.0 (build 28) · ESP32 firmware v30**
+**25 November 2026 · Android v2.1.1 (build 29) · ESP32 firmware v30**
 
 EscortScope is an independent Ford Escort SME-105 / EEC-IV diagnostic research product made by Basita (بسيطة). Product-specific steel blue, a gauge icon and automotive layouts distinguish it from the company brand; original Basita typography, semantic colors, motion and sonic identity provide a consistent endorsement. The company identity is not replaced by the product and neither identity implies Ford affiliation.
 
@@ -20,8 +20,12 @@ Android package ID `com.maximizotech.sme105dclstudio` and existing storage keys 
 
 ## Verified release boundaries
 
-Android 2.1.0 build 28 installed on Samsung Galaxy A52s; 135 saved recordings were visible after update. Browser motion tests passed startup gating, looping, both themes and reduced motion. The 2.1 redesign passed 48 screen checks across four widths and both actual theme settings; direct dataset selection was verified in browser and regression tests. JavaScript tests recorded 324 passes, 3 skips and no failures. Android debug assembly passed. See [firmware documentation](../firmware/sme105_usb_bridge/README.md) for v30 and the isolated BLE test. These are not vehicle qualification. Debug APKs and private field evidence stay local; publication of a distributable signed app is a separate step.
+Android 2.1.1 build 29 installed on Samsung Galaxy A52s; 135 saved recordings were visible after update. Browser motion tests passed startup gating, looping, both themes and reduced motion. The 2.1 redesign passed 48 screen checks across four widths and both actual theme settings; direct dataset selection was verified in browser and regression tests. JavaScript tests recorded 324 passes, 3 skips and no failures. Android debug assembly passed. See [firmware documentation](../firmware/sme105_usb_bridge/README.md) for v30 and the isolated BLE test. These are not vehicle qualification. Debug APKs and private field evidence stay local; publication of a distributable signed app is a separate step.
 
 ## Repository
 
 The current remote is [sme105-dcl-studio](https://github.com/0Maxbon0/sme105-dcl-studio). The product name is independent of the repository slug; a rename can be handled separately without disrupting existing links.
+
+## v2.1.1 — historical results and recording access
+
+Restored diagnostic verdicts remain historical and do not raise a live-capture warning at startup. Invalid recordings retain their original verdict and explicit warning during offline review. Saved recordings are accessible directly below the live controls and through History, including during connection-only background recovery. Playback controls are enabled only after the initial sample is ready. Vehicle operation guards remain intact. Android in-place installation and cold launch, 135 retained recordings, opening an existing 43.8-second session, seeking to 21.9 seconds, and returning to live mode were verified on the connected phone. JavaScript: 324 passed, 3 skipped. No new vehicle test performed.

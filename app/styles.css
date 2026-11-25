@@ -847,3 +847,12 @@ nav button[aria-current="page"] { border-radius:var(--radius-control); backgroun
   .live-controls { grid-template-columns:minmax(0,1fr) 210px; }
 }
 @media(max-width:359px) { .dataset-choices button { font-size:.63rem; } nav button {font-size:.56rem;} }
+
+/* Saved recordings remain accessible near the live controls, including offline. */
+#offline-review-panel { scroll-margin-top:160px; }
+#offline-review-panel > summary { display:flex; align-items:center; gap:8px; min-height:48px; font-weight:650; }
+#offline-review-panel > summary::before { content:""; width:20px; height:20px; flex:0 0 20px; background:currentColor; mask:url("./icons/nav-history.svg") center/contain no-repeat; }
+#offline-review-panel > summary::after { content:"›"; margin-inline-start:auto; font-size:1.3rem; }
+#offline-review-panel[open] > summary::after { transform:rotate(90deg); }
+#saved-recording-count { font-variant-numeric:tabular-nums; }
+#review-open { width:100%; }
