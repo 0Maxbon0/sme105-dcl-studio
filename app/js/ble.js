@@ -53,7 +53,7 @@ export class BleTransport {
   }
 
   async openBrowser(generation) {
-    const device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [NUS_SERVICE] });
+    const device = await navigator.bluetooth.requestDevice({ filters: [{ services: [NUS_SERVICE] }] });
     if (generation !== this.generation) throw new Error("Bluetooth connection superseded");
     return this.attach(device, generation);
   }
@@ -64,6 +64,14 @@ export class BleTransport {
       if (device) globalThis.localStorage?.setItem("sme105-bridge-device", JSON.stringify(device));
       else globalThis.localStorage?.removeItem("sme105-bridge-device");
     } catch {}
+  }
+
+  forgetRememberedDevice() {
+    if (this.connecting || this.nativeDeviceId || this.device?.gatt?.connected) {
+      throw new Error("Disconnect the active Bluetooth bridge before choosing a different device.");
+    }
+    this.remember(null);
+    this.connectionWanted = false;
   }
 
   connectNative(device = this.remembered) {
@@ -95,7 +103,12 @@ export class BleTransport {
       if (!this.nativeInitialized) this.nativeInitialized = BleClient.initialize({ androidNeverForLocation: true });
       await this.nativeInitialized;
       if (generation !== this.generation) throw new Error("Bluetooth connection superseded");
-      device = knownDevice || await BleClient.requestDevice({ optionalServices: [NUS_SERVICE] });
+      // The chooser must not offer unrelated nearby GATT devices. A stale
+      // remembered ID can be explicitly cleared from Settings without
+      // deleting recordings or other bridge credentials.
+      device = knownDevice || await BleClient.requestDevice({
+        services: [NUS_SERVICE], namePrefix: "SME105", optionalServices: [NUS_SERVICE],
+      });
       if (generation !== this.generation) throw new Error("Bluetooth connection superseded");
       // Clear a stale OS/plugin GATT handle before attaching again. This is a
       // transport disconnect, never an ECU command or firmware reset.
@@ -324,9 +337,9 @@ export class BleTransport {
     return this.queue;
   }
 
-  async disconnect() {
+  async disconnect({ forget = true } = {}) {
     this.connectionWanted = false;
-    this.remember(null);
+    if (forget) this.remember(null);
     this.generation += 1;
     if (this.nativeDeviceId || this.nativeConnection) {
       await this.discardNative();

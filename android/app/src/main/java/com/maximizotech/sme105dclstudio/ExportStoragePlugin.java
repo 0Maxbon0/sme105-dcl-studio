@@ -33,7 +33,7 @@ public class ExportStoragePlugin extends Plugin {
             ContentValues values = new ContentValues();
             values.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
             values.put(MediaStore.MediaColumns.MIME_TYPE, name.endsWith(".zip") ? "application/zip" : name.endsWith(".csv") ? "text/csv" : "text/plain");
-            values.put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/SME105 DCL Studio");
+            values.put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/Escort SME-105 Diagnostic Lab");
             values.put(MediaStore.MediaColumns.IS_PENDING, 1);
             destination = getContext().getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
             if (destination == null) throw new Exception("Cannot create file in Downloads");
@@ -49,8 +49,8 @@ public class ExportStoragePlugin extends Plugin {
             getContext().getContentResolver().update(destination, complete, null, null);
             JSObject result = new JSObject();
             result.put("uri", destination.toString());
-            result.put("folder", "Internal storage/Download/SME105 DCL Studio");
-            getActivity().runOnUiThread(() -> Toast.makeText(getContext(), "Saved in Downloads/SME105 DCL Studio", Toast.LENGTH_LONG).show());
+            result.put("folder", "Internal storage/Download/Escort SME-105 Diagnostic Lab");
+            getActivity().runOnUiThread(() -> Toast.makeText(getContext(), "Saved in Downloads/Escort SME-105 Diagnostic Lab", Toast.LENGTH_LONG).show());
             call.resolve(result);
         } catch (Exception error) {
             if (destination != null) getContext().getContentResolver().delete(destination, null, null);

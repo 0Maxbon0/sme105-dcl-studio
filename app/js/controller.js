@@ -825,6 +825,26 @@ export function createController({ now = () => Date.now(), send = () => {} } = {
       state.message = message;
       touch();
     },
+    abortUnrecoverableRecovery(reason) {
+      // A rejected/mismatched native bridge was deliberately revoked. There
+      // is no socket to receive STOP and no legitimate session to RESUME.
+      // Finalize the evidence immediately without sending any ECU command or
+      // manufacturing an END line, even during the 30-second recovery window.
+      if (!state.op) return false;
+      const message = String(reason || "Authenticated bridge identity changed");
+      state.archive?.line?.("EVENT recovery_aborted reason=wifi_bridge_profile_mismatch");
+      if (state.combined) { state.combined.active = false; state.combined.nextPending = false; }
+      state.link = "disconnected";
+      state.transportStatus = "disconnected";
+      state.transport = "";
+      state.deviceName = "";
+      state.identity.auth = "";
+      state.wifiAuthenticated = false;
+      state.recoveryDeadline = null;
+      state.resuming = false;
+      finalize({ status: "INCOMPLETE", reason: message });
+      return true;
+    },
     subscribe(fn) {
       listeners.add(fn);
       return () => listeners.delete(fn);

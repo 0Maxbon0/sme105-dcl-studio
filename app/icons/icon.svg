@@ -1,10 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="EEC-IV">
-  <rect width="64" height="64" rx="14" fill="#0e1116"/>
-  <rect x="8" y="8" width="48" height="48" rx="10" fill="#1c2430"/>
-  <rect x="18" y="20" width="28" height="26" rx="3" fill="#f5b942"/>
-  <circle cx="26" cy="29" r="2.2" fill="#0e1116"/>
-  <circle cx="38" cy="29" r="2.2" fill="#0e1116"/>
-  <circle cx="26" cy="38" r="2.2" fill="#0e1116"/>
-  <circle cx="38" cy="38" r="2.2" fill="#0e1116"/>
-  <circle cx="46" cy="18" r="3.2" fill="#3dd68c"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="EscortScope">
+  <rect width="64" height="64" rx="15" fill="#203B50"/>
+  <path d="M12 43a20 20 0 1 1 40 0" fill="none" stroke="#BECFCC" stroke-width="4" stroke-linecap="round"/>
+  <path d="M17.8 29.3l4.2 2.4M31.9 20v5M46.2 29.3 42 31.7" stroke="#F5F7F3" stroke-width="2.7" stroke-linecap="round"/>
+  <path d="M32 43l12-15" stroke="#F5F7F3" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="32" cy="43" r="4" fill="#F5F7F3"/>
+  <path d="M22 51h20" stroke="#BECFCC" stroke-width="2.6" stroke-linecap="round"/>
 </svg>

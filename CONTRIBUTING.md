@@ -1,4 +1,4 @@
-# Contributing to SME105 DCL Studio
+# Contributing to Escort SME-105 Diagnostic Lab
 
 This is an evidence-first experimental hardware/software project; the target EEC-IV SME105 ECU is not presumed to implement another Ford ECU's exact DCL commands.
 

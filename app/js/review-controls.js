@@ -6,11 +6,14 @@ export function createReviewControls({ state, render, closeDetails = () => {}, d
   const player = createRecordingPlayer({ storage, now, load, changed() { state.review = player.state; update(); render(state); } });
   state.review = player.state;
   let entries = [];
+  let wasReviewActive = false;
   function update() {
     const s = player.state, busy = state.phase !== 'idle' || !!state.combined?.active;
     node('saved-recordings').disabled = busy;
     node('review-controls').hidden = !s.active;
     node('review-mode').hidden = !s.active;
+    if (s.active && !wasReviewActive && node('offline-review-panel')) node('offline-review-panel').open = true;
+    wasReviewActive = s.active;
     node('review-mode').textContent = 'Recorded Data — Offline Review';
     node('review-selected').textContent = !s.active ? '' : `${recordingLabel({ ...s.metadata, ...(s.loading ? {} : { sampleCount: s.count, duration: s.duration }) })}${s.loading ? ' · Loading and indexing…' : ''}${s.invalid ? ` · ${s.invalid} malformed rows omitted; source remains unchanged` : ''}${s.error ? ` · Cannot load: ${s.error}` : !s.loading && !s.count ? ' · No PID samples in this recording' : ''}`;
     node('review-position').max = s.duration;

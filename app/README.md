@@ -1,12 +1,16 @@
-# SME105 DCL Studio — Android application
+# Escort SME-105 Diagnostic Lab — Android application
 
-**Current installed release:** Android **v1.8.17 / build 19**, ESP32 Wi-Fi bridge **v29** (`esp32dev`). This directory is the **canonical HTML/CSS/JavaScript source for the native Android app** packaged through Capacitor `webDir: "app"` in [`capacitor.config.json`](../capacitor.config.json). **It must not be removed as a legacy web site.** The obsolete *separate Python localhost GUI* was retired; no standalone hosted PWA is offered as the supported current product.
+**Current source and verified installation:** EscortScope by Basita, Android **v2.0.2 / build 27**, installed in place via ADB on 25 November 2026. ESP32 firmware **v30** has Wi-Fi and BLE profiles; BLE v30 was physically verified on an isolated bench, not on the vehicle. This directory is the **canonical HTML/CSS/JavaScript source for the native Android app** packaged through Capacitor `webDir: "app"`. **It must not be removed as a legacy website.** See [identity and release notes](../docs/BRANDING_RELEASE.md).
+
+The rebrand changes the launcher label, color palette, app icons and new export directory. The `applicationId` and IndexedDB keys remain unchanged; existing recordings and older files in `Downloads/SME105 DCL Studio` are not moved or deleted. See [rebranding and update notes](../docs/BRANDING_RELEASE.md).
 
 **Target:** Ford Escort 1998 1.6 Zetec-E / EEC-IV SME105 `97AB-12A650-KA`. Experimental diagnostic research tool; do not infer validated ECU support from successful network connection or a lit local output LED.
 
+Read the [architecture](../docs/ARCHITECTURE.md) and [source walkthrough](../docs/CODE_WALKTHROUGH.md) for a component-by-component explanation.
+
 ## Direct ESP32 Wi-Fi — no router
 
-1. Flash/use the Wi-Fi firmware v29, not the separate legacy `esp32dev_ble` variant. ESP32 provides a WPA2 2.4 GHz SoftAP, typically `SME105-DIRECT-2BF8`, with a fixed `10.77.13.1:8765` listener (one associated client).
+1. Flash/use the Wi-Fi firmware v30, not the separate `esp32dev_ble` variant. ESP32 provides a WPA2 2.4 GHz SoftAP, typically `SME105-DIRECT-2BF8`, with a fixed `10.77.13.1:8765` listener (one associated client).
 2. In Android **Settings → Wi-Fi Bridge**, confirm the actual board SSID, enter the **one WPA2 passphrase**, and tap **Save Passphrase**. It is encrypted in Android Keystore-backed private storage, **not** browser localStorage or the source files.
 3. Tap **Connect** and accept the Android local-only Wi-Fi request. Because this hotspot has no Internet access, Android may display a network preference/no-Internet warning; maintain the device network association.
 4. The Android native plugin derives the existing 32-hex `AUTH` value from this single user-entered secret (PBKDF2-HMAC-SHA256 with an SSID-bound salt) and must receive exact `AUTH OK` before using the bridge. There is **no manually entered bridge token**.

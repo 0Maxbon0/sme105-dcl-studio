@@ -896,8 +896,8 @@ function sensorExplanation(name, summary, freshness, { manual = true, idleCheck 
 }
 
 function chartColor(state) {
-  const token = state === "fresh" ? "--cyan" : "--gray";
-  return getComputedStyle(document.body).getPropertyValue(token).trim() || (state === "fresh" ? "#4ad9e6" : "#95a2ac");
+  const token = state === "fresh" ? "--accent" : "--gray";
+  return getComputedStyle(document.body).getPropertyValue(token).trim() || (state === "fresh" ? "#87afff" : "#95a2ac");
 }
 
 function chartSummary(samples, name, range) {
@@ -918,7 +918,7 @@ function formatTimeAgo(milliseconds) {
   return `${seconds}s ago`;
 }
 
-function drawTimeChart(canvas, samples, range = "30", color = "#42d9e8") {
+function drawTimeChart(canvas, samples, range = "30", color = "#87afff") {
   const rect = canvas.getBoundingClientRect();
   if (!rect.width) return;
   const ratio = Math.max(1, window.devicePixelRatio || 1);
@@ -1302,7 +1302,8 @@ export function render(state) {
       : linked && authenticated && state.identity.helloOk === true && state.identity.pinsOk === true && state.status ? "Connected"
         : linked ? "Authenticating" : "Disconnected";
   $("link-pill").textContent = demoTransport ? "DEMO · REPLAY" : `${activeTransport === "wifi" ? "WI-FI" : "BLE"} · ${connectionState.toUpperCase()}`;
-  $("link-pill").dataset.state = linked ? "connected" : state.link === "denied" ? "error" : state.link === "reconnecting" ? "reconnecting" : "disconnected";
+  $("link-pill").dataset.state = demoTransport ? "demo" : connectionState === "Connected" ? "connected" : connectionState === "Denied" ? "error" : connectionState === "Reconnecting" ? "reconnecting" : ["Connecting", "Authenticating"].includes(connectionState) ? "connecting" : "disconnected";
+  document.body.dataset.connectionPending = String(!demoTransport && ["Connecting", "Authenticating", "Reconnecting"].includes(connectionState));
   $("link-pill").title = state.deviceName || state.link;
   $("link-pill").setAttribute("aria-label", demoTransport ? "Demo replay; no hardware connection or vehicle communication" : `${activeTransport === "wifi" ? "ESP32 Wi-Fi" : "Bluetooth"} bridge: ${connectionState}`);
   $("stop-btn").disabled = !busy;
@@ -1445,7 +1446,7 @@ export function render(state) {
   $("live-meta").textContent = state.review?.active ? `Recorded Data — Offline Review · ${state.review.metadata?.id} · ${formatReplayTime(state.review.position)}` : activeStream(state) ? 'Recording automatically on this device' : captureTime ? `Capture · ${new Date(captureTime).toLocaleString()}` : '';
   $("recording-status").textContent = state.archive?.error
     ? `Saving needs attention: ${state.archive.error}`
-    : `${activeStream(state) ? "Recording and saving automatically. Stop ends this session. " : "Saved sessions remain on this phone. "}Exports save to Downloads/SME105 DCL Studio, then open the share sheet.`;
+    : `${activeStream(state) ? "Recording and saving automatically. Stop ends this session. " : "Saved sessions remain on this phone. "}New exports save to Downloads/Escort SME-105 Diagnostic Lab. Older exports remain in their original folder.`;
 
   const mem = snap?.mem || result?.mem || {};
   const memLines = Object.keys(mem).sort((a, b) => a - b).map((key) => `byte ${key}: ${mem[key].toString(16).toUpperCase().padStart(2, "0")}`);

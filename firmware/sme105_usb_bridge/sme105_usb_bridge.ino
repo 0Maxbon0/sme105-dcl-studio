@@ -27,6 +27,7 @@
 #include <driver/periph_ctrl.h>
 #ifdef SME105_BLE
 #include "ble_transport.h"
+#include <esp_heap_caps.h>
 #endif
 #include <freertos/ringbuf.h>
 #include <esp_intr_alloc.h>
@@ -80,10 +81,20 @@ constexpr uint32_t kGapToleranceUs = 175;
 constexpr size_t kRxRingSize = 2048; // single producer ISR / single USB consumer
 constexpr uint16_t kWiFiPort = 8765;
 #ifdef SME105_BLE
-constexpr size_t kWireQueueSize = 4096; // BLE drains incrementally; keep SRAM for byte retention
+// A synchronous TX2 bench must fit its entire report before BLE can drain.
+constexpr size_t kWireQueueSize = 8192; // retain SRAM for BLE and telemetry
+constexpr size_t kTx2BenchReportBudget = 6144;
 #else
 constexpr size_t kWireQueueSize = 16384; // bounded, no allocation/IO in ISR
+constexpr size_t kTx2BenchReportBudget = 8192;
 #endif
+constexpr size_t kTx2BenchMaxRmtItems = 48;
+// Conservative CRLF-inclusive bounds: two reference lines, four word lines,
+// up to 48 edge lines, plus headers, decode, denial and terminal reports.
+constexpr size_t kTx2BenchMaxReportBytes = 2 * 100 + 4 * 256 +
+    kTx2BenchMaxRmtItems * 80 + 4 * 160;
+static_assert(kTx2BenchMaxReportBytes <= kTx2BenchReportBudget, "complete TX2 report must fit");
+static_assert(kTx2BenchReportBudget < kWireQueueSize, "TX2 bench must be reachable with queue headroom");
 constexpr uint32_t kAuthDeadlineMs = 5000;
 constexpr uint32_t kSessionRetentionMs = 30000;
 constexpr uint32_t kStaRetryMs = 10000;
@@ -112,7 +123,7 @@ constexpr uint32_t kOtaCurrentVersion = 1;
 // still be able to boot PENDING_VERIFY from an older accepted version and
 // prove their manifest before promoting ota_ver. On a VALID app with NO pending
 // ledger, a supervised physical USB flash may adopt this build baseline.
-constexpr uint32_t kUsbInstalledBuildVersion = 29;
+constexpr uint32_t kUsbInstalledBuildVersion = 30;
 // This field build permits active-master commands only after the required
 // per-boot TX2_BENCH passes and each fixed profile is explicitly armed.
 constexpr bool kActiveMasterQualified = true;
@@ -463,6 +474,16 @@ uint8_t lastReportedBaseline = 0;
 // detached without pausing ECU polling.
 class BridgeOutput : public Print {
  public:
+#ifdef SME105_BLE
+  // Allocate once in setup, never during a session or from an ISR. BLE's
+  // static DRAM segment cannot accommodate the enlarged queue.
+  bool begin() {
+    if (!bytes_) bytes_ = static_cast<uint8_t*>(heap_caps_malloc(
+        kWireQueueSize, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    return bytes_ != nullptr;
+  }
+  bool ready() const { return bytes_ != nullptr; }
+#endif
   size_t write(uint8_t byte) override {
     if (used() >= kWireQueueSize) { ++overflow_; return 0; }
     bytes_[write_++ & (kWireQueueSize - 1)] = byte;
@@ -568,7 +589,11 @@ class BridgeOutput : public Print {
     // handled by session retention; all consumer cursors remain bounded.
     return tcpEnabled_ ? write_ - tcpRead_ : write_ - usbRead_;
   }
+#ifdef SME105_BLE
+  uint8_t* bytes_ = nullptr;
+#else
   uint8_t bytes_[kWireQueueSize] = {};
+#endif
   uint32_t write_ = 0, usbRead_ = 0, tcpRead_ = 0, overflow_ = 0;
   uint32_t tcpSendErrors_ = 0, queueWatermark_ = 0;
   bool tcpEnabled_ = false, tcpSendFailed_ = false, otaTcpPrimary_ = false;
@@ -2745,9 +2770,12 @@ void tx2PadBench() {
   if (tx2BenchUsed || stage != IDLE || !stopLatched || slotArmed ||
       slotInFlight || nativeReady || refReady || transmitConsumed ||
       observeConsumed || !gateReady || !deTimer || !slotTimer ||
-      // Budget the entire bounded RMT edge report before producing any TX.
-      otaUpdating() || otaFirstBootPending || out.freeBytes() < 8192) {
+      otaUpdating() || otaFirstBootPending) {
     out.println(F("DENIED tx2_bench_used_or_busy")); return;
+  }
+  // Reserve the complete bounded report before consuming the one-shot latch.
+  if (out.freeBytes() < kTx2BenchReportBudget) {
+    out.println(F("DENIED tx2_bench_output_backpressure")); return;
   }
   tx2BenchUsed = true; // Consume even if UART initialization fails.
   tx2BenchPassed = false;
@@ -2945,7 +2973,7 @@ void tx2PadBench() {
     const size_t items = packet ? packetBytes / sizeof(rmt_item32_t) : 0;
     const bool complete = packet && packetBytes != 0 &&
                           packetBytes % sizeof(rmt_item32_t) == 0 &&
-                          items <= 48;
+                          items <= kTx2BenchMaxRmtItems;
     out.print(F("TX2_BENCH_RMT scope=GPIO17 source="));
     out.print(complete ? F("RMT_COMPLETE_PACKET") : F("NONE_OR_OVERFLOW"));
     out.print(F(" items=")); out.println(items);
@@ -4388,6 +4416,13 @@ void setup() {
   bootId = esp_random();
   padEvidence.boot = esp_random();
   Serial.begin(115200);
+#ifdef SME105_BLE
+  if (!out.begin()) {
+    deOff();
+    Serial.println(F("FAULT reason=OUTPUT_QUEUE_ALLOC no_transmit=1"));
+    return; // no timers, BLE, or command processing without the queue
+  }
+#endif
   deTimer = timerBegin(0, 80, true);
   if (deTimer) {
     timerAttachInterruptFlag(deTimer, &watchdogISR, false, ESP_INTR_FLAG_IRAM);
@@ -4417,6 +4452,9 @@ void setup() {
 #endif
 }
 void loop() {
+#ifdef SME105_BLE
+  if (!out.ready()) { delay(1000); return; }
+#endif
   serviceSignedOtaTimeout(); // works even when Wi-Fi socket polling exits early
   serviceOtaHealthAndRestart();
   if (sessionRetained &&

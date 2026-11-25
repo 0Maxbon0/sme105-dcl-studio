@@ -1,6 +1,6 @@
 {
   "appId": "com.maximizotech.sme105dclstudio",
-  "appName": "SME105 DCL Studio",
+  "appName": "EscortScope",
   "webDir": "app",
   "plugins": {
     "BluetoothLe": {

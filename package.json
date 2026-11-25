@@ -1,7 +1,7 @@
 {
-  "name": "sme105-dcl-studio-android",
+  "name": "escort-sme105-diagnostic-lab",
   "private": true,
-  "version": "1.0.0",
+  "version": "2.0.2",
   "type": "module",
   "scripts": {
     "native:bundle": "esbuild app/js/native-bridge-entry.js --bundle --format=esm --platform=browser --target=es2022 --outfile=app/vendor/native-bridge.js",

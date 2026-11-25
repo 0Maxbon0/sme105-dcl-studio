@@ -1,77 +1,117 @@
-# SME105 DCL Studio — Engineering Brief
+# EscortScope — engineering brief
 
-**Independent legacy Ford EEC-IV diagnostics research**  
-**Maintainer:** [MaximizoTech / @0Maxbon0](https://github.com/0Maxbon0)  
-**Target:** European 1998 Ford Escort, 1.6L Zetec-E, manual; EEC-IV SME-105 PCM, engineering number `97AB-12A650-KA`  
-**Prepared:** 11 November 2026
+**Independent automotive diagnostics and embedded-systems research**
 
-> This project is not developed, endorsed or certified by Ford Motor Company. The software is experimental and must not be treated as an authorized diagnostic product.
+- **Target under study:** European Ford Escort 1998, 1.6 Zetec-E, Ford EEC-IV SME-105 PCM (`97AB-12A650-KA`)
+- **Software source:** Android `2.0.2` / build `27`; ESP32 bridge firmware `30`
+- **Maintainer:** Basita (بسيطة) · **Status:** experimental research, not a certified diagnostic instrument
 
-## Purpose
+**25 November update:** The v30 BLE bridge passed the isolated TX2 self-test and initial DCL transmission with the ECU disconnected. Android v2.0.2 was installed and its brand motion verified. Vehicle ECU response is not established by these checks. See [current release notes](BRANDING_RELEASE.md).
 
-SME105 DCL Studio studies older Ford Diagnostic Communication Link (DCL) behavior and preserves timestamped raw evidence to make legacy diagnosis more reproducible. It combines embedded software, a locally connected Android application, offline capture/analysis, and experimental protocol research. The objective is **validated, reproducible interpretation**, not to present inferred command tables or decoded sensors as official Ford data.
+## The problem
 
-## System at a glance
+Legacy EEC-IV vehicles can expose data through Ford's Diagnostic Communication Link
+(DCL), but generic modern OBD-II apps cannot be assumed to understand this ECU's
+physical layer, data framing, commands or sensor scaling. Public material for
+other EEC-IV variants is useful research evidence, **not** proof of this PCM's
+capabilities.
 
-| Component | Implemented technology |
-| --- | --- |
-| Bridge | ESP32 / PlatformIO firmware; MAX487 interface integration, explicit safety gates, bounded UART telemetry |
-| Mobile client | Android + Capacitor/JavaScript; local-only WPA2 SoftAP, authenticated TCP, reconnect and heartbeat |
-| Evidence store | IndexedDB raw archives, timestamped RX/RXB, sequence deduplication and telemetry-gap accounting |
-| Recovery | 8,000-event static ring; 30-second session grace; sequence-aware bounded replay |
-| Research tools | Python capture/inspection, DCL experiment notes, host and native regression suites |
+The aim is to capture the **original bytes and timing first**, make the transport
+and storage robust, and keep unverified interpretations explicitly labeled.
 
-The telemetry ring stores `8,000 × 5 = 40,000` bytes of packed event data. The **30-second session retention grace period is not a guarantee of 30 seconds without data loss**: at 960 raw bytes/s the ring covers roughly 8.33 seconds. Overflow is represented by explicit sequence gap notices.
+## What we built
 
-## What has—and has not—been verified
+1. **Embedded bridge:** classic ESP32 with a MAX487-based DCL experiment
+   interface, receive-default safety controls, authenticated direct Wi-Fi
+   transport and a separately compiled BLE transport option.
+2. **Android field app:** offline-capable Capacitor/JavaScript UI with native
+   Android networking, connection/recovery handling, diagnostic sessions,
+   inspection tools, recorded experiment history and export.
+3. **Protocol and data tooling:** fixed-candidate DCL experiments, parsers,
+   timestamped telemetry, offline Python utilities, and regression tests.
+4. **Provisional PCB work:** editable KiCad R0 and more compact R1 concepts;
+   **neither design has been electrically qualified for vehicle use**.
 
-| Evidence | Status |
-| --- | --- |
-| Phone-to-ESP32 direct network connection | Observed on an isolated bench, documented 9 November 2026 |
-| Network recovery, deduplication and archived cursor behavior | Source-reviewed and exercised by host/JVM/Node integration tests in the 11 November revision |
-| ESP32 Wi-Fi/BLE firmware and Android debug builds | Reported successful for the 11 November source revision |
-| Physical Wi-Fi RF/thermal soak of the updated recovery implementation | **Not yet performed** |
-| Vehicle-bus electrical compatibility across EEC-IV revisions | **Not established** |
-| Complete OEM DCL command tables, PIDs and scaling | **Not established; mapping candidates retain explicit evidence labels** |
-| Root cause of elevated RPM while the vehicle moves | **Unproven diagnostic hypothesis** |
-| General road-use or actuator safety | **Not certified** |
+### System at a glance
 
-Research records distinguish **Observed**, **Reference**, **Inferred** and **Unknown** findings. A source-compiled command or decoded value is not proof that the target ECU supports or interprets it as expected.
+    Android UI / IndexedDB
+      -> native Android Wi-Fi plugin -> local-only WPA2 + TCP :8765
+      -> ESP32 firmware (auth, session state, safety gates, telemetry)
+      -> GPIO16/17/18 -> 5 V MAX487 interface -> candidate Ford DCL pair
+      -> only with vehicle-specific electrical and safety qualification
 
-## Research question: elevated RPM during movement
+The BLE build (`esp32dev_ble`) is a *separate firmware image* and uses
+NimBLE UART-style GATT transport; the primary deployed profile is
+Wi-Fi (`esp32dev`). An established direct Wi-Fi bench demonstration does
+not validate post-bench recovery changes against a moving vehicle.
 
-The target vehicle has motivated a diagnostic investigation of RPM remaining elevated after releasing the accelerator while moving, with behavior changing during deceleration or at standstill. Candidate explanations include idle-air/dashpot control, throttle and clutch-state inputs, VSS transitions, air leaks and PCM calibration.
+## Engineering highlights
 
-No specific ECU defect, superseded calibration or faulty component has been conclusively established. A GPS comparison supports the observed speed scaling but cannot on its own establish the ECU's entire VSS and idle-control behavior. [See the evidence-conscious high-idle diagnostic notes](high-idle-diagnosis.md).
+| Challenge | Implementation approach | Evidence boundary |
+| --- | --- | --- |
+| Direct phone-to-device link without router | ESP32 SoftAP at `10.77.13.1:8765`, Android native network binding | Direct pairing observed on isolated bench |
+| Network drop / WebView recreation | Native link ownership, connection epochs, heartbeat and bounded reconnect | Source and simulated regression, no full in-car RF soak |
+| Avoid missing or duplicated samples | 8,000-event firmware telemetry ring, session IDs, sequence-aware bounded resume | Finite replay window; **never** promises lossless recovery |
+| Defensible diagnostic conclusions | RAW + timestamps + metadata + archive hashes; qualify inferred PID meanings | ECU support/scaling remains vehicle-specific research |
+| Actuator/ECU bus safety | DE LOW by default, pad witness, per-boot bench proof, named and explicitly armed commands, STOP/fault shutdown | Bench proof cannot replace vehicle-side electrical qualification |
+| Reproducible engineering | JS/Python/JVM test harnesses, PlatformIO compile profiles and CI | Software PASS does not establish ECU or automotive safety |
 
-## Technical information requested from Ford or historical service-documentation holders
+## Hardware: prototype versus proposal
 
-We would welcome publicly shareable or appropriately licensable documentation, or referral to an official service-information channel, relating to:
+**Experimented hardware:** ESP32 development board with USB-UART, a
+5 V MAX487 board, 5 V-to-3.3 V RO translation, defined driver-enable
+pull-down and separate regulated/USB bench power. This is the existing
+hand-wired research interface; part variants and vehicle wiring must
+be re-verified physically.
 
-1. **PCM identification and calibration:** OEM calibration identification and supersession information applicable to `97AB-12A650-KA` / SME-105 / catch code KALE, subject to private VIN, engine, transmission and build-date confirmation.
-2. **Historical idle/drivability bulletins:** applicability and official diagnostic instructions for European Escort Zetec-E idle-hang symptoms; including material sometimes referenced in secondary discussions as TSB 74/2000, **without presuming applicability**.
-3. **EEC-IV DCL physical and wire protocol:** published interface requirements, framing, timing, response semantics and error handling.
-4. **Diagnostic data definitions:** confirmed identifiers, scaling formulas, parameter validity, strategy differences and safe read-only status queries.
-5. **Service tooling:** information about appropriate historical FDS 2000 / WDS / TIS materials and legitimate access paths.
+**PCB R1 (22 November 2026):** an approximately 95 × 60 mm four-layer
+KiCad **review design**, proposing an ESP32-WROOM-32UE module, MAX487,
+candidate LM5164-Q1/TPS62160 regulators, protected 12 V input and
+antenna/service connections. The PCB has **not** been fabricated,
+assembled, powered, or automotive qualified. The BOM contains
+unselected supplier parts; the OBD connector is a header placeholder;
+vehicle-facing resistor links remain **DNP**. See
+[hardware guide](HARDWARE_GUIDE.md) and [R1 review](../hardware/pcb-r1/README.md).
 
-We do **not** request proprietary ECU source code, manufacturer credentials, security bypasses or unauthorized programming methods.
+## Verification and uncertainty
 
-## How to review the code without hardware
+- **Observed:** a recorded raw vehicle capture or a specifically described
+  physical bench test; state its date, setup and exact observed behavior.
+- **Reference:** an external publication; compatibility with SME-105 is
+  still unconfirmed.
+- **Inferred:** a hypothesis or derived signal requiring independent proof.
+- **Unknown:** a feature, command, physical pin or scaling not verified.
 
-With Node.js 22 and Python 3.12+:
+The latest **local** source is ahead of GitHub's `origin/main` and differs
+from historical installed/built packages. Android `1.8.21`/build `23` is a
+source version, **not** a claim that a v1.8.21 APK was installed on the
+phone. Existing November 11 build artifacts for `1.8.18` are historical.
 
-```bash
-git clone https://github.com/0Maxbon0/sme105-dcl-studio.git
-cd sme105-dcl-studio
-npm ci && npm test
-python -m pip install -e .
-PYTHONPATH=src python -m unittest discover -s tests -q
-```
+## Open work before any wider hardware claim
 
-The [README](../README.md) links to source, architecture, firmware builds and dated evidence. Private raw captures are not required for the public software-first baseline (capture-dependent tests may skip). No live ECU operation is needed for this review.
+- Verify the exact diagnostic connector pins, physical signal direction,
+  pair polarity, grounding and termination using equipment and
+  vehicle-specific documentation.
+- Validate the proposed protected automotive power supply (transients,
+  reverse polarity, thermal, cranking, sleep current) and R1 fabrication
+  constraints.
+- Record firmware + phone model + run duration and raw results for
+  repeatable on-vehicle connection/drop recovery experiments.
+- Independently confirm ECU commands, DTC meanings, PID addresses,
+  timebases and units. Never use speculative mappings for vehicle control.
+- Complete a deliberate source/secret/license review before an external
+  repository release. This repository does **not** currently grant an
+  open-source redistribution license.
 
-## Collaboration and boundaries
+## Reader's map
 
-Public questions and technical corrections can be discussed in [GitHub Issues](https://github.com/0Maxbon0/sme105-dcl-studio/issues). See [CONTRIBUTING.md](../CONTRIBUTING.md) and [SECURITY.md](../SECURITY.md). Never post VINs, registration information, passwords, tokens, device backups or identifying raw captures in a public issue.
+[System architecture](ARCHITECTURE.md) ·
+[Application and firmware code walkthrough](CODE_WALKTHROUGH.md) ·
+[Hardware and parts](HARDWARE_GUIDE.md) ·
+[Local development](DEVELOPER_SETUP.md) ·
+[Evidence and references](REFERENCES.md) ·
+[Publication checklist](PUBLICATION_CHECKLIST.md)
 
-**Licensing:** The repository is currently public but has **no explicit open-source license**. Publication alone does not grant permission to reuse or redistribute the code; the maintainer must select a license separately.
+**Disclaimer:** Independent engineering project; not endorsed or supported
+by Ford Motor Company. It is not a driver aid, certified scanner,
+safe-to-plug-in automotive PCB, or validated diagnostic/actuator controller.

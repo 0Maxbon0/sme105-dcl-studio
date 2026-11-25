@@ -12,7 +12,7 @@ export function diagnosticTestReport(event) {
   const result = event.detail;
   const date = value => value ? `${new Date(value).toLocaleString()} (${new Date(value).toISOString()})` : "Not retained";
   const probe = result.dclProbe || null;
-  const lines = ["SME105 DCL Studio — saved diagnostic result", `Test: ${result.variant}`,
+  const lines = ["Escort SME-105 Diagnostic Lab — saved diagnostic result", `Test: ${result.variant}`,
     ...(probe ? [`DCL command word: ${probe.word}`, `Purpose: ${probe.description}`,
       ...(probe.parityNote ? [`Parity note: ${probe.parityNote}`] : []), `Source: ${probe.source} (${probe.sourceUrl})`,
       `Raw RO bytes observed: ${probe.responseBytes ?? "unknown"}`, "ECU ownership / command support: unverified"] : []),

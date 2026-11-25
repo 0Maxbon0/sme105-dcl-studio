@@ -1,0 +1,23 @@
+@import url("./sora/font-face.css");
+@import url("./readex-pro/font-face.css");
+:root { --basita-font-en: "Sora", sans-serif; --basita-font-ar: "Readex Pro", sans-serif; }
+html[lang="ar"], [lang="ar"] { font-family: var(--basita-font-ar); }
+html[lang="en"], [lang="en"] { font-family: var(--basita-font-en); }
+.basita-ar-display { font-family: "Readex Pro", sans-serif; font-weight: 700; font-size: 48px; line-height: 70px; letter-spacing: 0px; }
+.basita-ar-heading-h1 { font-family: "Readex Pro", sans-serif; font-weight: 700; font-size: 36px; line-height: 54px; letter-spacing: 0px; }
+.basita-ar-heading-h2 { font-family: "Readex Pro", sans-serif; font-weight: 600; font-size: 28px; line-height: 42px; letter-spacing: 0px; }
+.basita-ar-heading-h3 { font-family: "Readex Pro", sans-serif; font-weight: 600; font-size: 22px; line-height: 34px; letter-spacing: 0px; }
+.basita-ar-body-large { font-family: "Readex Pro", sans-serif; font-weight: 400; font-size: 18px; line-height: 32px; letter-spacing: 0px; }
+.basita-ar-body-base { font-family: "Readex Pro", sans-serif; font-weight: 400; font-size: 16px; line-height: 28px; letter-spacing: 0px; }
+.basita-ar-body-small { font-family: "Readex Pro", sans-serif; font-weight: 400; font-size: 14px; line-height: 25px; letter-spacing: 0px; }
+.basita-ar-label { font-family: "Readex Pro", sans-serif; font-weight: 500; font-size: 14px; line-height: 22px; letter-spacing: 0px; }
+.basita-ar-caption { font-family: "Readex Pro", sans-serif; font-weight: 400; font-size: 12px; line-height: 20px; letter-spacing: 0px; }
+.basita-en-display { font-family: "Sora", sans-serif; font-weight: 700; font-size: 48px; line-height: 60px; letter-spacing: 0px; }
+.basita-en-heading-h1 { font-family: "Sora", sans-serif; font-weight: 700; font-size: 36px; line-height: 46px; letter-spacing: 0px; }
+.basita-en-heading-h2 { font-family: "Sora", sans-serif; font-weight: 600; font-size: 28px; line-height: 38px; letter-spacing: 0px; }
+.basita-en-heading-h3 { font-family: "Sora", sans-serif; font-weight: 600; font-size: 22px; line-height: 32px; letter-spacing: 0px; }
+.basita-en-body-large { font-family: "Sora", sans-serif; font-weight: 400; font-size: 18px; line-height: 28px; letter-spacing: 0px; }
+.basita-en-body-base { font-family: "Sora", sans-serif; font-weight: 400; font-size: 16px; line-height: 25px; letter-spacing: 0px; }
+.basita-en-body-small { font-family: "Sora", sans-serif; font-weight: 400; font-size: 14px; line-height: 22px; letter-spacing: 0px; }
+.basita-en-label { font-family: "Sora", sans-serif; font-weight: 600; font-size: 14px; line-height: 20px; letter-spacing: 0px; }
+.basita-en-caption { font-family: "Sora", sans-serif; font-weight: 400; font-size: 12px; line-height: 18px; letter-spacing: 0px; }

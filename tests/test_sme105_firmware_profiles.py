@@ -160,8 +160,8 @@ class FirmwareProfileTests(unittest.TestCase):
         self.assertIn("elapsed < limit + 3000", active_loop)
         self.assertIn("!isRepeating(kVariantMemSingle)", SOURCE)
 
-    def test_mem_off0_is_explicitly_bench_tested_and_preserves_v29(self) -> None:
-        self.assertIn("kUsbInstalledBuildVersion = 29", SOURCE)
+    def test_mem_off0_is_explicitly_bench_tested_and_preserves_current_version(self) -> None:
+        self.assertIn("kUsbInstalledBuildVersion = 30", SOURCE)
         self.assertRegex(SOURCE, r"\bkVariantMemOff0\s*=\s*27\b")
         self.assertEqual(SOURCE.count("MEM_OFF0 adds offset 0 (bench-tested only)"), 2)
 
@@ -343,7 +343,7 @@ class MemMapSyntheticTests(unittest.TestCase):
             r"constexpr uint32_t kUsbInstalledBuildVersion = (\d+)", SOURCE
         )
         self.assertIsNotNone(installed_version)
-        self.assertEqual(f"fw={installed_version.group(1)}", "fw=29")
+        self.assertEqual(f"fw={installed_version.group(1)}", "fw=30")
         self.assertIn("void IRAM_ATTR uart1ISR(void*)", SOURCE)
         self.assertTrue(
             '"RXB t_us=%lu seq_start=%lu data="' in SOURCE

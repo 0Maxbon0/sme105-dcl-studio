@@ -34,3 +34,15 @@ android/app/build/
 android/build/
 artifacts/android/*.apk
 # Generated/installed APKs must be published as tagged release assets, not committed.
+
+# Local debug build collections (APK / firmware BIN / checksums). Keep copies
+# on disk; never stage generated binaries as source code.
+artifacts/build-*/
+
+# KiCad's per-user UI preferences and editor lockfiles are not CAD sources.
+**/*.kicad_prl
+**/~*.lck
+
+# Duplicated extracted review package; retain the original local directory,
+# but track curated editable hardware sources instead of zip extracts.
+hardware/pcb-r0/SME105-DCL-Bridge-PCB-R0-REVIEW/

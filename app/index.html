@@ -3,39 +3,70 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'self'">
-  <meta name="theme-color" content="#0e1116">
-  <meta name="color-scheme" content="dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; media-src 'self'; connect-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'self'">
+  <meta name="theme-color" content="#203B50">
+  <meta name="color-scheme" content="light dark">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>SME105 DCL Studio · EEC-IV</title>
+  <title>EscortScope · Ford Escort diagnostics by Basita</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=12">
+  <link rel="stylesheet" href="styles.css?v=18">
 </head>
 <body>
-  <header class="top">
-    <div>
-      <p class="eyebrow" data-str="shortTitle"></p>
-      <h1 data-str="appTitle"></h1>
+  <section id="startup-screen" class="startup-screen" aria-label="Starting EscortScope">
+    <div class="startup-content">
+      <img class="startup-product" src="icons/icon.svg" alt="">
+      <h2>EscortScope</h2>
+      <p class="startup-subtitle">FORD ESCORT · SME-105 / EEC-IV</p>
+      <img class="startup-loader" src="brand/motion/loading-transparent.svg" alt="">
+      <p id="startup-status" role="status" aria-live="polite">Preparing diagnostic workspace…</p>
+      <button type="button" id="startup-retry" hidden onclick="location.reload()">Retry startup</button>
     </div>
-    <div class="top-actions">
-      <span id="link-pill" class="pill" role="status">Disconnected</span>
-      <button id="connect-btn" type="button" class="connect-compact"></button>
-      <button id="stop-btn" type="button" class="danger" disabled data-str="stop"></button>
+    <div class="startup-owner"><span>Made by</span><img class="logo-light" src="brand/logos/basita-en-light.svg" alt="Basita"><img class="logo-dark" src="brand/logos/basita-en-dark.svg" alt="Basita"></div>
+  </section>
+  <script>
+    try {
+      const theme = localStorage.getItem("eeciv-theme") || "light";
+      document.body.dataset.theme = theme === "system" ? (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark") : theme;
+      document.body.classList.toggle("reduce-motion", localStorage.getItem("eeciv-reduce-motion") === "1");
+    } catch (_) { document.body.dataset.theme = "light"; }
+  </script>
+  <header class="top">
+    <div class="product-identity">
+      <img class="product-icon" src="icons/icon.svg" alt="">
+      <div><h1 data-str="appTitle"></h1><p class="eyebrow" data-str="shortTitle"></p></div>
+    </div>
+    <div class="owner-brand" aria-label="Made by Basita">
+      <span class="credit-by" aria-hidden="true">by</span>
+      <div class="credit-poster"><img id="credit-still" src="brand/motion/unravel-credit-light.png" alt="Made by Basita"></div>
+      <video id="owner-credit-video" muted loop playsinline preload="none" aria-hidden="true" tabindex="-1"></video>
+    </div>
+    <div class="connection-console">
+      <div class="connection-readout">
+        <span class="connection-caption">BRIDGE CONNECTION</span>
+        <span id="link-pill" class="pill" role="status">Disconnected</span>
+      </div>
+      <div class="top-actions">
+        <button id="connect-btn" type="button" class="connect-compact"></button>
+        <button id="stop-btn" type="button" class="danger" disabled data-str="stop"></button>
+      </div>
     </div>
   </header>
-  <p id="message" class="message" role="status"></p>
+  <div class="message-bar">
+    <span class="pending-motion" aria-hidden="true"><img class="logo-light" src="brand/motion/loading-light.svg" alt=""><img class="logo-dark" src="brand/motion/loading-dark.svg" alt=""></span>
+    <p id="message" class="message" role="status"></p>
+  </div>
   <main>
     <section id="view-live" class="view">
-      <div id="onboarding" class="onboarding" hidden>
-        <div><span class="step-number">1</span><p><strong id="onboarding-connect-step">Connect</strong><br><span>Pair the bridge when prompted.</span></p></div>
-        <div><span class="step-number">2</span><p><strong>Choose data · tap Start</strong><br><span>No ECU read runs before Start.</span></p></div>
-        <button id="dismiss-onboarding" class="icon-button" type="button" aria-label="Dismiss setup tips">×</button>
-      </div>
+      <section class="vehicle-hero" aria-label="Supported vehicle">
+        <div class="vehicle-copy"><span class="section-kicker">VEHICLE PROFILE</span><h2>Ford Escort</h2><p>1998 · SME-105 / EEC-IV</p><span class="vehicle-protocol">DCL diagnostics</span></div>
+        <img src="icons/escort-profile.svg" class="vehicle-art" alt="">
+      </section>
       <p id="live-banner" class="banner" hidden></p>
-      <div class="live-controls">
+      <section class="live-controls" aria-label="Start live diagnostics">
+        <div class="capture-heading"><h2>Live diagnostics</h2><span class="subtle-tag">Records locally</span></div>
         <label class="stack" for="live-set">Data set<select id="live-set">
           <option value="LIVE">Engine</option>
           <option value="LIVE2">Idle & switches</option>
@@ -43,25 +74,18 @@
           <option value="ALL">My diagnostics · ALL</option>
         </select></label>
         <button id="live-start" type="button" class="primary" data-str="startLive"></button>
-      </div>
-      <p id="live-set-help" class="help"></p>
-      <p id="live-meta" class="meta"></p>
-      <section class="recording-panel" aria-label="Saved recording review">
-        <strong id="review-mode" class="banner" hidden>Recorded Data — Offline Review</strong>
-        <div class="saved-recording-controls">
-          <label class="stack" for="saved-recordings">Select recording<select id="saved-recordings"></select></label>
-          <div class="recording-export-actions"><button id="saved-csv" type="button" disabled>Readings · CSV</button><button id="saved-log" type="button" disabled>Raw log · TXT</button></div>
-        </div>
-        <p id="review-selected" class="help" role="status"></p>
-        <div id="review-controls" hidden>
-          <div class="recording-export-actions"><button id="review-play" type="button">Play</button><button id="review-pause" type="button">Pause</button><button id="review-restart" type="button">Restart from beginning</button><button id="review-exit" type="button">Exit offline review</button></div>
-          <label class="stack">Recording position<input id="review-position" type="range" min="0" max="0" step="0.001" value="0"></label>
-          <output id="review-clock">0.0s / 0.0s</output>
-        </div>
+        <details class="dataset-explanation"><summary>About this data set</summary><p id="live-set-help" class="help"></p></details>
+        <p id="live-meta" class="meta"></p>
       </section>
+      <div id="onboarding" class="onboarding" hidden>
+        <div><span class="step-number">1</span><p><strong id="onboarding-connect-step">Connect</strong><br><span>Pair the bridge when prompted.</span></p></div>
+        <div><span class="step-number">2</span><p><strong>Choose data · tap Start</strong><br><span>No ECU read runs before Start.</span></p></div>
+        <button id="dismiss-onboarding" class="icon-button" type="button" aria-label="Dismiss setup tips">×</button>
+      </div>
       <section id="dashboard-overview" class="dashboard-overview" aria-label="Selected dashboard">
         <section id="pinned-section" class="pinned-section">
           <div class="section-heading"><h2 id="dashboard-title">My diagnostics</h2><button id="arrange-dashboard" type="button" aria-pressed="false">Arrange</button></div>
+          <details class="dashboard-customize"><summary>Customize dashboard</summary>
           <div class="dashboard-tools dashboard-layout-tools">
             <label>Card size<select id="dashboard-density"><option value="comfortable">Large cards</option><option value="small">Small cards</option><option value="dense">Dense cards</option><option value="compact">List</option></select></label>
             <label>Columns<select id="dashboard-columns"><option value="auto">Auto</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
@@ -70,6 +94,7 @@
           <p id="dashboard-context" class="help"></p>
           <p id="dashboard-hint" class="help">Tap a reading for its chart. Star other readings below to add them.</p>
           <p class="help dashboard-rotation-help">Rotate your phone for a wider dashboard. Card size and columns are saved on this device.</p>
+          </details>
           <div id="pinned-readings" class="pinned-grid">
             <div id="throttle-percent-card" class="pinned-card">
               <button type="button" class="pinned-open" data-open-pid="THROTTLE_PERCENT" aria-label="Throttle percentage. Open details.">
@@ -91,18 +116,32 @@
       </select></label><button id="export-group-btn" type="button">Export CSV</button></div></div>
       <p id="group-help" class="help group-help"></p>
       <div id="live-cards" class="cards" aria-live="polite"></div>
+      <details id="offline-review-panel" class="recording-panel dashboard-recording" aria-label="Saved recording review"><summary>Review saved recording</summary>
+        <strong id="review-mode" class="banner" hidden>Recorded Data — Offline Review</strong>
+        <div class="saved-recording-controls">
+          <label class="stack" for="saved-recordings">Select recording<select id="saved-recordings"></select></label>
+          <div class="recording-export-actions"><button id="saved-csv" type="button" disabled>Readings · CSV</button><button id="saved-log" type="button" disabled>Raw log · TXT</button></div>
+        </div>
+        <p id="review-selected" class="help" role="status"></p>
+        <div id="review-controls" hidden>
+          <div class="recording-export-actions"><button id="review-play" type="button">Play</button><button id="review-pause" type="button">Pause</button><button id="review-restart" type="button">Restart from beginning</button><button id="review-exit" type="button">Exit offline review</button></div>
+          <label class="stack">Recording position<input id="review-position" type="range" min="0" max="0" step="0.001" value="0"></label>
+          <output id="review-clock">0.0s / 0.0s</output>
+        </div>
+      </details>
       <section class="recording-panel" aria-labelledby="recordings-title">
         <div class="section-heading"><h2 id="recordings-title">Recordings &amp; exports</h2><span class="tag">On this phone</span></div>
         <p class="help recording-intro">Start &amp; save records automatically. Saved sessions stay available after you close the app.</p>
         <button id="csv-btn" type="button" class="primary" disabled>Export current session · CSV</button>
-        <p id="recording-status" class="help">Files save to Downloads/SME105 DCL Studio, then open the share sheet.</p>
+        <p id="recording-status" class="help">New files save to Downloads/Escort SME-105 Diagnostic Lab; earlier exports remain in their original folder.</p>
         <details class="recording-progress"><summary>Capture progress</summary><progress id="live-progress" max="100" value="0" aria-label="Capture progress"></progress></details>
       </section>
     </section>
     <section id="view-codes" class="view" hidden>
-      <h2>Faults and self-tests</h2>
+      <div class="page-heading"><span class="section-kicker">DIAGNOSTICS / DCL</span><h2>Faults &amp; self-tests</h2><p>Read fault memory and run supported ECU tests.</p></div>
       <div id="codes-link-warning" class="banner warning-banner" hidden>Bridge disconnected — tap <strong>Connect</strong> in the top header to enable fault tests.</div>
       <p id="codes-banner" class="banner" hidden></p>
+      <section class="action-panel fault-read-panel"><h3>Stored trouble codes</h3>
       <label class="stack" for="stored-code-mode">Stored-code request (read only)
         <select id="stored-code-mode" aria-describedby="stored-code-mode-help">
           <option value="0E">0E request · expected response mode 26H</option>
@@ -111,8 +150,11 @@
       </label>
       <p id="stored-code-mode-help" class="help">Choose one request for this read. The app will not try the other mode automatically. Decoded response bytes are not ECU verified unless the bridge explicitly reports that verification.</p>
       <button id="read-codes-btn" type="button" class="primary" data-str="readStored"></button>
-      <button id="koeo-btn" type="button" data-str="runKoeo"></button>
-      <button id="koer-btn" type="button" data-str="runKoer"></button>
+      </section>
+      <section class="action-panel self-test-panel"><h3>ECU self-tests</h3><div class="test-grid">
+        <div class="test-tile"><span class="test-code">KOEO</span><p>Ignition on · engine off</p><button id="koeo-btn" type="button" data-str="runKoeo"></button></div>
+        <div class="test-tile"><span class="test-code">KOER</span><p>Engine running · stationary</p><button id="koer-btn" type="button" data-str="runKoer"></button></div>
+      </div></section>
       <details class="history-panel"><summary>KOER preparation and operator journal</summary>
         <p>Do not start an engine-running test with raw-petrol odor or unstable idle. Use a qualified technician and a validated vehicle procedure, outdoors, stationary, in neutral, parking brake applied. No accelerator, steering or brake action is requested by the timer or result codes. Stop remains available at the top of the app.</p>
         <p>Optional markers below record actions already reported by the operator. They do not instruct an action or prove ECU acceptance.</p>
@@ -124,9 +166,10 @@
         <pre id="koer-operator-history" style="white-space:pre-wrap;overflow-wrap:anywhere" aria-label="Saved KOER operator events"></pre>
       </details>
       <p id="koer-prompt" class="banner warn" hidden></p>
+      <section class="action-panel fault-results-panel"><h3>Test results</h3>
       <label class="meter"><span data-str="koeoProgress"></span><progress id="codes-progress" max="100" value="0"></progress></label>
       <p id="codes-meta" class="meta"></p>
-      <ul id="codes-list" class="results"></ul>
+      <ul id="codes-list" class="results"></ul></section>
       <section class="history-panel" aria-label="Saved fault tests">
         <h3>Saved fault searches and self-tests</h3>
         <p class="help">Every completed stored-code search, KOEO, and KOER test is saved automatically with its date, time, decoded codes, and capture status.</p>
@@ -147,7 +190,7 @@
       </details>
     </section>
     <section id="view-kline" class="view" hidden>
-      <h2>K-Line / Pin 7</h2>
+      <div class="page-heading"><span class="section-kicker">ENGINEERING / OFFLINE</span><h2>K-Line / Pin 7</h2><p>Offline evidence and simulation tools.</p></div>
       <p id="kline-bridge" class="help"></p>
       <p class="banner warn" role="status">Hardware Required / Not Connected · Hardware RX disabled · TX prohibited</p>
       <p>Pin 7 ISO9141 is separate from DCL and STO. A dedicated automotive K-Line transceiver is required. MAX487 and BSS138 are unsuitable. GPIO19 is an unconnected future candidate, with no qualified receiver backend.</p>
@@ -165,7 +208,7 @@
       <pre id="kline-raw" class="mono" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
     </section>
     <section id="view-tools" class="view" hidden>
-      <h2>Settings</h2>
+      <div class="page-heading"><span class="section-kicker">PREFERENCES</span><h2>Settings</h2><p>Connection, vehicle and display preferences.</p></div>
       <p id="secure-warning" class="banner warn" hidden></p>
       <p id="bt-warning" class="banner warn" hidden></p>
 
@@ -189,6 +232,8 @@
               <option value="ble">Bluetooth (Legacy)</option>
             </select>
           </label>
+          <button id="ble-choose-device" type="button" hidden>Choose another Bluetooth bridge</button>
+          <p id="ble-firmware-help" class="help" hidden>Bluetooth needs the BLE-enabled ESP32 firmware. The Wi-Fi-only ESP32 firmware cannot advertise the SME105 Bluetooth service; changing this setting alone does not switch ESP32 firmware.</p>
           <section id="wifi-config-section" class="wifi-config" aria-labelledby="wifi-config-title">
             <div class="wifi-config-heading">
               <h4 id="wifi-config-title">Wi-Fi Bridge</h4>
@@ -281,7 +326,10 @@
             <h4>Local Storage &amp; Privacy</h4>
             <p class="help">Offline diagnostic data is private to this installed app. Chrome PWA recordings use separate storage: export them in the old app, then import or retain the files separately. Nothing migrates automatically.</p>
           </div>
-          <p class="about-version-line"><span data-str="aboutVersion"></span> <strong id="about-version">1.8.17</strong></p>
+          <section class="product-about"><img class="about-product-icon" src="icons/icon.svg" alt=""><div><h3>EscortScope</h3><p class="help">Ford Escort SME-105 / EEC-IV diagnostics</p></div></section>
+          <div class="about-owner"><img class="owner-logo logo-light" src="brand/logos/basita-ar-light.svg" alt="بسيطة" lang="ar"><img class="owner-logo logo-dark" src="brand/logos/basita-ar-dark.svg" alt="بسيطة" lang="ar"><div><strong>Developed by Basita</strong><p class="help">Independent Ford Escort SME-105 / EEC-IV diagnostic research. Not affiliated with Ford.</p></div></div>
+          <details class="settings-subdetail"><summary>Basita motion &amp; sound</summary><p class="help">The official loading motion appears only while a connection is pending. Sound is silent by default. Preview the original sonic identity here.</p><div class="sound-preview"><button id="preview-brand-sound" type="button">Play signature</button><audio id="brand-sound" preload="none" src="brand/audio/basita-resolution-micro.mp3"></audio><span id="brand-sound-status" role="status" class="help"></span></div></details>
+          <p class="about-version-line"><span data-str="aboutVersion"></span> <strong id="about-version">2.0.2</strong></p>
           <details class="settings-subdetail">
             <summary>Demo Mode Simulation</summary>
             <label class="check"><input id="demo-toggle" type="checkbox"> <span data-str="demoOn"></span></label>
@@ -315,7 +363,7 @@
 
     <!-- Dedicated Engineering Lab, accessible from the six-tab bottom navigation -->
     <section id="view-lab" class="view" hidden>
-      <h2>Engineering Lab</h2>
+      <div class="page-heading"><span class="section-kicker">ADVANCED / SME-105</span><h2>Engineering Lab</h2><p>Protocol research, controlled commands and bridge tools.</p></div>
 
       <div id="dcl-link-warning" class="banner warning-banner" hidden>
         Bridge disconnected — tap <strong>Connect</strong> in the top header to enable candidate tests.
@@ -506,7 +554,8 @@
       </details>
     </section>
     <section id="view-log" class="view" hidden>
-      <h2>History and diagnostics</h2>
+      <div class="page-heading"><span class="section-kicker">LOCAL RECORDINGS</span><h2>Session history</h2><p>Review, compare and export recorded evidence.</p></div>
+      <section class="action-panel history-actions"><h3>Recording workspace</h3><p class="help">Open a saved recording on the dashboard for playback and readings.</p><button id="open-recording-review" type="button" class="primary">Review a recording</button></section>
       <details class="history-panel" id="analysis-panel" open>
         <summary>Analysis &amp; Reverse Engineering</summary>
         <p class="help">History → Select Recording → Inspect Frames → Compare → Export Analysis. Inspection and notes are stored separately from the raw recording.</p>
@@ -623,6 +672,6 @@
     <button id="ignition-review" type="button" hidden>Ignition confirmation pending · Review</button>
   </div>
   <script src="vendor/jszip.min.js"></script>
-  <script type="module" src="js/app.js?v=19"></script>
+  <script type="module" src="js/app.js?v=27" onerror="document.getElementById('startup-status').textContent='Could not load the application.';document.getElementById('startup-retry').hidden=false"></script>
 </body>
 </html>

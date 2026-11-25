@@ -1,16 +1,31 @@
 {
-  "name": "SME105 DCL Studio · EEC-IV",
-  "short_name": "DCL Studio",
-  "description": "Offline Bluetooth diagnostics for a 1998 European Ford Escort 1.6 Zetec EEC-IV ECU.",
+  "name": "EscortScope",
+  "short_name": "EscortScope",
+  "description": "Independent Ford Escort SME-105 / EEC-IV diagnostics, designed by Basita.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#0e1116",
-  "theme_color": "#0e1116",
+  "background_color": "#F5F7F3",
+  "theme_color": "#203B50",
   "lang": "en",
   "icons": [
-    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
-    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
   ]
 }

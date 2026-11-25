@@ -1,5 +1,8 @@
 # SME-105 Ford DCL: one-image interactive USB + Wi-Fi bridge (engineering candidate)
 
+> **25 November 2026 — v30:** BLE output queue capacity increased to 8 KiB with a 6 KiB bounded TX2 bench report reservation; Wi-Fi retains its existing 16 KiB queue. BLE allocation occurs once at startup and fails closed. Both profiles compiled; the BLE image was flashed to the physical bridge, verified and exercised from Android on an isolated bench. TX2 passed and initial DCL transmission occurred, but no vehicle ECU response was tested. The following v29 deployment note is historical.
+
+
 > **Current deployment note (2026-11-09):** The **v29 Wi-Fi `esp32dev`** image and **Android v1.8.17** have been installed; the owner reports successful direct phone↔ESP32 pairing and an isolated bench LED/output demonstration with the ECU disconnected. One **WPA2 passphrase** is required, with derived TCP `AUTH` and no separate user token. The *older STA/router, 32-character random AP password, USB-token instructions and v8/v9 paragraphs below are historical design notes*, not today's normal user workflow. Use [the maintained direct Wi-Fi setup](../../docs/wifi_bridge_architecture_and_setup.md), [current README](../../README.md) and [reference index](../../docs/REFERENCES.md). ECU DCL response and vehicle safety remain independently unverified.
 
 **Status: USB/Wi-Fi bench verified, TX2 local pad proof verified; NOT validated on this ECU or approved for live diagnostic use.**

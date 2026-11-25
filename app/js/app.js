@@ -6,7 +6,7 @@ import { warningsForDiagnosticSession } from "./dtc-history.js";
 import { wireKline } from "./kline-ui.js";
 import { createKoerGuide } from "./koer-guide.js";
 import { BleTransport, bluetoothAvailable } from "./ble.js";
-import { WifiTransport, DIRECT_AP_SSID } from "./wifi.js";
+import { WifiTransport, DIRECT_AP_SSID, nativeWifiProfileMatches } from "./wifi.js";
 import { createController, candidateRequiresOperatorConfirmation, candidateRequiredStateText } from "./controller.js";
 import { createCartDecoder } from "./cart.js";
 import { APP_VERSION, createLineBuffer, DCL_BLOCKED_CANDIDATES, EXPERIMENT_CATALOGUE, MEM_EXPERIMENTS, VARIANTS, firmwareCompatibility, parseLine } from "./protocol.js";
@@ -38,6 +38,9 @@ let previousSessionKey = "";
 const previousFreshness = new Map();
 let wired = false;
 let resumeWork = null;
+let transportSwitchWork = null;
+let connectWork = null;
+let wifiProfileRejectionWork = null;
 let protectedCapture = false;
 let trackedArchiveId = "";
 let operatorSave = Promise.resolve(false);
@@ -345,30 +348,74 @@ function acceptText(chunk) {
 }
 
 const ble = new BleTransport({
-  onLine(line) { controller.handleLine(line); },
-  onDisconnect() { handleTransportDisconnect(); },
+  onLine(line) { if (transport === ble && !transportSwitchWork) controller.handleLine(line); },
+  onDisconnect() { if (transport === ble && !transportSwitchWork) handleTransportDisconnect(); },
   onError(error) {
-    handleTransportDisconnect(`Bluetooth transport failed: ${error?.message || String(error)}`);
+    if (transport === ble && !transportSwitchWork) {
+      handleTransportDisconnect(`Bluetooth transport failed: ${error?.message || String(error)}`);
+    }
   },
 });
 
 const wifi = new WifiTransport({
-  onLine(line) { controller.handleLine(line); },
-  onDisconnect() { handleTransportDisconnect(); },
+  onLine(line) { if (transport === wifi && !transportSwitchWork) controller.handleLine(line); },
+  onDisconnect() { if (transport === wifi && !transportSwitchWork) handleTransportDisconnect(); },
   onError(error) {
-    handleTransportDisconnect(`Wi-Fi transport failed: ${error?.message || String(error)}`);
+    if (transport === wifi && !transportSwitchWork) {
+      handleTransportDisconnect(`Wi-Fi transport failed: ${error?.message || String(error)}`);
+    }
   },
   onStatus(status) {
+    if (transport !== wifi || transportSwitchWork) return;
     controller.state.transportStatus = status;
     renderApp(controller.state);
   },
   onReconnected(metadata) {
+    // An explicit Connect owns the identity handshake until it completes.
+    // A late native reconnect event must not run a second HELLO/PINS sequence.
+    if (transport !== wifi || transportSwitchWork || connectWork || wifiProfileRejectionWork) return;
+    if (!nativeWifiProfileMatches(metadata?.profile, wifiConfig())) {
+      void rejectMismatchedWifiProfile();
+      return;
+    }
     if (restoredRecovery && !restoredRecovery.resumeAcknowledged) restoredRecovery.connectionNotified = true;
     controller.onConnected("ESP32 Wi-Fi", "wifi", { reconnected: true, ...metadata });
     void syncRecordingProtection(wifi);
     renderApp(controller.state);
   },
 });
+
+function rejectMismatchedWifiProfile() {
+  if (wifiProfileRejectionWork) return wifiProfileRejectionWork;
+  const message = "Old Wi-Fi bridge profile no longer matches Settings. Connect to the selected bridge again.";
+  recordDiagnosticEvent("WIFI_RECONNECTED_PROFILE_REJECTED", { activeCapture: !!controller.state.op }, "error");
+  // Revoke the controller's recovery authority synchronously. Otherwise an
+  // in-flight foreground reconcile can RESUME the authenticated OLD socket
+  // while Android is still waiting for async listener/native teardown.
+  if (controller.state.op) controller.abortUnrecoverableRecovery(message);
+  else controller.onDisconnected();
+  controller.state.transportStatus = "disconnected";
+  controller.state.message = message;
+  renderApp(controller.state);
+  const rejection = wifi.disconnect().then(() => {
+    // WifiTransport.disconnect fires its own onDisconnect exactly once.
+    // Never invoke handleTransportDisconnect a second time here.
+    if (transport === wifi && !transportSwitchWork) {
+      controller.state.message = message;
+      renderApp(controller.state);
+    }
+  }).catch(error => {
+    recordDiagnosticEvent("WIFI_PROFILE_DISCONNECT_FAILED", { message: String(error?.message || error) }, "error");
+    if (transport === wifi && !transportSwitchWork) {
+      controller.state.message = message;
+      renderApp(controller.state);
+    }
+  }).finally(() => {
+    if (wifiProfileRejectionWork === rejection) wifiProfileRejectionWork = null;
+  });
+  wifiProfileRejectionWork = rejection;
+  return rejection;
+}
 
 function demoEnabled() {
   return document.getElementById("demo-toggle").checked;
@@ -381,6 +428,10 @@ function demoKey() {
 function updateBluetoothWarning() {
   const warning = document.getElementById("bt-warning");
   if (warning) warning.hidden = configuredTransport() !== "ble" || bluetoothAvailable() || demoEnabled();
+  const chooser = document.getElementById("ble-choose-device");
+  if (chooser) chooser.hidden = configuredTransport() !== "ble";
+  const firmwareHelp = document.getElementById("ble-firmware-help");
+  if (firmwareHelp) firmwareHelp.hidden = configuredTransport() !== "ble";
 }
 
 /** Simulation is only allowed after the operator deliberately enables Demo mode. */
@@ -568,6 +619,56 @@ function configuredTransport() {
   return value === "ble" ? "ble" : "wifi";
 }
 
+function wifiProfileEditAllowed() {
+  // Never mutate the expected bridge profile while a live or recovering
+  // native owner can send a reconnected callback for the previous device.
+  // Recreated WebViews with an unknown native owner are covered separately
+  // by the authenticated-profile check in onReconnected/reconcile/connect.
+  return !connectWork && !resumeWork && !transportSwitchWork &&
+    !wifiProfileRejectionWork &&
+    !controller.state.op && controller.state.phase === "idle" &&
+    !["ready", "reconnecting"].includes(controller.state.link) &&
+    !wifi.connectionWanted && !wifi.connected && !wifi.reconnecting && !wifi.connecting;
+}
+
+async function changeConfiguredTransport(requested, select) {
+  const next = requested === "ble" ? "ble" : "wifi";
+  const previous = configuredTransport();
+  if (next === previous) return;
+  if (connectWork || resumeWork || transportSwitchWork || wifiProfileRejectionWork || controller.state.op ||
+      controller.state.phase !== "idle") {
+    select.value = previous;
+    controller.state.message = "Stop the current operation or connection attempt before changing Wi-Fi/Bluetooth.";
+    renderApp(controller.state);
+    return;
+  }
+  transportSwitchWork = (async () => {
+    const oldTransport = previous === "ble" ? ble : wifi;
+    // The native Wi-Fi owner survives UI restarts. Revoke it *before*
+    // persisting the new selection so foreground recovery cannot revive it.
+    if (!demoEnabled()) await oldTransport.disconnect(previous === "ble" ? { forget: false } : undefined);
+    if (transport === oldTransport) {
+      transport = null;
+      controller.onDisconnected();
+    }
+    selectedTransport = next;
+    writeStorage("sme105-transport", next);
+    recordDiagnosticEvent("TRANSPORT_CHANGED", { from: previous, to: next }, "transport");
+    controller.state.message = `Transport switched to ${next === "ble" ? "Bluetooth" : "Wi-Fi"}. Tap Connect to start.`;
+  })();
+  try {
+    await transportSwitchWork;
+  } catch (error) {
+    select.value = previous;
+    controller.state.message = `Could not safely switch transport: ${error?.message || String(error)}`;
+    recordDiagnosticEvent("TRANSPORT_CHANGE_FAILED", { from: previous, to: next, reason: controller.state.message }, "error");
+  } finally {
+    transportSwitchWork = null;
+    updateBluetoothWarning();
+    renderApp(controller.state);
+  }
+}
+
 function wifiConfig() {
   return {
     mode: "ap",
@@ -648,6 +749,7 @@ async function refreshWifiPasswordStatus() {
 async function reconcileBridgeConnection() {
   if (demoEnabled()) return;
   if (resumeWork) return resumeWork;
+  if (connectWork || transportSwitchWork || wifiProfileRejectionWork) return;
   const activeKey = controller.state.transport === "wifi" || controller.state.transport === "ble"
     ? controller.state.transport : configuredTransport();
   const active = activeKey === "ble" ? ble : wifi;
@@ -657,11 +759,24 @@ async function reconcileBridgeConnection() {
   controller.state.recovering = true;
   renderApp(controller.state);
   resumeWork = (async () => {
+    if (activeKey === "wifi") {
+      const nativeStatus = await wifi.getNativeStatus();
+      if (connectWork || transportSwitchWork || wifiProfileRejectionWork || transport !== active) return;
+      if ((nativeStatus?.connected || nativeStatus?.reconnecting || nativeStatus?.connecting ||
+           nativeStatus?.reconnectScheduled) && !nativeWifiProfileMatches(nativeStatus, wifiConfig())) {
+        // The user may have changed the SSID while the old Android socket
+        // owner was alive. It must never silently take over a different bridge.
+        void rejectMismatchedWifiProfile();
+        return;
+      }
+    }
     const result = await active.reconcile();
+    if (connectWork || transportSwitchWork || wifiProfileRejectionWork || transport !== active) return;
     recordDiagnosticEvent(`${activeKey.toUpperCase()}_FOREGROUND_CHECK`, { connected: result.connected, reconnected: !!result.reconnected }, activeKey);
     const restoringWifi = !!restoredRecovery && activeKey === "wifi" &&
       !restoredRecovery.resumeAcknowledged && !restoredRecovery.connectionNotified;
     if (result.connected && (!restoredRecovery || active.authenticated === true)) await syncRecordingProtection(active);
+    if (connectWork || transportSwitchWork || wifiProfileRejectionWork || transport !== active) return;
     if (restoringWifi && result.connected && active.authenticated !== true) {
       controller.state.wifiAuthenticated = false;
       controller.state.message = "Wi-Fi is connected but not authenticated; waiting for native recovery";
@@ -693,12 +808,34 @@ async function reconcileBridgeConnection() {
   return resumeWork;
 }
 
-async function connect() {
+function connect() {
+  if (connectWork) return connectWork;
+  // Settings changes and Connect clicks share one flight. This prevents a
+  // stale Wi-Fi owner from racing the first Bluetooth attempt.
+  const action = (async () => {
+    if (transportSwitchWork) await transportSwitchWork;
+    if (wifiProfileRejectionWork) await wifiProfileRejectionWork;
+    return connectOnce();
+  })();
+  const tracked = action.finally(() => {
+    if (connectWork === tracked) connectWork = null;
+  });
+  connectWork = tracked;
+  return tracked;
+}
+
+async function connectOnce() {
   if (resumeWork) return resumeWork;
   const button = document.getElementById("connect-btn");
   button.disabled = true;
   recordDiagnosticEvent("TRANSPORT_CONNECT_REQUESTED", { demo: demoEnabled(), transport: configuredTransport() }, "transport");
   try {
+    // Never turn an explicit Connect click into a forced stop of a still
+    // recoverable vehicle capture; only Stop may end that session.
+    if (controller.state.op && controller.state.link === "reconnecting") {
+      controller.state.message = "The active recording is reconnecting. Use Stop to end it before starting a new connection.";
+      return;
+    }
     if (controller.state.link === "ready" || controller.state.link === "denied") {
       await transport?.disconnect();
       return;
@@ -741,6 +878,34 @@ async function connect() {
         return;
       }
       transport = wifi;
+      if (nativeApp()) {
+        const nativeStatus = await wifi.getNativeStatus();
+        if (nativeStatus?.connected && nativeStatus?.authenticated &&
+            nativeWifiProfileMatches(nativeStatus, config)) {
+          // Reuse a genuinely authenticated native session after a WebView
+          // recreation, rather than create a second socket and get "busy".
+          const existing = await wifi.reconcile();
+          if (existing?.connected) {
+            const state = controller.onConnected("ESP32 Wi-Fi", "wifi", { reconnected: !!existing.reconnected });
+            controller.state.transportStatus = state?.resumed ? "connected" : "authenticating";
+            controller.state.wifiAuthenticated = wifi.authenticated === true;
+            if (controller.state.wifiAuthenticated) controller.state.identity.auth = "OK";
+            recordDiagnosticEvent("WIFI_NATIVE_OWNER_REATTACHED", { authenticated: true }, "wifi");
+            await syncRecordingProtection(wifi);
+            return;
+          }
+        }
+        const phase = String(nativeStatus?.connectionState ?? "");
+        if (nativeStatus?.reconnecting || nativeStatus?.reconnectScheduled ||
+            nativeStatus?.attemptInProgress || nativeStatus?.connected ||
+            ["connecting", "reconnecting", "disconnecting"].includes(phase)) {
+          // 51 failures in the Nov 11 phone journal were this exact stale
+          // native reconnect owner. The operator's Connect click explicitly
+          // cancels it and waits for teardown before a fresh connection.
+          recordDiagnosticEvent("WIFI_MANUAL_RECONNECT_RESET", { previousState: phase || "unknown" }, "wifi");
+          await wifi.disconnect();
+        }
+      }
       const conn = await wifi.connect(config);
       if (typedPasswordValid) {
         passwordInput.value = "";
@@ -755,6 +920,10 @@ async function connect() {
       controller.state.transportStatus = "connecting";
       renderApp(controller.state);
       transport = ble;
+      // Native Wi-Fi reconnect intent survives WebView recreation. A Bluetooth
+      // selection must revoke that owner even if this JS instance never
+      // established Wi-Fi itself.
+      if (nativeApp()) await wifi.disconnect();
       const device = await ble.connect();
       const connectionState = controller.onConnected(device.name || "SME105", "ble");
       controller.state.transportStatus = connectionState?.resumed ? "connected" : "authenticating";
@@ -817,8 +986,49 @@ function chooseLiveSet(value) {
   writeStorage("eeciv-live-set", value);
 }
 
+// Muted owner motion, never coupled to diagnostic communication.
+function syncOwnerCredit() {
+  const video = document.getElementById("owner-credit-video");
+  const still = document.getElementById("credit-still");
+  if (!video || !still) return;
+  const owner = video.parentElement;
+  const theme = document.body.dataset.theme === "dark" ? "dark" : "light";
+  const poster = `brand/motion/unravel-credit-${theme}.png`;
+  if (still.getAttribute("src") !== poster) still.setAttribute("src", poster);
+  video.poster = poster;
+  const reduce = document.body.classList.contains("reduce-motion") ||
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  const ready = document.getElementById("startup-screen")?.hidden;
+  if (!ready || document.hidden || reduce || !video.canPlayType?.("video/mp4")) {
+    owner.dataset.playing = "false";
+    if (!video.paused) video.pause();
+    return;
+  }
+  const source = `brand/motion/unravel-credit-${theme}.mp4`;
+  if (video.getAttribute("src") !== source) {
+    owner.dataset.playing = "false";
+    video.setAttribute("src", source);
+  }
+  video.muted = true;
+  if (video.paused) {
+    const playing = video.play();
+    playing?.catch(() => { owner.dataset.playing = "false"; });
+  }
+}
+
+function startupStatus(message) {
+  const status = document.getElementById("startup-status");
+  if (status) status.textContent = message;
+}
+
+function finishStartup() {
+  const screen = document.getElementById("startup-screen");
+  if (screen) screen.hidden = true;
+  syncOwnerCredit();
+}
+
 function applyDisplayPreferences() {
-  const theme = readStorage("eeciv-theme") || "system";
+  const theme = readStorage("eeciv-theme") || "light";
   const effectiveTheme = theme === "system"
     ? (window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark")
     : theme;
@@ -826,6 +1036,7 @@ function applyDisplayPreferences() {
   document.body.classList.toggle("large-text", readStorage("eeciv-font-size") === "large");
   document.body.classList.toggle("high-contrast", readStorage("eeciv-high-contrast") === "1");
   document.body.classList.toggle("reduce-motion", readStorage("eeciv-reduce-motion") === "1");
+  syncOwnerCredit();
 }
 
 async function startLive() {
@@ -1228,6 +1439,14 @@ async function restoreLastDiagnosticResult() {
 }
 
 function wire() {
+  const ownerVideo = document.getElementById("owner-credit-video");
+  ownerVideo?.addEventListener("playing", () => { ownerVideo.parentElement.dataset.playing = "true"; });
+  ownerVideo?.addEventListener("pause", () => { ownerVideo.parentElement.dataset.playing = "false"; });
+  ownerVideo?.addEventListener("error", () => { ownerVideo.parentElement.dataset.playing = "false"; });
+  window.matchMedia?.("(prefers-reduced-motion: reduce)").addEventListener?.("change", syncOwnerCredit);
+  window.matchMedia?.("(prefers-color-scheme: dark)").addEventListener?.("change", () => {
+    if (readStorage("eeciv-theme") === "system") applyDisplayPreferences();
+  });
   applyStaticStrings();
   analysisUI = initAnalysisUI();
   const blockedList = document.getElementById("dcl-probe-blocked");
@@ -1251,13 +1470,34 @@ function wire() {
   document.getElementById("wifi-port").value = readStorage("sme105-wifi-port") || "8765";
   document.getElementById("wifi-ip").readOnly = true;
   document.getElementById("transport-select").addEventListener("change", event => {
-    selectedTransport = event.target.value === "ble" ? "ble" : "wifi";
-    writeStorage("sme105-transport", selectedTransport);
-    updateBluetoothWarning();
+    void changeConfiguredTransport(event.target.value, event.target);
+  });
+  document.getElementById("ble-choose-device").addEventListener("click", () => {
+    try {
+      ble.forgetRememberedDevice();
+      controller.state.message = "Saved Bluetooth device selection cleared. Tap Connect to choose the SME105 bridge.";
+      recordDiagnosticEvent("BLE_DEVICE_RESELECT_REQUESTED", {}, "bluetooth");
+    } catch (error) {
+      controller.state.message = error?.message || String(error);
+    }
     renderApp(controller.state);
   });
-  document.getElementById("wifi-ssid").addEventListener("change", event => writeStorage("sme105-wifi-ssid", event.target.value.trim()));
+  document.getElementById("wifi-ssid").addEventListener("change", event => {
+    if (!wifiProfileEditAllowed()) {
+      event.target.value = wifiSsid();
+      controller.state.message = "Disconnect and stop the active operation before changing the Wi-Fi bridge SSID.";
+      renderApp(controller.state);
+      return;
+    }
+    writeStorage("sme105-wifi-ssid", event.target.value.trim());
+  });
   document.getElementById("wifi-port").addEventListener("change", event => {
+    if (!wifiProfileEditAllowed()) {
+      event.target.value = readStorage("sme105-wifi-port") || "8765";
+      controller.state.message = "Disconnect and stop the active operation before changing the Wi-Fi bridge port.";
+      renderApp(controller.state);
+      return;
+    }
     const port = Number(event.target.value);
     if (Number.isInteger(port) && port >= 1 && port <= 65535) writeStorage("sme105-wifi-port", String(port));
     else event.target.value = readStorage("sme105-wifi-port") || "8765";
@@ -1309,7 +1549,7 @@ function wire() {
   if (["LIVE", "LIVE2", "LIVE3", "ALL"].includes(selectedSet)) chooseLiveSet(selectedSet);
   const selectedGroup = readStorage("eeciv-live-group");
   if (["overview", "engine", "fuel", "temp", "switches", "advanced"].includes(selectedGroup)) document.getElementById("live-group").value = selectedGroup;
-  document.getElementById("theme-mode").value = readStorage("eeciv-theme") || "system";
+  document.getElementById("theme-mode").value = readStorage("eeciv-theme") || "light";
   document.getElementById("unit-system").value = readStorage("eeciv-unit-system") || "metric";
   document.getElementById("font-size").value = readStorage("eeciv-font-size") || "normal";
   document.getElementById("high-contrast").checked = readStorage("eeciv-high-contrast") === "1";
@@ -1429,6 +1669,27 @@ function wire() {
       renderApp(controller.state);
     });
   });
+  document.getElementById("open-recording-review")?.addEventListener("click", () => {
+    showView("live");
+    recordDiagnosticEvent("SCREEN_VIEW", { view: "live" }, "ui");
+    renderApp(controller.state);
+    const panel = document.getElementById("offline-review-panel");
+    panel.open = true;
+    panel.scrollIntoView?.({ block: "start", behavior: "auto" });
+  });
+  const brandAudio = document.getElementById("brand-sound");
+  const brandPreview = document.getElementById("preview-brand-sound");
+  const brandSoundStatus = document.getElementById("brand-sound-status");
+  brandPreview?.addEventListener("click", async () => {
+    if (!brandAudio.paused) { brandAudio.pause(); brandAudio.currentTime = 0; brandPreview.textContent = "Play signature"; return; }
+    try {
+      brandAudio.volume = .45;
+      await brandAudio.play();
+      brandPreview.textContent = "Stop preview";
+      brandSoundStatus.textContent = "";
+    } catch { brandSoundStatus.textContent = "Sound playback unavailable."; }
+  });
+  brandAudio?.addEventListener("ended", () => { brandPreview.textContent = "Play signature"; });
   const openLabBtn = document.getElementById("open-engineering-lab");
   if (openLabBtn) {
     openLabBtn.addEventListener("click", () => {
@@ -1576,10 +1837,10 @@ function wire() {
   document.getElementById("saved-csv").addEventListener("click", () => downloadSaved("csv"));
   document.getElementById("saved-log").addEventListener("click", () => downloadSaved("raw"));
   reviewControls.wire();
-  void reviewControls.refresh();
-  void refreshPendingIgnition(true).catch(error => { controller.state.message = `Recording storage unavailable: ${error.message}`; renderApp(controller.state); });
+  const initialRecordings = reviewControls.refresh();
+  const initialIgnition = refreshPendingIgnition(true).catch(error => { controller.state.message = `Recording storage unavailable: ${error.message}`; renderApp(controller.state); });
   ignitionReview.wire();
-  refreshTestHistory();
+  const initialTests = refreshTestHistory();
 
   document.getElementById("saved-tests").addEventListener("change", showSavedTest);
   document.getElementById("export-saved-test").addEventListener("click", () => exportSavedTests());
@@ -1619,6 +1880,7 @@ function wire() {
     auditFreshness(controller.state);
   }, 1000);
   document.addEventListener("visibilitychange", () => {
+    syncOwnerCredit();
     recordDiagnosticEvent(document.hidden ? "APP_BACKGROUND" : "APP_FOREGROUND", { phase: controller.state.phase }, "lifecycle");
     if (document.hidden) {
       reviewControls.player.pause();
@@ -1633,7 +1895,7 @@ function wire() {
       void reconcileBridgeConnection();
     }
   });
-  window.addEventListener("sme105-native-resume", () => { scheduleRender(); void reconcileBridgeConnection(); });
+  window.addEventListener("sme105-native-resume", () => { syncOwnerCredit(); scheduleRender(); void reconcileBridgeConnection(); });
   window.addEventListener("resize", () => { scheduleRender(); requestAnimationFrame(refreshDashboardCharts); });
   if ("serviceWorker" in navigator && !window.Capacitor?.isNativePlatform?.()) {
     navigator.serviceWorker.register("./sw.js").catch((error) => {
@@ -1654,11 +1916,14 @@ function wire() {
   renderApp(controller.state);
   wired = true;
   auditState(controller.state);
-  refreshWarnings();
+  const initialWarnings = refreshWarnings();
   void reconcileBridgeConnection();
+  return Promise.allSettled([initialRecordings, initialIgnition, initialTests, initialWarnings]);
 }
 
 async function boot() {
+  applyDisplayPreferences();
+  startupStatus("Opening local diagnostic storage…");
   setDiagnosticStorageErrorHandler(error => {
     const message = `Diagnostic journal write failed: ${error.message}`;
     if (controller.state.op || controller.state.combined?.active) controller.failRecording(message);
@@ -1726,11 +1991,12 @@ async function boot() {
     } else {
       clearRecoverySnapshot();
     }
+    startupStatus("Restoring saved diagnostic sessions…");
     await recoverInterruptedRecordings();
     await restoreLastDiagnosticResult();
     for (const item of await listRecordings()) if (item.operatorConfirmation && item.session) await reconcileOutcome(item);
   }
-  catch (error) { document.getElementById("message").textContent = `Diagnostic storage is unavailable: ${error.message}`; }
+  catch (error) { controller.state.message = `Diagnostic storage is unavailable: ${error.message}`; }
   window.addEventListener("error", event => {
     recordDiagnosticEvent("UNCAUGHT_ERROR", { message: event.message, source: event.filename, line: event.lineno, stack: event.error?.stack || "" }, "error");
     controller.state.message = `Application error: ${event.message}`;
@@ -1746,11 +2012,18 @@ async function boot() {
     if (nativeApp()) void flushDiagnosticQueue();
     else void closeDiagnosticRun("pagehide");
   });
-  wire();
+  startupStatus("Preparing dashboard and saved recordings…");
+  const initialData = wire();
+  // A recovered capture must expose Stop immediately; the bridge recovery
+  // and optional history loading continue independently.
+  if (!controller.state.op && !controller.state.combined?.active) await initialData;
+  finishStartup();
 }
 
 if (typeof document !== "undefined" && !globalThis.__NO_AUTO_BOOT__) {
   boot().catch(error => {
-    document.getElementById("message").textContent = `Startup failed: ${error.message}`;
+    startupStatus(`Startup failed: ${error.message}`);
+    const retry = document.getElementById("startup-retry");
+    if (retry) retry.hidden = false;
   });
 }

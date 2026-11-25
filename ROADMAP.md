@@ -1,4 +1,4 @@
-# SME105 DCL Studio — engineering roadmap
+# Escort SME-105 Diagnostic Lab — engineering roadmap
 
 **Updated:** 2026-11-09 · **Target:** 1998 Ford Escort 1.6 Zetec-E, EEC-IV SME105 (`97AB-12A650-KA`). This is an experimental, evidence-led plan rather than a diagnosis or approved ECU command specification.
 

@@ -52,6 +52,33 @@ class Tx2SourceTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.source = SOURCE.read_text(encoding="utf-8")
 
+    def test_bench_report_reservation_is_reachable_in_both_profiles(self) -> None:
+        # v29 BLE always denied TX2_BENCH: a 4096-byte queue could never
+        # satisfy the 8192-byte reservation. Test both real build branches.
+        # Locate the queue configuration independently of earlier BLE includes.
+        match = re.search(r"#ifdef SME105_BLE\n([^#]*kWireQueueSize[^#]*)#else\n([^#]*kWireQueueSize[^#]*)#endif", self.source)
+        self.assertIsNotNone(match)
+        for profile, branch in zip(("BLE", "Wi-Fi"), match.groups()):
+            with self.subTest(profile=profile):
+                capacity = int(re.search(r"kWireQueueSize = (\d+)", branch).group(1))
+                budget = int(re.search(r"kTx2BenchReportBudget = (\d+)", branch).group(1))
+                self.assertGreaterEqual(budget, 2 * 100 + 4 * 256 + 48 * 80 + 4 * 160)
+                self.assertGreaterEqual(capacity - budget, 512)
+        bench = self.source.split("void tx2PadBench()", 1)[1].split("void beginSession(", 1)[0]
+        self.assertLess(bench.index("out.freeBytes() < kTx2BenchReportBudget"), bench.index("tx2BenchUsed = true"))
+        self.assertIn("items <= kTx2BenchMaxRmtItems", bench)
+        self.assertIn("DENIED tx2_bench_output_backpressure", bench)
+
+    def test_ble_queue_allocation_failure_disables_all_command_processing(self) -> None:
+        setup = self.source.split("void setup() {", 1)[1].split("void loop() {", 1)[0]
+        loop = self.source.split("void loop() {", 1)[1]
+        self.assertLess(setup.index("if (!out.begin())"), setup.index("timerBegin("))
+        self.assertLess(setup.index("if (!out.begin())"), setup.index("ble_transport::begin("))
+        failure = setup.split("if (!out.begin()) {", 1)[1].split("}", 1)[0]
+        self.assertIn("deOff();", failure)
+        self.assertIn("return;", failure)
+        self.assertLess(loop.index("if (!out.ready())"), loop.index("pollUsb();"))
+
     def test_read_authority_remains_bound_to_complete_local_pad_proof(self) -> None:
         code = self.source
         begin = code.split("void beginSession(Stage target, uint8_t kind)", 1)[1]

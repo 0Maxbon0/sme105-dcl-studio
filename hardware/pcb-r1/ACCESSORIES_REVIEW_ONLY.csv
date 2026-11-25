@@ -1,0 +1,5 @@
+Description,Qty,Orderable part,Qualification
+OBD-II male pigtail or exact PCB-mount plug,1,TBD,Check physical pin numbering and vehicle connector fit
+2.4 GHz external antenna U.FL compatible,1,TBD,Verify module regulatory matching and RF performance
+Nonmetal enclosure,1,TBD,Measure actual board 95x60mm plus pigtail strain relief and antenna clearance
+3.3 V UART programmer/service cable,1,TBD,Ensure no electrical backfeed and verify flash-mode wiring

@@ -1,0 +1,21 @@
+.tools
+*.log
+*-drc.txt
+board.net
+board-final.net
+board.dsn
+board.ses
+board-before-route*
+board-first.ses
+board-r0-firstroute*
+board-routed*
+board2-temp*
+refs/
+__pycache__/
+*.zip
+
+# Local rejected routing experiment and KiCad's footprint info cache.
+board-inner-routing-rejected.kicad_pcb
+fp-info-cache
+previews/*.png
+previews/board.svg

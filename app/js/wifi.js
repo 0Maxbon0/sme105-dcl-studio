@@ -11,6 +11,14 @@ export function wifiAvailable() {
   return nativeAndroid() || globalThis.__SME105_WIFI_SIMULATED__ === true;
 }
 
+export function nativeWifiProfileMatches(status, requested) {
+  // Android's retained static socket owner survives WebView recreation. Do
+  // not adopt an authenticated session established for a different bridge.
+  return !!status && !!requested && status.mode === requested.mode &&
+    status.ssid === requested.ssid && status.host === requested.host &&
+    Number.isInteger(status.port) && status.port === requested.port;
+}
+
 function rawText(value) {
   if (typeof value === "string") return value;
   if (value instanceof ArrayBuffer) return new TextDecoder().decode(value);
@@ -137,9 +145,13 @@ export class WifiTransport {
   }
 
   isCurrentEvent(event, context) {
-    if (!context?.active || context !== this.listenerContext || context.generation !== this.generation) return false;
+    if (!this.isActiveContext(context)) return false;
     const eventEpoch = nativeEventEpoch(event);
     return eventEpoch === null || context.nativeEpoch === null || context.nativeEpoch === undefined || eventEpoch === context.nativeEpoch;
+  }
+
+  isActiveContext(context) {
+    return !!context?.active && context === this.listenerContext && context.generation === this.generation;
   }
 
   syncListenerGeneration() {
@@ -198,7 +210,7 @@ export class WifiTransport {
   }
 
   handleDiagnostic(event, context) {
-    if (!context?.active || context !== this.listenerContext || context.generation !== this.generation) return;
+    if (!this.isActiveContext(context)) return;
     const eventEpoch = nativeEventEpoch(event);
     if (eventEpoch !== null && context.nativeEpoch !== null && context.nativeEpoch !== undefined &&
         eventEpoch !== context.nativeEpoch) {
@@ -211,27 +223,48 @@ export class WifiTransport {
       this.nativeEpoch = context.nativeEpoch;
     }
     this.handlers.onDiagnostic?.(event);
+    // Native emits the first healthy diagnostic immediately after the single
+    // reconnected notification. If the status IPC for that notification
+    // transiently failed, use the later diagnostic to re-verify the real
+    // authenticated native socket; never accept it on the event alone.
+    if (this.reconnecting && (event?.linkHealth === "healthy" || event?.linkHealth === "degraded")) {
+      void this.handleReconnected(event, context);
+    }
   }
 
   async handleReconnected(event, context) {
-    if (!this.isCurrentEvent(event, context)) return;
+    // A successful native reconnect always creates a NEW socketEpoch. Unlike
+    // line/disconnect/error, the recovery event must be allowed to advance
+    // the old epoch, but only after an authenticated getStatus check.
+    if (!this.isActiveContext(context)) return;
+    const eventEpoch = nativeEventEpoch(event);
+    if (eventEpoch !== null && context.nativeEpoch !== null && context.nativeEpoch !== undefined &&
+        eventEpoch < context.nativeEpoch) return;
     if (context.reconnectedCheck) return;
     const check = {};
     context.reconnectedCheck = check;
-    let status = {};
-    try { status = await this.wifiBridge.getStatus(); } catch { /* The native event still carries recovery metadata. */ }
-    if (!this.isCurrentEvent(event, context) || context.reconnectedCheck !== check) return;
+    let status;
+    try { status = await this.wifiBridge.getStatus(); }
+    catch {
+      if (context.reconnectedCheck === check) context.reconnectedCheck = null;
+      // Fail closed: a native event is NOT an authentication grant. The next
+      // healthy diagnostic will retry status verification without replaying
+      // any ECU command.
+      return;
+    }
+    if (!this.isActiveContext(context) || context.reconnectedCheck !== check) return;
     const statusEpoch = nativeEventEpoch(status);
-    if (statusEpoch !== null && context.nativeEpoch !== null && context.nativeEpoch !== undefined &&
-        statusEpoch < context.nativeEpoch) {
+    const currentSocket = statusEpoch !== null && statusEpoch > 0 &&
+      (status.activeSocketEpoch === undefined || status.activeSocketEpoch === null ||
+       Number(status.activeSocketEpoch) === statusEpoch) &&
+      (eventEpoch === null || eventEpoch === statusEpoch) &&
+      (context.nativeEpoch === null || context.nativeEpoch === undefined || statusEpoch >= context.nativeEpoch);
+    if (!currentSocket || status?.connected !== true || status?.authenticated !== true ||
+        status?.reconnecting === true || status?.connecting === true || status?.attemptInProgress === true) {
       context.reconnectedCheck = null;
       return;
     }
-    if (status.connected === false || status.authenticated === false) {
-      context.reconnectedCheck = null;
-      return;
-    }
-    if (!this.reconnecting && statusEpoch !== null && statusEpoch === context.nativeEpoch) {
+    if (!this.reconnecting && statusEpoch === context.nativeEpoch) {
       context.reconnectedCheck = null;
       return;
     }
@@ -241,13 +274,20 @@ export class WifiTransport {
       this.generation += 1;
       this.syncListenerGeneration();
     }
-    if (statusEpoch !== null) context.nativeEpoch = statusEpoch;
-    this.nativeEpoch = context.nativeEpoch ?? nativeEventEpoch(event);
+    context.nativeEpoch = statusEpoch;
+    this.nativeEpoch = statusEpoch;
     const metadata = {
       bootId: status.bootId ?? event?.bootId ?? null,
       sessionId: status.sessionId ?? event?.sessionId ?? null,
       seq: status.seq ?? status.lastSeq ?? event?.seq ?? null,
     };
+    // The Java plugin reports the authenticated socket's actual profile.
+    // Keep this verified identity with the reconnect notification so the app
+    // can reject a previous AP when the operator edited Settings meanwhile.
+    if (typeof status.mode === "string" && typeof status.ssid === "string" &&
+        typeof status.host === "string" && Number.isInteger(status.port)) {
+      metadata.profile = { mode: status.mode, ssid: status.ssid, host: status.host, port: status.port };
+    }
     this.connectionMetadata = metadata;
     Object.assign(this, metadata);
     this.connected = true;
@@ -388,8 +428,10 @@ export class WifiTransport {
         this.connected = false;
         this.authenticated = false;
         this.generation += 1;
+        // Only the attempt still owning this transport may detach listeners.
+        // A cancelled/late promise must never remove a newer owner's callbacks.
+        await this.cleanupListeners();
       }
-      await this.cleanupListeners();
       this.handlers.onError?.(error);
       throw error;
     }
@@ -442,8 +484,17 @@ export class WifiTransport {
     this.reconnectingCheck = null;
     this.generation += 1;
     await this.cleanupListeners();
-    if (this.wifiBridge) await this.wifiBridge.disconnect();
+    // A recreated WebView may have no local plugin reference while Android's
+    // static native owner is still reconnecting. Always revoke that native
+    // intent on an explicit operator disconnect, even after UI recreation.
+    const bridge = this.wifiBridge ?? (this.isNative() ? (await this.loadPlugins()).WifiBridge : null);
+    if (bridge) await bridge.disconnect();
     this.notifyDisconnectOnce();
+  }
+
+  async getNativeStatus() {
+    const { WifiBridge } = await this.loadPlugins();
+    return WifiBridge.getStatus();
   }
 
   async setRecording(active) {

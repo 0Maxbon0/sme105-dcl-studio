@@ -1,0 +1,24 @@
+.tools
+*.log
+*-drc.txt
+board.net
+board-final.net
+board.dsn
+board.ses
+board-before-route*
+board-first.ses
+board-r0-firstroute*
+board-routed*
+board2-temp*
+refs/
+__pycache__/
+*.zip
+
+# Local review iterations, machine-specific screenshots and KiCad session
+# backups remain on disk; canonical board.kicad_* files are the public source.
+board-before-fab-rule.kicad_pro
+board-pre-*-backup.kicad_sch
+board-4layer-route-backup.kicad_pcb
+previews/*.png
+previews/board.svg
+fp-info-cache

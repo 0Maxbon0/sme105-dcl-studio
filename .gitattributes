@@ -1,3 +1,8 @@
 # Preserve instrument-generated USB transcripts byte-for-byte, including CRLF.
 # These are immutable evidence, not prose documents; never normalize line endings.
 captures/SME105_97AB/*.txt -text
+
+# KiCad-exported SVG previews include renderer-owned trailing whitespace.
+# Preserve exported graphics byte-for-byte instead of flagging formatting
+# differences as handwritten source errors.
+hardware/pcb-*/previews/*.svg -whitespace

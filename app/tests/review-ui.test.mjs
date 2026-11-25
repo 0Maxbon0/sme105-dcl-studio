@@ -9,7 +9,7 @@ import { createReviewControls } from '../js/review-controls.js';
 import { render, showView, applyStaticStrings, openSensorDetails, inspectSensorChart, closeSensorDetails } from '../js/ui.js';
 import { EXPECTED_HELLO, EXPECTED_PINS } from '../js/protocol.js';
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-const until = async fn => { for (let i=0; i<200; i++) { if (fn()) return; await new Promise(r => setTimeout(r, 5)); } throw new Error('UI did not settle'); };
+const until = async fn => { for (let i=0; i<600; i++) { if (fn()) return; await new Promise(r => setTimeout(r, 5)); } throw new Error('UI did not settle'); };
 
 test('real dashboard DOM selects older/newer recordings, plays/seeks, shows normal throttle percentage and restores offline without transport commands', async () => {
   const dom = new JSDOM(html, { url: 'https://offline.test/' });

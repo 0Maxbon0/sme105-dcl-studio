@@ -2,6 +2,12 @@
 
 **As of 2026-11-09** · Owner-maintained experimental tooling for the 1998 Ford Escort 1.6 Zetec-E EEC-IV SME105 (`97AB-12A650-KA`). The former Python localhost GUI is retired; Android native app + ESP32 direct SoftAP and the offline Python CLI are maintained.
 
+> **Historical physical deployment snapshot (9 November 2026).**
+> The newer **local source** is Android **v1.8.19 / build 21** with
+> ESP32 firmware **v29** as documented in the [main README](README.md)
+> and [engineering brief](docs/ENGINEERING_BRIEF.md). That newer source
+> is **not** proof of a newer APK being installed or a new vehicle test.
+
 ## Currently deployed
 
 | Element | Version / status |

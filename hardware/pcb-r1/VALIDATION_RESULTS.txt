@@ -1,0 +1,5 @@
+PASS: 41 footprints; 116 matched (ref,pad) connections; 398 tracks, 41 vias; 26 physical nets.
+PASS: F/B routing only {'F.Cu': 318, 'B.Cu': 80}; two filled GND inner zones; TX hardware pulldown and DNP bus links in netlist.
+PASS: KiCad DRC has 0 reported violations using a 0.20 mm minimum through-hole drill fabrication profile.
+NOT TESTED: actual ECU, automotive electrical transients, ground/termination, component choices, firmware power/EMC, ESP antenna and physical enclosure.
+PASS: 41 footprints wholly inside 95x60mm engineering outline; no overlapping courtyards.

@@ -1,0 +1,136 @@
+{
+  "version": "1.0.0-rc.3",
+  "commit": "0d39988",
+  "repository": "https://github.com/0Maxbon0/basita-brand-system",
+  "figma": "https://www.figma.com/design/fddXnlJ306XV9ra6DBpF2q",
+  "assets": [
+    {
+      "path": "logos/basita-ar-dark.svg",
+      "source": "01-logos/ar/basita-ar-dark.svg",
+      "sha256": "8ea7fe58d04e92224945f047be9124edd89ef9c37f9087aa93608ad52057d965"
+    },
+    {
+      "path": "logos/basita-ar-light.svg",
+      "source": "01-logos/ar/basita-ar-light.svg",
+      "sha256": "bb7726eb0a120c519710a3a0dd738398f3bc7e2bb523e0e9847b428e67d0cb8a"
+    },
+    {
+      "path": "logos/basita-en-dark.svg",
+      "source": "01-logos/en/basita-en-dark.svg",
+      "sha256": "6f64c4dce48a2c15b0d53ee09fd5bcb1b222c12c6dc46f848c3724e814437418"
+    },
+    {
+      "path": "logos/basita-en-light.svg",
+      "source": "01-logos/en/basita-en-light.svg",
+      "sha256": "461ca662bb1d472c398b88ce9f8767a9327bb2b267e7ba9634b2d91467ca4742"
+    },
+    {
+      "path": "tokens.css",
+      "source": "02-colors/tokens.css",
+      "sha256": "27ed78fae008ebd88446d114d8a460d464df30104fc7c7a36caf975b4bbce33f"
+    },
+    {
+      "path": "typography/readex-pro/OFL.txt",
+      "source": "03-typography/readex-pro/OFL.txt",
+      "sha256": "b41267a3903a45955f77b44596e080480c577fb7221df59672d0bc8cd8cd4b6f"
+    },
+    {
+      "path": "typography/readex-pro/font-face.css",
+      "source": "03-typography/readex-pro/font-face.css",
+      "sha256": "70ee4cd6759d2e413157deee7183317a2a666a41ed7b1acdbf44cfc901a10b01"
+    },
+    {
+      "path": "typography/readex-pro/readex-pro-1.woff2",
+      "source": "03-typography/readex-pro/readex-pro-1.woff2",
+      "sha256": "51456344445b98029b9be92e7cbfbb0232054308b30d8ca771f9671fa861606b"
+    },
+    {
+      "path": "typography/readex-pro/readex-pro-2.woff2",
+      "source": "03-typography/readex-pro/readex-pro-2.woff2",
+      "sha256": "b5815b71c48e513b5e65eb281dd53e5d6a556d6dac511a5d2cd00d628850d5c4"
+    },
+    {
+      "path": "typography/readex-pro/readex-pro-3.woff2",
+      "source": "03-typography/readex-pro/readex-pro-3.woff2",
+      "sha256": "a23e360104bfbf971b1fe2c910256f914987ba93843e76b27bd407171e7025d8"
+    },
+    {
+      "path": "typography/readex-pro/readex-pro-4.woff2",
+      "source": "03-typography/readex-pro/readex-pro-4.woff2",
+      "sha256": "7074eeb987a25349069ed5c784e204904b928f4c878e9c3c88d636c01081ae52"
+    },
+    {
+      "path": "typography/sora/OFL.txt",
+      "source": "03-typography/sora/OFL.txt",
+      "sha256": "ba0b9729c9428ba79a0459ab8ec575791b51509dbec213e383d0316d37fec299"
+    },
+    {
+      "path": "typography/sora/font-face.css",
+      "source": "03-typography/sora/font-face.css",
+      "sha256": "fc8a1196057b5327641fd9dc2e4bf2b09dec9b421431d80673d6f1a23b9913e0"
+    },
+    {
+      "path": "typography/sora/sora-1.woff2",
+      "source": "03-typography/sora/sora-1.woff2",
+      "sha256": "fa26406eeda9a3c6ec3d9ea8813c3045d6dc755e30c716d5c094e8ef43be5a7f"
+    },
+    {
+      "path": "typography/sora/sora-2.woff2",
+      "source": "03-typography/sora/sora-2.woff2",
+      "sha256": "c163c536f68befd99a83d4f17e8b88030e7f54229688a45c44f70c7149db7385"
+    },
+    {
+      "path": "typography/typography.css",
+      "source": "03-typography/typography.css",
+      "sha256": "0098398217ca9d632ad64f63b9e30ba87ad62da60497c60a2dab196b44fc10e2"
+    },
+    {
+      "path": "motion/loading-light.svg",
+      "source": "08-motion/loader/loading-light.svg",
+      "sha256": "8d262701ccf5c54c180caf18eb39b778299f0748593b567c994859aa48fa788c"
+    },
+    {
+      "path": "motion/loading-dark.svg",
+      "source": "08-motion/loader/loading-dark.svg",
+      "sha256": "7c33de2221a778f42bb794cbd42e0a59e9ae44f1fe747375fec314b574e45dce"
+    },
+    {
+      "path": "audio/basita-resolution-micro.mp3",
+      "source": "09-audio/v2/signature/basita-resolution-micro.mp3",
+      "sha256": "4a5fc81fb782a3089b22a922fbfe64fbfe6e6b3547c1f920841d1aab7e4c9eb8"
+    },
+    {
+      "path": "motion/loading-transparent.svg",
+      "source": "08-motion/loader/loading-transparent.svg",
+      "sha256": "fe8712ba28ea16228a554c64bd9e5c5658cc3c7be43133a4f2d1de0b5ab98282"
+    },
+    {
+      "path": "motion/unravel-credit-light.mp4",
+      "source": "08-motion/silent-mp4/unravel-en-light.mp4 / Figma 212:415",
+      "source_sha256": "96e7871360e147b25de76686b2c7e03d525f6b9b410cc1cf90ca6ad957c3a66f",
+      "transformation": "Crop original 1920x1080 to 1440x576, scale to 480x192; 4 second final frame hold; silent loop",
+      "sha256": "7193f0d1ceaeafd6ed40763ad76ed3eb8656cef2e48936f712bf2b1ed8afef6f"
+    },
+    {
+      "path": "motion/unravel-credit-light.png",
+      "source": "08-motion/silent-mp4/unravel-en-light.mp4 / Figma 212:415",
+      "source_sha256": "96e7871360e147b25de76686b2c7e03d525f6b9b410cc1cf90ca6ad957c3a66f",
+      "transformation": "Crop original 1920x1080 to 1440x576, scale to 480x192; still at 3.4 seconds",
+      "sha256": "a9feece6eeb97193799035c0b649e1d08e39618ecb98f2a5aa673a90253ad4ef"
+    },
+    {
+      "path": "motion/unravel-credit-dark.mp4",
+      "source": "08-motion/silent-mp4/unravel-en-dark.mp4 / Figma 212:627",
+      "source_sha256": "1c8285a117ef5856a2fd0fec3202baf50f7b3e6bb90b5d2ac5fbdeea9b6bcb0a",
+      "transformation": "Crop original 1920x1080 to 1440x576, scale to 480x192; 4 second final frame hold; silent loop",
+      "sha256": "9814bbb01d25f483213c9690bef5128524e772583c404d2da394b1034ceb6398"
+    },
+    {
+      "path": "motion/unravel-credit-dark.png",
+      "source": "08-motion/silent-mp4/unravel-en-dark.mp4 / Figma 212:627",
+      "source_sha256": "1c8285a117ef5856a2fd0fec3202baf50f7b3e6bb90b5d2ac5fbdeea9b6bcb0a",
+      "transformation": "Crop original 1920x1080 to 1440x576, scale to 480x192; still at 3.4 seconds",
+      "sha256": "8e4dc311aa1f28b6ad0a9649d23396821b9091412d60f00fa913e158f8efacd2"
+    }
+  ]
+}

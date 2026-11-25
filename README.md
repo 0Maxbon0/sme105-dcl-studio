@@ -1,163 +1,171 @@
-# SME105 DCL Studio
+# EscortScope — Ford Escort diagnostics by Basita
 
 [![Source tests](https://github.com/0Maxbon0/sme105-dcl-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/0Maxbon0/sme105-dcl-studio/actions/workflows/ci.yml)
 
-**Independent research for understanding and preserving Ford EEC-IV diagnostics.**
+**An independent Android + ESP32 research platform for exploring legacy Ford EEC-IV diagnostics—carefully, reproducibly, and with raw evidence.**
 
-**Android application + ESP32 diagnostic bridge + Python analysis**, built around a European **1998 Ford Escort 1.6 Zetec-E** and its EEC-IV SME-105 PCM (`97AB-12A650-KA`). The emphasis is on **raw evidence, reproducible experiments and explicit uncertainty**, not guesswork or unsupported claims of official ECU compatibility.
+Built around a **1998 European Ford Escort 1.6 Zetec-E** and an **EEC-IV SME-105** PCM (engineering number `97AB-12A650-KA`). The methodology, transport engineering and test tooling are intended to be useful beyond this particular vehicle.
 
-**[Engineering brief for Ford / OEM reviewers](docs/ENGINEERING_BRIEF.md)** · [Architecture](#architecture) · [Software quick start](#build-and-run) · [Protocol research](docs/protocol-notes.md) · [Contribute](CONTRIBUTING.md)
+**[Engineering brief](docs/ENGINEERING_BRIEF.md)** · [Architecture](docs/ARCHITECTURE.md) · [Hardware and components](docs/HARDWARE_GUIDE.md) · [How the code works](docs/CODE_WALKTHROUGH.md) · [Quick start](#get-started-without-a-vehicle) · [Documentation index](docs/README.md)
 
 > [!IMPORTANT]
-> **Experimental research, not a certified diagnostic product.** An isolated Android↔ESP32 bench demonstration does not establish vehicle-bus electrical compatibility, ECU command acceptance, sensor identities, actuator safety, or road-use readiness. Never interact with the app while driving. This project is independently developed and **not affiliated with, endorsed by or supported by Ford Motor Company**.
+> **Experimental engineering project—not a certified diagnostic tool.** Network and isolated bench demonstrations do not prove vehicle-bus electrical compatibility, ECU command acceptance, sensor identities, actuator safety or road-use readiness. Do not operate the app while driving. This project is independently developed and **is not affiliated with, endorsed by or supported by Ford Motor Company**.
 
-## Why this project matters
+## Why this project exists
 
-Legacy EEC-IV vehicles are difficult to diagnose with modern tools. References for Ford's Diagnostic Communication Link (DCL) can be incomplete or strategy-dependent, and plausible sensor-like numbers need independent validation. This project builds an auditable chain from **timestamped raw bytes → persistent capture → reproducible decoder → evidence-classified interpretation**.
+Many older EEC-IV vehicles have limited support in modern diagnostic ecosystems. Command formats, PID meanings and ECU calibration details can vary. A plausible-looking value is not the same as a verified sensor reading.
 
-| Engineering discipline | What is demonstrated |
+EscortScope, developed by Basita, is an effort to build a transparent chain from **raw bytes → timestamped capture → reproducible parser → evidence-qualified interpretation**. Rather than treating reverse-engineering hypotheses as established manufacturer specifications, each finding is labeled *Observed*, *Reference*, *Inferred* or *Unknown*.
+
+**Identity:** an independent automotive product by Basita (بسيطة), with its own steel-blue palette and gauge icon, official Basita typography, semantic colors and motion. See [identity and migration notes](docs/BRANDING_RELEASE.md).
+
+### What it demonstrates
+
+| Engineering area | Implemented work |
 | --- | --- |
-| **Embedded / real-time** | ESP32 UART capture, MAX487 interface, bounded telemetry ring, transmission safety gates |
-| **Android / networks** | Capacitor Android application, direct WPA2 SoftAP, authenticated TCP, heartbeat and reconnect handling |
-| **Data integrity** | IndexedDB archive, RX/RXB sequence replay, deduplication, explicit gap records and WebView recovery |
-| **Reverse engineering / testing** | Python DCL tooling, host simulation, JVM/Node/Python tests, experimental command and sensor research |
+| **Embedded / real-time** | ESP32 UART bridge, MAX487 interface, time-bounded transmission gates, raw telemetry ring and bounded replay |
+| **Android / networking** | Native Capacitor application, local-only WPA2 SoftAP, authenticated TCP, heartbeat and reconnect lifecycle; separate BLE build |
+| **Data reliability** | IndexedDB raw archive, sequence-aware RX/RXB, duplicate suppression, inclusive loss reporting and crash recovery |
+| **Protocol research** | Ford EEC-IV DCL experiments, Python capture tools, host simulation, and testable candidate sensor conversions |
+| **Testing / engineering discipline** | Node.js, Python, JVM and PlatformIO checks, safety invariants and documented hardware-vs-simulation boundaries |
 
 ## Application preview
 
-<table><tr>
-<td align="center"><img src="artifacts/screenshots/live-360dp-light.png" width="240" alt="Historical SME105 DCL Studio live-data interface screenshot"></td>
-<td align="center"><img src="artifacts/screenshots/live-replay-412dp-light.png" width="240" alt="Historical SME105 DCL Studio recording replay interface screenshot"></td>
-</tr><tr><td align="center"><sub>Live data interface</sub></td><td align="center"><sub>Recorded data / replay</sub></td></tr></table>
+<table>
+  <tr>
+    <td align="center"><img src="artifacts/screenshots/live-360dp-light.png" width="240" alt="Historical screenshot of the earlier SME105 DCL Studio live telemetry interface"></td>
+    <td align="center"><img src="artifacts/screenshots/live-replay-412dp-light.png" width="240" alt="Historical screenshot of the earlier SME105 DCL Studio recording/replay interface"></td>
+  </tr>
+  <tr><td align="center"><sub>Live telemetry view</sub></td><td align="center"><sub>Captured-data replay view</sub></td></tr>
+</table>
 
-*Historical interface screenshots. They are not evidence that the latest recovery revision or every interpreted sensor has been physically validated.*
+*These are historical application screenshots, not a claim that the latest build or every displayed sensor mapping has been validated on a vehicle.*
 
-## Software verification snapshot — 11 November 2026
+## Current engineering status
 
-The latest changes improve connection resilience and Live Data recovery. The engineering verification report records **298 JavaScript tests passed / 3 skipped**, **307 Python tests passed / 10 skipped**, **10 Android JVM unit tests passed**, plus successful Wi-Fi and BLE ESP32 firmware builds. These are **software / host verification results**, not road or vehicle acceptance. Consult the [GitHub Actions workflow](.github/workflows/ci.yml) for independently run public CI and the [stability report](docs/wifi_ble_stability_and_rf_report.md) for detailed limitations.
+**Current release (25 November 2026):** Android **v2.0.2** (build **27**) and ESP32 firmware **v30**. EscortScope was installed in place on a Samsung Galaxy A52s; the original package identity and saved recordings were retained. The startup screen follows actual initialization and the original Basita Unravel credit loops silently every 7.63 seconds in both themes.
 
-| Capability | What is actually established |
+**Physical bridge validation:** v30 BLE was flashed and verified by USB. With the ECU disconnected, the phone completed TX2 self-test and reached the initial DCL transmission. The former v29 BLE output reservation could never fit in its 4 KiB queue. v30 reserves a bounded report in an 8 KiB queue without bypassing electrical safety gates. Vehicle ECU response remains unverified.
+
+**Software checks:** see the [current release notes](docs/BRANDING_RELEASE.md), [developer setup](docs/DEVELOPER_SETUP.md) and [GitHub Actions CI](.github/workflows/ci.yml). Both ESP32 profiles compiled; Android debug assembly and in-place installation passed. The earlier November 9 Wi-Fi demonstration and November 11 recovery verification remain historical observations, not current on-vehicle acceptance.
+
+| Capability | Evidence level / limitation |
 | --- | --- |
-| Phone ↔ ESP32 direct Wi-Fi | Demonstrated on an isolated bench on **9 Nov 2026** |
-| Connection recovery / telemetry replay | Implemented and host-tested; **current implementation not yet physically soak-tested** |
-| Buffered RX evidence | **8,000 packed × 5-byte events** = 40,000 bytes of event data |
-| Recovery duration | 30 s session reconnect grace; not 30 s guaranteed lossless data (≈8.3 s at 960 bytes/s) |
-| EEC-IV data maps and high-idle root cause | Research hypotheses; **not independently OEM-verified** |
+| Direct Android ↔ ESP32 Wi-Fi | **Bench demonstrated** on 9 November 2026; no router or Internet required |
+| Live Data reconnect/resume | **Host-tested**; hardware RF/thermal soak and on-vehicle behavior not yet established for the new implementation |
+| Recovery grace | Up to **30 s** to reconnect; not a promise of 30 s lossless telemetry |
+| Telemetry history | **8,000 × 5 bytes** of raw events; ~8.3 s at a continuous 960-byte/s stream, longer at lower rates |
+| EEC-IV commands, sensors and scaling | **Research in progress**; target-ECU mappings require independent confirmation |
+| High-idle / VSS investigation | [Diagnostic hypotheses and validation limits](docs/high-idle-diagnosis.md), **not a confirmed ECU defect** |
 
-See the [high-idle diagnostic reasoning](docs/high-idle-diagnosis.md), [protocol research](docs/protocol-notes.md) and [OEM-oriented engineering brief](docs/ENGINEERING_BRIEF.md).
-
-## Last physically demonstrated bench baseline — 9 November 2026
-
-| Component | Current baseline | Evidence |
-| --- | --- | --- |
-| Android application | **v1.8.17**, build code **19**, native Capacitor/Android | Debug APK built and installed on Samsung Galaxy A52s with app data retained |
-| ESP32 bridge | **Firmware v29**, PlatformIO environment `esp32dev` | Flashed to `app0`, digest verified, USB `STATUS ... fw=29` and idle state checked |
-| Direct link | ESP32 **WPA2 SoftAP** → Android; **no router or Internet** | Owner confirmed direct phone pairing and bench-output indicator response with ECU disconnected |
-| Security | **One user-visible Wi-Fi passphrase**; no separate token field | Native Keystore storage; 16-byte PBKDF2-derived TCP `AUTH` still required by firmware |
-| Evidence and captures | Persistent Android IndexedDB; archived raw captures | `adb install -r` preserved existing WebView data; historical captures are untouched |
-| Vehicle ECU command behavior | **Not certified by this release** | Requires separately approved, timestamped, raw vehicle-session evidence |
-
-**Live link:** Existing bridge SSID `SME105-DIRECT-2BF8`; `10.77.13.1:8765`, WPA2, one client. The name is configurable on other boards; use the SSID shown by the actual ESP32. Never commit real Wi-Fi passwords, legacy authorization tokens, private NVS dumps, or Android backups.
-
-See the [November 9 direct-link bench release notes](docs/releases/2026-11-09-direct-softap-bench.md) for deployment/rollback boundaries. The owner-reported bench demonstration is a useful *bridge/output* acceptance milestone, not evidence that an actuator or vehicle ECU executed a command. The hardware's `DE=LOW`, `auto_tx=0`, idle state and fail-closed command gates remain the baseline. Android network lifetime on this device can be affected by Android's **no-Internet** Wi-Fi policy; long-duration stability and road-use were not separately certified.
+A dated [physical direct-link bench report](docs/releases/2026-11-09-direct-softap-bench.md) documents the previously observed bridge connection. It must not be mistaken for field validation of the subsequent November 11 recovery changes.
 
 ## Architecture
 
 ```text
-Android SME105 DCL Studio (offline-capable native application)
-    │  Android Wi-Fi NetworkSpecifier (local-only WPA2; no router)
+Android app (Capacitor / JavaScript / IndexedDB)
+    │ Native Android Wi-Fi NetworkSpecifier + WPA2
+    │ Local-only TCP :8765, session authentication
     ▼
-ESP32 SoftAP  SME105-DIRECT-2BF8 / 10.77.13.1
-    │  TCP 8765, authenticated session, session-bound writes
+ESP32 SoftAP (10.77.13.1 / default SSID: SME105-DIRECT-2BF8)
+    │ Wi-Fi and BLE are separate firmware profiles
+    │ Heartbeat, 30 s retained-session grace, bounded RX replay
     ▼
-ESP32 v29 DCL bridge ── USB 115200 for trusted setup & status
-    │  TX2_BENCH + explicit ARM/READ gates; no auto vehicle transmission
+ESP32 EEC-IV DCL bridge firmware (PlatformIO, v30)
+    │ USB serial for trusted provisioning and bench diagnostics
+    │ Explicit per-boot TX2_BENCH + ARM/READ gates
     ▼
-MAX487 interface → target vehicle DCL bus **only after electrical qualification**
+MAX487 electrical interface → vehicle DCL bus
+    ONLY after separate electrical and procedural qualification
 ```
 
-Android uses a single passphrase for joining the ESP32 network and deriving the session's existing `AUTH` token internally (PBKDF2-HMAC-SHA256 with a device SSID-bound salt). The passphrase is protected using Android Keystore-backed private storage and is **never** a source constant or Git credential. Firmware NVS contains the current AP profile in one atomic bundle; the old AP credentials remain intact for physical rollback. **WPA2 and TCP authorization share a secret** in this one-password model: anyone with that passphrase may become an authenticated bridge client, so it must be kept private. `AUTH` does not bypass individual ECU arming requirements.
+Network authentication uses an owner-entered WPA2 passphrase and its SSID-bound PBKDF2-derived session token. This is **one shared secret**, not two independent authentication factors. On Android, private credential handling uses Keystore-backed storage. No vehicle transmission occurs merely because a device connects or reconnects.
 
-Legacy BLE is available as a separate `esp32dev_ble` firmware build, **not** simultaneous Wi-Fi+BLE in the same image. Previous STA/router functionality remains in firmware for compatibility but is not the primary phone workflow.
+See [full architecture](docs/ARCHITECTURE.md), [Wi-Fi setup](docs/wifi_bridge_architecture_and_setup.md), [wiring and electrical safety](docs/wiring-safety.md), [code walkthrough](docs/CODE_WALKTHROUGH.md), and [firmware overview](firmware/README.md).
 
-## Build and run
+## Hardware — assembled bridge vs. PCB concepts
 
-### Prerequisites
+The current research bridge uses an **ESP32 DevKit-class board**, **5 V MAX487 transceiver**, receive-line **5 V → 3.3 V translation**, hardware **DE pull-down**, and USB/separately protected bench power. This is different from the **KiCad PCB R0 and compact R1** designs. R1 is a 95 × 60 mm, four-layer **review-only design** with provisional automotive power protection, regulator choices and an ESP32-WROOM-32UE module. It has **not been fabricated or vehicle-qualified**.
 
-- Node.js **22**, Java **JDK 21**, Android SDK and platform tools (target SDK 36).
-- Python **3.12+** with `pyserial` and PlatformIO (supported project environment); an ESP32 development board with CP2102 and a suitable USB cable.
-- Physical USB access and an **isolated bench** for firmware provisioning. Do not attach the vehicle bus for the Wi-Fi acceptance checks.
+[Parts, GPIO map and connector caveats](docs/HARDWARE_GUIDE.md) · [KiCad design workspace](hardware/README.md) · [R1 review status](hardware/pcb-r1/REVIEW_STATUS.md)
 
-Clone the repository and run:
+![Compact KiCad R1 board top-view concept — not fabricated or qualified](hardware/pcb-r1/previews/r1-board-top.svg)
+
+*PCB visual is a design preview only. Passing ERC/DRC does not make a board safe to connect to an ECU.*
+
+## Get started without a vehicle
+
+The fastest useful evaluation is **software-only**: clone the repository, execute parsers/tests and examine the source. **You do not need an ECU, car, connected ESP32 or private diagnostic captures** for the public baseline tests (capture-dependent tests may skip).
+
+### Requirements
+
+- Node.js **22** and npm
+- Python **3.12+** for the documented development/test environment
+- Optional: JDK **21** and Android SDK for APK builds
+- Optional: PlatformIO and a compatible ESP32 board for firmware development
 
 ```bash
+git clone https://github.com/0Maxbon0/sme105-dcl-studio.git
+cd escort-sme105-diagnostic-lab
 npm ci
 npm test
-npm run android:sync
-cd android && ./gradlew :app:testDebugUnitTest :app:assembleDebug --offline
+python -m pip install -e .
+PYTHONPATH=src python -m unittest discover -s tests -q
 ```
 
-On Windows use `gradlew.bat` in place of `./gradlew`. The debug APK is produced at `android/app/build/outputs/apk/debug/app-debug.apk`. Upgrade an existing install **without erasing its data**:
-
-```bash
-adb install -r android/app/build/outputs/apk/debug/app-debug.apk
-```
-
-Build the correct Wi-Fi firmware from the repository root:
+Optional **compile-only** checks (no device flash):
 
 ```bash
 python -m pip install -e '.[firmware]'
 python -m platformio run -d firmware/sme105_usb_bridge -e esp32dev
+python -m platformio run -d firmware/sme105_usb_bridge -e esp32dev_ble
 ```
 
-`./.venv/bin/pio` is equivalent when using the existing project venv. For an already-provisioned board, use the explicitly authorized physical-USB rekey workflow *only if changing its saved AP password*:
+For Android development:
 
 ```bash
-python scripts/sme105_wifi_setup.py --ap --ap-rekey --port /dev/ttyUSB0
+npm run android:sync
+cd android
+./gradlew :app:testDebugUnitTest :app:assembleDebug
 ```
 
-The utility asks for the password privately; it must not be supplied on the command line. A plain `--ap` refuses to overwrite a saved profile. **Do not invoke `WIFI_FORGET`, erase NVS, or flash `esp32dev_ble` to fix a Wi-Fi password problem.** Follow [direct Wi-Fi setup and recovery](docs/wifi_bridge_architecture_and_setup.md) for backups, verification and first-time provisioning.
+On Windows, use `gradlew.bat`. The resulting *debug* APK is at `android/app/build/outputs/apk/debug/app-debug.apk`. This README does **not** recommend connecting to the vehicle or installing experimental firmware as a first test. Provisioning and rollback are described separately in [technical setup](docs/wifi_bridge_architecture_and_setup.md).
 
-### Connecting a phone
+## Repository guide
 
-Open **Settings → Wi-Fi Bridge** in the installed Android app, confirm the actual AP SSID, and enter/save the one WPA2 passphrase. Press **Connect**, accept Android's local-network permission prompt if shown, and keep the phone connected to this **no-Internet** Wi-Fi network. The app checks `AUTH`, `HELLO`, `PINS` and `STATUS` before reporting the bridge ready. No extra token entry is necessary. Do not initiate a vehicle read as a Wi-Fi connectivity test.
-
-## Repository map
-
-| Path | Responsibility |
+| Path | Purpose |
 | --- | --- |
-| [`app/`](app/) | **Canonical Android application UI**: HTML/CSS/JavaScript assets bundled by Capacitor; **do not delete as an “old website”** |
-| [`android/`](android/) | Native Android integration and authenticated Wi-Fi transport, unit tests, APK build files |
-| [`firmware/sme105_usb_bridge/`](firmware/sme105_usb_bridge/) | ESP32 v29 Wi-Fi bridge firmware and hardware safety gates |
-| [`scripts/`](scripts/) | USB provisioning, command tools and engineering utilities |
-| [`src/ford_dcl/`](src/ford_dcl/) | Python capture/inspection CLI and offline analysis |
-| [`tests/`](tests/), [`app/tests/`](app/tests/) | Automated Python and JavaScript regression suites |
-| [`captures/`](captures/) | Preserved, immutable historical RAW evidence — **do not edit or delete** |
-| [`docs/`](docs/) | Engineering analysis, protocol notes, electrical safety, setup and evidence-based findings |
-| [`artifacts/`](artifacts/) | Historical reports and selected visual evidence (not a current installation channel) |
+| [`app/`](app/) | Canonical Android WebView application and offline UI, **not** an obsolete website |
+| [`android/`](android/) | Native Android plugins, transport lifecycle and JVM tests |
+| [`firmware/sme105_usb_bridge/`](firmware/sme105_usb_bridge/) | ESP32 Wi-Fi/BLE builds, ring replay and hardware protection |
+| [`src/ford_dcl/`](src/ford_dcl/) | Python capture and offline inspection CLI |
+| [`tests/`](tests/) / [`app/tests/`](app/tests/) | Host, parser, transport and recovery regression suites |
+| [`docs/`](docs/) | Guided docs index, architecture, hardware, research references, experiment logs and safety |
+| [`hardware/`](hardware/) | Review-only editable KiCad PCB R0/R1 concepts, separate from the hand-wired prototype |
+| [`artifacts/`](artifacts/) | Dated visual/test artifacts, **not** an APK distribution channel |
+| [`captures/`](captures/) | Historical research evidence; treat raw samples as potentially sensitive |
 
-The obsolete, separate Python localhost GUI is retired from the active project. `app/` remains essential to the native APK; removing it would break the current Android application. This repository does not currently publish an active GitHub Pages website.
+The retired Python localhost GUI is not the supported user interface. The Android app's canonical web assets live under `app/`.
 
-## Verification and evidence policy
+## Research integrity and safety
 
-The **9 November** device/bench baseline reported JavaScript **273 passed / 3 skipped**, Python **297 passed / 10 skipped** locally (public clean checkout: 293 pass / 14 skipped), and Android / Wi-Fi firmware builds passing. The later **11 November** source-recovery verification is summarized above. Both sets are dated observations, not evergreen certification; rerun tests on the exact source revision being reviewed. Tests requiring unavailable private capture fixtures intentionally skip.
+- **Observed** means an explicitly identified raw capture or witnessed bench/vehicle event; **Reference** means a cited external source; **Inferred** means a testable hypothesis; **Unknown** means unverified.
+- A recognized command frame is **not** proof that this ECU accepts the command. A decoded PID-like number is **not** proof of its engineering units.
+- There is no general arbitrary ECU-byte write API and no automatic transmit on boot, network connection or recovery. Named operations require safety gates and operator authorization. **Do not use this software as a driving aid or to deliberately reproduce an unsafe engine symptom.**
+- Do not publish vehicle-identifying information, passwords, Wi-Fi tokens, NVS dumps, phone backups or sensitive recordings. Existing historical captures are preserved; see [security](SECURITY.md) for responsible reporting.
 
-**Evidence levels must never be conflated:**
+Explore the [protocol notes](docs/protocol-notes.md), [experiment plan](docs/sme105-dcl-experiment-plan-2026-11-07.md), [references](docs/REFERENCES.md) and [high-idle research](docs/high-idle-diagnosis.md).
 
-- **Observed:** a preserved raw recording or directly witnessed bench/vehicle behavior with the stated setup.
-- **Reference:** an identified external source, *not* automatic support for this specific ECU.
-- **Inferred:** a testable hypothesis from patterns or comparisons.
-- **Unknown:** untested, ambiguous or not established on the target ECU.
+For an overview of code internals and safe local builds, read [code walkthrough](docs/CODE_WALKTHROUGH.md) and [developer setup](docs/DEVELOPER_SETUP.md). Before sharing the repository externally, use the [publication checklist](docs/PUBLICATION_CHECKLIST.md).
 
-The command catalogue, DTC variants, MEM offsets, reverse-engineered words, PID/DMR maps, sensor conversions and active-control candidates must retain their own evidence status. The ability to build a command is **not** proof that the ECU accepts it. Historic raw material and metadata are append-only; corrections should be reproducible derivatives with source hashes.
+## For Ford / technical reviewers
 
-## Safety boundary
+The [two-page-style engineering brief](docs/ENGINEERING_BRIEF.md) summarizes the problem, implemented architecture, verification levels, unanswered questions and specific requests for historical EEC-IV documentation or calibration information. The project's intent is to improve maintainability and safe understanding of a legacy vehicle, **not** to imply access to or endorsement by Ford engineering.
 
-There is **no generic “write arbitrary ECU bytes” API**, and no automatic ECU transmission at boot, Wi-Fi connection or recovery. Named `ARM_*` and `READ_*` transactions are bounded and require the documented per-boot `TX2_BENCH` pad verification; `DE` defaults LOW. No KOEO, KOER, live, MEM, clear-DTC, idle/actuator or output commands should be dispatched without an explicit, appropriate vehicle test procedure and operator authorization. A local LED lighting during a bridge-only test does not establish electrical compatibility with the vehicle.
+## Contributing, security and licensing
 
-Start with the [engineering brief for technical reviewers](docs/ENGINEERING_BRIEF.md), [wiring and electrical safety](docs/wiring-safety.md), [experiment matrix](docs/sme105-dcl-experiment-plan-2026-11-07.md), [protocol notes](docs/protocol-notes.md), and [reference index](docs/REFERENCES.md). The [technical Wi-Fi setup](docs/wifi_bridge_architecture_and_setup.md) documents the current one-password architecture, USB-only rekey and rollback boundaries. Historical delivery reports are retained as dated records; **they do not supersede the current release table**.
+Reports should include the exact ECU and firmware/app versions, transport mode, safety state, original capture identifier, clock settings, digest and reproduction steps. Keep identifying raw captures private. See the [wiring and electrical safety guide](docs/wiring-safety.md).
 
-## Project governance
+Contributions to parsers, tests, documentation and evidence-based research are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md) before sharing files or proposing active hardware experiments.
 
-Reports about protocol behavior should include the exact ECU, firmware/app versions, USB or radio mode, safety state, original capture identifier, clock settings, raw digest, and steps to reproduce. Keep sensitive phone, vehicle, Wi-Fi and NVS data out of public issues. See [contributing](CONTRIBUTING.md), [security](SECURITY.md) and the [references](docs/REFERENCES.md).
-
-**Licensing:** The repository is publicly visible but does **not** have an open-source license yet. Viewing source code does not grant permission to modify or redistribute it. The maintainer must deliberately select and add a license before this project can be described as open source.
+**License status:** This repository is **publicly viewable but not currently open-source licensed**. Public access alone does not grant reuse, modification or redistribution rights. The maintainer must deliberately select and add a license before describing the code as open source.

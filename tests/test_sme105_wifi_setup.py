@@ -294,7 +294,7 @@ class CredentialsAndStorageTests(unittest.TestCase):
         self.assertIn("mbedtls_pkcs5_pbkdf2_hmac(", firmware)
         self.assertIn("uint8_t derived[16]", firmware)
         self.assertIn("wifiApMode ? wifiApAuthToken : wifiToken", firmware)
-        self.assertIn("kUsbInstalledBuildVersion = 29", firmware)
+        self.assertIn("kUsbInstalledBuildVersion = 30", firmware)
 
     def test_ap_status_parser_accepts_firmware_and_documented_shapes(self):
         firmware_reply = setup.parse_wifi_ap_status(

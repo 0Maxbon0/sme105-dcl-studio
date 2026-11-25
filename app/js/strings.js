@@ -1,8 +1,8 @@
 /** English UI copy. Keep user-visible text here so another language can be added later. */
 
 export const STR = {
-  appTitle: "Escort 1.6 Zetec",
-  shortTitle: "SME105 DCL STUDIO",
+  appTitle: "EscortScope",
+  shortTitle: "FORD ESCORT · SME-105",
   tabs: {
     codes: "Faults",
     live: "Dashboard",
@@ -35,8 +35,8 @@ export const STR = {
   firmware: "Bridge fields",
   auth: "Bluetooth login",
   readStored: "Read stored codes",
-  runKoeo: "Engine-off test (KOEO)",
-  runKoer: "Engine-running test (KOER)",
+  runKoeo: "Run KOEO",
+  runKoer: "Run KOER",
   koeoProgress: "KOEO self-test",
   blocks: "Blocks",
   selfTestFlag: "Self-test/result-phase flag (not a success verdict)",

@@ -32,7 +32,7 @@ export async function saveOrShare(blob, fileName) {
     const saved = await ExportStorage.save({ sourceUri: file.uri, fileName });
     await recordDiagnosticEvent("EXPORT_SAVED", { fileName, folder: saved.folder, bytes: blob.size }, "export");
     try {
-      return await Share.share({ title: fileName, files: [file.uri], dialogTitle: "Saved in Downloads/SME105 DCL Studio · Share a copy" });
+      return await Share.share({ title: fileName, files: [file.uri], dialogTitle: "Saved in Downloads/Escort SME-105 Diagnostic Lab · Share a copy" });
     } catch (error) {
       throw new Error(`File saved in ${saved.folder}; sharing failed: ${error?.message || String(error)}`);
     }

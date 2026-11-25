@@ -1,0 +1,3 @@
+(fp_lib_table
+ (lib (name "SME105")(type "KiCad")(uri "${KIPRJMOD}/parts.pretty")(options "")(descr "SME105 self-contained engineering footprint set"))
+)
