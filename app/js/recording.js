@@ -137,6 +137,33 @@ export async function saveRecordingNotes(recordingId, notes) {
   }));
 }
 
+/** Library completion is an operator annotation, never an ECU validity verdict. */
+export function recordingCompletion(item) {
+  if (item?.verdict?.valid === true) return "Complete";
+  return item?.manualComplete === true ? "Complete" : "Incomplete";
+}
+export function isReviewCandidate(item) {
+  return !!item?.ended && !["FAILED","BRIDGE_READ_ALREADY_USED","SIMULATED"].includes(item.verdict?.status);
+}
+export async function saveRecordingCompletion(recordingId, complete) {
+  if (typeof complete !== "boolean") throw new TypeError("Completion must be boolean");
+  const candidate = (await listRecordings()).find(item => item.id === recordingId);
+  if (!isReviewCandidate(candidate)) throw new Error("Only finished recordings with readings can be marked complete");
+  // Legacy metadata has no sample count; verify original CSV before annotation.
+  const legacy = candidate.sampleCount == null;
+  if (legacy) {
+    const { indexRecording } = await import("./recording-review.js");
+    if (!(await indexRecording(await recordingBlob(recordingId, "csv"))).count)
+      throw new Error("Recording has no saved readings");
+  }
+  return updateRecordingAnnotations(recordingId, current => {
+    if (!isReviewCandidate(current) || !(Number(current.sampleCount)>0 || (legacy && current.sampleCount == null)))
+      throw new Error("Only finished recordings with readings can be marked complete");
+    if (current.verdict?.valid === true) throw new Error("Recording is already complete");
+    return { ...current, manualComplete: complete, completionUpdatedAt: Date.now() };
+  });
+}
+
 /** Attach JSON comparison or other analysis separately from immutable capture evidence. */
 export async function attachRecordingAnalysis(recordingId, analysis) {
   const copy = copyAnalysis(analysis);

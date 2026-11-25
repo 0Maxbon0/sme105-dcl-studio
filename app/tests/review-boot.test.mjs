@@ -29,12 +29,12 @@ test('actual app entry boots existing recording into offline dashboard and wires
     await import('../js/app.js');
     const $=id=>document.getElementById(id);
     const percent=()=>$('throttle-percent-value').textContent;
-    await until(()=>$('startup-screen').hidden && $('saved-recordings').options.length>=2);
+    await until(()=>$('startup-screen').hidden && $('saved-recordings').options.length===1);
     assert.equal($('live-banner').hidden,true, 'historical failed result must not appear as a new live warning');
     assert.equal($('live-meta').textContent,'');
     assert.match($('codes-banner').textContent,/Previous saved result.*FAILED.*No new test has run/);
     assert.equal($('review-mode').hidden,true);
-    assert.equal($('saved-recording-count').textContent,'2');
+    assert.equal($('saved-recording-count').textContent,'1');
     assert.ok($('offline-review-panel').compareDocumentPosition($('dashboard-overview')) & window.Node.DOCUMENT_POSITION_FOLLOWING);
     document.querySelector('nav [data-view="log"]').click();
     assert.match($('log-summary').textContent,/Previous saved result/);
@@ -69,7 +69,7 @@ test('actual app entry boots existing recording into offline dashboard and wires
     assert.match($('dcl-probe-blocked').textContent,/FF5F/);
     $('review-position').value=5; $('review-position').dispatchEvent(new window.Event('input'));
     await until(()=>percent()==='100');
-    assert.match($('live-banner').textContent,/INCOMPLETE.*failed validity checks/);
+    assert.match($('live-banner').textContent,/Incomplete.*not verified for diagnosis/);
     assert.equal($('live-banner').classList.contains('warn'),true);
     // The derived card uses the same handlers and persisted order as real channels.
     const grid=$('pinned-readings');

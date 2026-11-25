@@ -45,8 +45,18 @@ test('real dashboard DOM selects older/newer recordings, plays/seeks, shows norm
   assert.equal($('saved-recordings').value,newer.id);
   assert.equal($('review-mode').textContent,'Recorded Data — Offline Review');
   assert.equal($('live-start').disabled,true);
-  assert.match($('review-selected').textContent,/INCOMPLETE/);
+  assert.match($('review-selected').textContent,/Incomplete/);
   assert.equal(percent(),'—');
+  assert.equal($('review-completion').hidden,false);
+  $('review-completion').click();
+  await until(()=>state.review.metadata.manualComplete===true && !$('review-completion').disabled);
+  assert.equal($('review-completion').textContent,'Undo mark complete');
+  assert.equal(state.review.metadata.verdict.valid,false);
+  assert.equal($('review-completion-note').hidden,false);
+  $('review-completion').click();
+  await until(()=>state.review.metadata.manualComplete===false && !$('review-completion').disabled);
+  assert.equal($('review-completion').textContent,'Mark as complete');
+
   state.recovering=true; paint(); // Background connection only, no active capture.
   assert.equal($('saved-recordings').disabled,false);
   assert.equal($('review-open').disabled,false);

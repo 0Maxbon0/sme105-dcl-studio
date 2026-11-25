@@ -934,3 +934,5 @@ body.reduce-motion .check input::before { transition:none; }
 .choice-filters { display:flex; flex-wrap:wrap; gap:6px; padding:0 16px 10px; flex:none; }
 .choice-filters button { min-height:40px; padding:6px 10px; font-size:.71rem; background:var(--surface); color:var(--muted); }
 .choice-filters button[aria-pressed="true"] { color:var(--accent); background:var(--accent-soft); border-color:var(--accent); }
+#review-completion { width:100%; min-height:48px; margin-block:4px 8px; }
+#review-completion-note { margin:0 0 10px; padding:10px 12px; background:var(--accent-soft); border-radius:var(--radius-control); color:var(--text); }

@@ -2,7 +2,7 @@
 
 Start here rather than reading the complete dated experiment history in
 alphabetical order. The project's **current local source** is Android
-`2.2.0` (build 30), ESP32 firmware v30; verify those versions in code
+`2.2.1` (build 31), ESP32 firmware v30; verify those versions in code
 and read [release/validation limits](ENGINEERING_BRIEF.md).
 
 ## Start with these guides

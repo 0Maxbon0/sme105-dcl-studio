@@ -1,7 +1,7 @@
 import { formatReplayTime } from './display-format.js';
 /** Read-only, bounded CSV index over the existing recording Blob. No transport imports. */
 import { PIDS, summarizeSeries } from './pids.js';
-import { listRecordings, recordingBlob } from './recording.js';
+import { listRecordings, recordingBlob, recordingCompletion, isReviewCandidate } from './recording.js';
 const names = new Set(Object.values(PIDS).map(p => p[0]));
 const encoder = new TextEncoder();
 const BLOCK_ROWS = 2048;
@@ -94,6 +94,31 @@ export async function indexRecording(blob, { progress = () => {}, cancelled = ()
       return { position: t, pids };
     },
   };
+}
+// Read-only migration for captures created before sampleCount was persisted.
+export async function reviewableRecordings(items, legacyCache = new Map()) {
+  const result = [];
+  for (const item of items) {
+    if (!isReviewCandidate(item)) continue;
+    let entry = item;
+    if (item.sampleCount == null) {
+      if (!legacyCache.has(item.id)) legacyCache.set(item.id, (async () => {
+        try {
+          const indexed = await indexRecording(await recordingBlob(item.id, 'csv'));
+          return { sampleCount: indexed.count, duration: indexed.duration };
+        } catch { return null; }
+      })());
+      const counts = await legacyCache.get(item.id);
+      if (!counts) continue;
+      entry = { ...item, ...counts };
+    }
+    if (Number(entry.sampleCount)>0) result.push(entry);
+  }
+  return result;
+}
+export function reviewRecordingLabel(item) {
+  return recordingLabel({ ...item, verdict: { ...item.verdict, status: recordingCompletion(item) } }) +
+    (item.manualComplete && !item.verdict?.valid ? ' · marked by you' : '');
 }
 export function recordingLabel(item) {
   const start = item.started || Date.parse(item.id);

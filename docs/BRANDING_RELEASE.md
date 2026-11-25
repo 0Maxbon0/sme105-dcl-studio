@@ -1,6 +1,6 @@
 # EscortScope — product identity and release
 
-**26 November 2026 · Android v2.2.0 (build 30) · ESP32 firmware v30**
+**26 November 2026 · Android v2.2.1 (build 31) · ESP32 firmware v30**
 
 EscortScope is an independent Ford Escort SME-105 / EEC-IV diagnostic research product made by Basita (بسيطة). Product-specific steel blue, a gauge icon and automotive layouts distinguish it from the company brand; original Basita typography, semantic colors, motion and sonic identity provide a consistent endorsement. The company identity is not replaced by the product and neither identity implies Ford affiliation.
 
@@ -33,3 +33,7 @@ Restored diagnostic verdicts remain historical and do not raise a live-capture w
 ## v2.2.0 — shared interaction components
 
 All 22 ordinary application select fields use the same EscortScope/Basita-themed choice sheet; the remaining data-set selector already uses direct segmented buttons. Original field values, change handlers, disabled states and storage are retained. Recording lists show structured metadata grouped by date with search and All / With readings / Valid / Unverified filters. Settings toggles, range controls, progress indicators, disclosure controls and related list surfaces use the same design foundations. Native Android file and date pickers remain OS-owned. The browser matrix passed 48 screen checks and 128 opened-picker checks (16 available pickers, four widths, both themes); unavailable/disabled fields retain their guards. Android v2.2.0 build 30 was installed in place. On the phone, all 135 original recording entries appeared across eight date groups; the With readings filter found 18 entries and offline review loaded an existing 43.8-second capture. JavaScript: 325 passed, 3 skipped, no failures. No firmware change or new vehicle test.
+
+## v2.2.1 — recording completion and review eligibility
+
+The ordinary offline readings library includes finished captures with saved PID samples and excludes explicitly failed, blocked, simulated and empty captures. Original engineering archives remain intact. Legacy captures missing sample counts are checked against the original CSV using the existing read-only index. Complete/Incomplete labels and filters describe review completion; an operator can mark an incomplete recording complete and undo that mark. The annotation is persisted separately from the original verdict, raw transcript and CSV, and does not authenticate the diagnosis. Android build 31 installed in place; actual phone validation retained all 135 captures, exposed 32 reviewable recordings (15 complete, 17 incomplete), and verified mark/undo with the original verdict unchanged. JavaScript: 326 passed, 3 skipped, no failures. No firmware change or vehicle test.

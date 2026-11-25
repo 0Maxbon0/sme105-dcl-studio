@@ -1,3 +1,4 @@
+import { recordingCompletion } from "./recording.js";
 import { formatMeasurement, formattedReading, formatReplayTime } from './display-format.js';
 import { renderBitPanel } from './bit-presentation.js';
 import { dashboardReading } from "./throttle-display.js";
@@ -1368,7 +1369,7 @@ export function render(state) {
     for (const node of [$("live-banner"), $("codes-banner")]) {
       node.hidden = false;
       node.className = invalid ? "banner warn" : "banner";
-      node.textContent = `Recorded Data — Offline Review · ${verdict?.status || "Unfinished"}${invalid ? " · Saved capture failed validity checks; do not treat it as a diagnosis." : ""}`;
+      node.textContent = `Recorded Data — Offline Review · ${recordingCompletion(state.review.metadata)}${state.review.metadata?.manualComplete && invalid ? " (marked by you)" : ""}${invalid ? " · Original capture not verified for diagnosis." : ""}`;
     }
   }
   const pct = progressValue(state);

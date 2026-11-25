@@ -9,6 +9,7 @@ import {
   listRecordings,
   recordingBlob,
   saveRecordingNotes,
+  saveRecordingCompletion, recordingCompletion,
 } from "../js/recording.js";
 import { compareReferencePair } from "../js/capture-comparison.js";
 
@@ -164,4 +165,38 @@ test("storage failure cannot persist an ignition confirmation or a valid verdict
     assert.equal(saved.outcome, "STORAGE_FAILURE");
     assert.equal(saved.verdict.valid, false);
   } finally { fake.IDBDatabase.prototype.transaction = original; }
+});
+
+test("review library retains only completed/incomplete data captures and manual completion never changes evidence", async () => {
+  const { reviewableRecordings } = await import("../js/recording-review.js");
+  const create = async (status,valid,hasData) => {
+    const r=await createRecording("LIVE");
+    if(hasData)r.sample({t:1,name:"N",raw:100,value:1600});
+    r.line("fixture");await r.finish({status,valid,reasons:["fixture"]});return r.id;
+  };
+  const good=await create("VALID",true,true), partial=await create("INCOMPLETE",false,true),
+    failed=await create("FAILED",false,true), empty=await create("INCOMPLETE",false,false);
+  const legacy=await create("INCOMPLETE",false,true);
+  const db=await new Promise((resolve,reject)=>{const req=indexedDB.open("eeciv-recordings",1);req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});
+  await new Promise((resolve,reject)=>{const tx=db.transaction("captures","readwrite"), store=tx.objectStore("captures"), req=store.get(legacy);req.onsuccess=()=>{const r=req.result;delete r.sampleCount;delete r.duration;store.put(r);};tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);});
+  db.close();
+  const ids=[good,partial,failed,empty,legacy], all=(await listRecordings()).filter(r=>ids.includes(r.id));
+  const visible=await reviewableRecordings(all);
+  assert.deepEqual(new Set(visible.map(r=>r.id)),new Set([good,partial,legacy]));
+  assert.equal(visible.find(r=>r.id===legacy).sampleCount,1);
+  const before=all.find(r=>r.id===partial), raw=await (await recordingBlob(partial,"raw")).text(), csv=await (await recordingBlob(partial,"csv")).text();
+  assert.equal(recordingCompletion(before),"Incomplete");
+  await saveRecordingCompletion(partial,true);
+  const after=(await listRecordings()).find(r=>r.id===partial);
+  assert.equal(recordingCompletion(after),"Complete");assert.equal(after.manualComplete,true);
+  assert.deepEqual(after.verdict,before.verdict);
+  assert.equal(await (await recordingBlob(partial,"raw")).text(),raw);
+  assert.equal(await (await recordingBlob(partial,"csv")).text(),csv);
+  await saveRecordingCompletion(partial,false);
+  assert.equal(recordingCompletion((await listRecordings()).find(r=>r.id===partial)),"Incomplete");
+  await saveRecordingCompletion(legacy,true);
+  assert.equal(recordingCompletion((await listRecordings()).find(r=>r.id===legacy)),"Complete");
+  await assert.rejects(saveRecordingCompletion(failed,true),/finished recordings/);
+  await assert.rejects(saveRecordingCompletion(empty,true),/finished recordings/);
+  await assert.rejects(saveRecordingCompletion(good,false),/already complete/);
 });

@@ -1,3 +1,4 @@
+import { recordingCompletion } from "./recording.js";
 // One accessible, themed picker for every single-select field.
 // The original select remains the source of truth for all existing handlers.
 const titles = {
@@ -19,7 +20,7 @@ const readable = value => String(value || 'Unknown').replaceAll('_',' ');
 const stamp = value => { const n = typeof value === 'number' ? value : Date.parse(value); return Number.isFinite(n) && n>0 ? new Date(n) : null; };
 const formatDate = date => date ? date.toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'}) : 'Date unavailable';
 const formatTime = date => date ? date.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'}) : '';
-export function describeRecordingOption(option, item, extra = '') {
+export function describeRecordingOption(option, item, extra = '', {review = false} = {}) {
   const d = stamp(item.started || item.completedAt || item.startedAt || item.id);
   const variant = item.variant || item.source || 'Recording';
   const duration = item.duration ?? (item.ended && item.started ? (item.ended-item.started)/1000 : null);
@@ -33,6 +34,11 @@ export function describeRecordingOption(option, item, extra = '') {
   option.dataset.choiceTone = item.verdict?.valid === true ? 'success' : item.verdict?.valid === false ? 'warning' : 'neutral';
   option.dataset.choiceMeta = [length,item.sampleCount != null ? item.sampleCount+' samples' : '',extra].filter(Boolean).join(' · ');
   if(item.sampleCount != null) option.dataset.choiceSamples=String(item.sampleCount);
+  if(review) {
+    option.dataset.choiceStatus=recordingCompletion(item);
+    option.dataset.choiceTone=option.dataset.choiceStatus==='Complete'?'success':'neutral';
+    if(item.manualComplete && !item.verdict?.valid) option.dataset.choiceMeta += ' · Marked by you';
+  }
 }
 export function initChoiceSheets(doc = document) {
   const win = doc.defaultView;
@@ -40,7 +46,7 @@ export function initChoiceSheets(doc = document) {
   const dialog = doc.createElement('dialog');
   dialog.className = 'choice-sheet';
   dialog.setAttribute('aria-labelledby','choice-sheet-title');
-  dialog.innerHTML = '<div class="choice-sheet-head"><div><p class="choice-kicker">ESCORTSCOPE / SELECT</p><h2 id="choice-sheet-title"></h2><p class="choice-sheet-subtitle"></p></div><button type="button" class="choice-close" aria-label="Close selection">×</button></div><div class="choice-search-wrap" hidden><label class="choice-search-label" for="choice-search">Search</label><input id="choice-search" type="search" placeholder="Search recordings…" autocomplete="off"></div><div class="choice-filters" role="group" aria-label="Filter recordings" hidden><button type="button" data-filter="all" aria-pressed="true">All</button><button type="button" data-filter="readings" aria-pressed="false">With readings</button><button type="button" data-filter="valid" aria-pressed="false">Valid</button><button type="button" data-filter="incomplete" aria-pressed="false">Unverified</button></div><div class="choice-list" role="group" aria-labelledby="choice-sheet-title"></div><div class="choice-sheet-foot"><span class="choice-count" role="status"></span><button type="button" class="choice-cancel">Cancel</button></div>';
+  dialog.innerHTML = '<div class="choice-sheet-head"><div><p class="choice-kicker">ESCORTSCOPE / SELECT</p><h2 id="choice-sheet-title"></h2><p class="choice-sheet-subtitle"></p></div><button type="button" class="choice-close" aria-label="Close selection">×</button></div><div class="choice-search-wrap" hidden><label class="choice-search-label" for="choice-search">Search</label><input id="choice-search" type="search" placeholder="Search recordings…" autocomplete="off"></div><div class="choice-filters" role="group" aria-label="Filter recordings" hidden><button type="button" data-filter="all" aria-pressed="true">All</button><button type="button" data-filter="readings" aria-pressed="false">With readings</button><button type="button" data-filter="valid" aria-pressed="false">Valid</button><button type="button" data-filter="unverified" aria-pressed="false">Unverified</button><button type="button" data-filter="complete" aria-pressed="false" hidden>Complete</button><button type="button" data-filter="incomplete" aria-pressed="false" hidden>Incomplete</button></div><div class="choice-list" role="group" aria-labelledby="choice-sheet-title"></div><div class="choice-sheet-foot"><span class="choice-count" role="status"></span><button type="button" class="choice-cancel">Cancel</button></div>';
   doc.body.append(dialog);
   const title = dialog.querySelector('h2'), subtitle = dialog.querySelector('.choice-sheet-subtitle'), search = dialog.querySelector('input'), searchWrap = dialog.querySelector('.choice-search-wrap'), list = dialog.querySelector('.choice-list'), count = dialog.querySelector('.choice-count');
   const filters=dialog.querySelector('.choice-filters');
@@ -83,7 +89,7 @@ export function initChoiceSheets(doc = document) {
     const options=[...select.options].filter(o=>!o.hidden && !o.parentElement?.hidden);
     const visible=options.filter(o=>{
       const d=o.dataset;
-      const matches=filter==='all'||(filter==='readings'&&Number(d.choiceSamples)>0)||(filter==='valid'&&d.choiceTone==='success')||(filter==='incomplete'&&d.choiceTone==='warning');
+      const matches=filter==='all'||(filter==='readings'&&Number(d.choiceSamples)>0)||(filter==='valid'&&d.choiceTone==='success')||(filter==='unverified'&&d.choiceTone==='warning')||(filter==='complete'&&d.choiceStatus==='Complete')||(filter==='incomplete'&&d.choiceStatus==='Incomplete');
       return matches&&[o.textContent,...Object.values(d)].join(' ').toLocaleLowerCase().includes(query);
     });
     const fragment=doc.createDocumentFragment();
@@ -122,7 +128,9 @@ export function initChoiceSheets(doc = document) {
     for(const b of filters.querySelectorAll('button'))b.setAttribute('aria-pressed',String(b.dataset.filter==='all'));
     const library=libraryIds.has(field.select.id);
     title.textContent=labelOf(field.select);
-    subtitle.textContent=library?'Choose a saved item. Dates, status and details are kept separate.':'Choose one option.';
+    const review=field.select.id==='saved-recordings';
+    subtitle.textContent=review?'Recordings with saved readings only. Completion is independent of diagnostic validity.':library?'Choose a saved item. Dates, status and details are kept separate.':'Choose one option.';
+    for(const b of filters.querySelectorAll('button')) b.hidden=review?['readings','valid','unverified'].includes(b.dataset.filter):['complete','incomplete'].includes(b.dataset.filter);
     searchWrap.hidden=!library&&field.select.options.length<10;
     filters.hidden=!['saved-recordings','analysis-recording-select','compare-second-recording'].includes(field.select.id);
     search.placeholder=library?'Search date, type or status…':'Search options…';

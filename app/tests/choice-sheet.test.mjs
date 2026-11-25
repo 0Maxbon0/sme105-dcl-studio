@@ -9,7 +9,7 @@ test('all application selects use a shared branded sheet with exact existing sel
   const records=$('saved-recordings');
   for(const [id,variant,valid,count] of [['a','LIVE',true,25],['b','KOEO',false,0],['c','ALL',false,42]]){
     const option=d.createElement('option');option.value=id;option.textContent=variant;
-    describeRecordingOption(option,{id,variant,started:Date.UTC(2026,10,25),duration:43.8,sampleCount:count,verdict:{valid,status:valid?'VALID':'INCOMPLETE'}});
+    describeRecordingOption(option,{id,variant,started:Date.UTC(2026,10,25),duration:43.8,sampleCount:count,verdict:{valid,status:valid?'VALID':'INCOMPLETE'}},'',{review:true});
     records.append(option);
   }
   const picker=initChoiceSheets(d), dialog=d.querySelector('.choice-sheet');
@@ -24,9 +24,9 @@ test('all application selects use a shared branded sheet with exact existing sel
   assert.equal(dialog.querySelectorAll('.choice-option').length,3);
   assert.equal(dialog.querySelectorAll('.choice-date').length,1);
   assert.match(dialog.querySelector('.choice-option-meta').textContent,/43.8s.*25 samples/);
-  dialog.querySelector('[data-filter=readings]').click();
+  dialog.querySelector('[data-filter=incomplete]').click();
   assert.equal(dialog.querySelectorAll('.choice-option').length,2);
-  $('choice-search').value='INCOMPLETE';$('choice-search').dispatchEvent(new dom.window.Event('input'));
+  $('choice-search').value='42 samples';$('choice-search').dispatchEvent(new dom.window.Event('input'));
   assert.equal(dialog.querySelectorAll('.choice-option').length,1);
   dialog.querySelector('[data-choice-value=c]').click();
   assert.equal(records.value,'c');assert.equal(changes,1);assert.equal(inputs,1);assert.equal(dialog.open,false);
