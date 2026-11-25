@@ -28,7 +28,12 @@ test('fresh app boot restores saved derived-card order and mode-specific visibil
     assert.equal($('dashboard-density').value,'dense');
     assert.equal($('throttle-percent-value').textContent,'87');
     assert.equal(document.querySelector('#pinned-readings [data-pid=VS] .reading-number').textContent,'0.0');
-    $('live-set').value='LIVE';$('live-set').dispatchEvent(new window.Event('change'));
+    assert.equal($('dataset-choices').hidden,false);
+    document.querySelector('[data-dataset=LIVE]').click();
+    assert.equal($('live-set').value,'LIVE');
+    assert.equal(localStorage.getItem('eeciv-live-set'),'LIVE');
+    assert.equal(document.querySelector('[data-dataset=LIVE]').getAttribute('aria-pressed'),'true');
+    assert.equal(document.querySelector('[data-dataset=ALL]').getAttribute('aria-pressed'),'false');
     assert.deepEqual(order(),[]); // A persisted removal is never migrated back in.
     assert.ok(document.querySelector('#live-cards [data-pid=THROTTLE_PERCENT]'));
     $('live-set').value='LIVE3';$('live-set').dispatchEvent(new window.Event('change'));

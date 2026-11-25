@@ -1,8 +1,8 @@
-const CACHE_NAME = 'eeciv-v2.0.2';
+const CACHE_NAME = 'eeciv-v2.1.0';
 const FILES = [
   "./",
   "./index.html",
-  "./styles.css?v=18",
+  "./styles.css?v=19",
   "./manifest.webmanifest",
   "./brand/logos/basita-ar-dark.svg",
   "./brand/logos/basita-ar-light.svg",
@@ -37,7 +37,7 @@ const FILES = [
   "./icons/nav-settings.svg",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
-  "./js/app.js?v=27",
+  "./js/app.js?v=28",
   "./js/ui.js",
   "./js/strings.js",
   "./js/protocol.js",

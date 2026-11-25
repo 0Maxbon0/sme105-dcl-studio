@@ -1,7 +1,7 @@
 {
   "name": "escort-sme105-diagnostic-lab",
   "private": true,
-  "version": "2.0.2",
+  "version": "2.1.0",
   "type": "module",
   "scripts": {
     "native:bundle": "esbuild app/js/native-bridge-entry.js --bundle --format=esm --platform=browser --target=es2022 --outfile=app/vendor/native-bridge.js",

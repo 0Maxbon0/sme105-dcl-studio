@@ -12,7 +12,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=18">
+  <link rel="stylesheet" href="styles.css?v=19">
 </head>
 <body>
   <section id="startup-screen" class="startup-screen" aria-label="Starting EscortScope">
@@ -61,27 +61,28 @@
   <main>
     <section id="view-live" class="view">
       <section class="vehicle-hero" aria-label="Supported vehicle">
-        <div class="vehicle-copy"><span class="section-kicker">VEHICLE PROFILE</span><h2>Ford Escort</h2><p>1998 · SME-105 / EEC-IV</p><span class="vehicle-protocol">DCL diagnostics</span></div>
+        <div class="vehicle-copy"><span class="section-kicker">VEHICLE / DCL</span><h2>Ford Escort <span class="vehicle-year">1998</span></h2><p>SME-105 · EEC-IV</p></div>
         <img src="icons/escort-profile.svg" class="vehicle-art" alt="">
       </section>
       <p id="live-banner" class="banner" hidden></p>
       <section class="live-controls" aria-label="Start live diagnostics">
-        <div class="capture-heading"><h2>Live diagnostics</h2><span class="subtle-tag">Records locally</span></div>
-        <label class="stack" for="live-set">Data set<select id="live-set">
+        <div class="capture-heading"><h2>Live diagnostics</h2><span class="subtle-tag"><span class="local-dot"></span> Local recording</span></div>
+        <label class="stack dataset-native" for="live-set">Data set<select id="live-set">
           <option value="LIVE">Engine</option>
           <option value="LIVE2">Idle & switches</option>
           <option value="LIVE3">Air sensor & spark</option>
           <option value="ALL">My diagnostics · ALL</option>
         </select></label>
+        <div id="dataset-choices" class="dataset-choices" role="group" aria-label="Data set" hidden>
+          <button type="button" data-dataset="LIVE" aria-pressed="false">Engine</button>
+          <button type="button" data-dataset="LIVE2" aria-pressed="false">Idle</button>
+          <button type="button" data-dataset="LIVE3" aria-pressed="false">Air / spark</button>
+          <button type="button" data-dataset="ALL" aria-pressed="false">All</button>
+        </div>
         <button id="live-start" type="button" class="primary" data-str="startLive"></button>
         <details class="dataset-explanation"><summary>About this data set</summary><p id="live-set-help" class="help"></p></details>
         <p id="live-meta" class="meta"></p>
       </section>
-      <div id="onboarding" class="onboarding" hidden>
-        <div><span class="step-number">1</span><p><strong id="onboarding-connect-step">Connect</strong><br><span>Pair the bridge when prompted.</span></p></div>
-        <div><span class="step-number">2</span><p><strong>Choose data · tap Start</strong><br><span>No ECU read runs before Start.</span></p></div>
-        <button id="dismiss-onboarding" class="icon-button" type="button" aria-label="Dismiss setup tips">×</button>
-      </div>
       <section id="dashboard-overview" class="dashboard-overview" aria-label="Selected dashboard">
         <section id="pinned-section" class="pinned-section">
           <div class="section-heading"><h2 id="dashboard-title">My diagnostics</h2><button id="arrange-dashboard" type="button" aria-pressed="false">Arrange</button></div>
@@ -106,6 +107,11 @@
           </div>
         </section>
       </section>
+      <div id="onboarding" class="onboarding" hidden>
+        <div><span class="step-number">1</span><p><strong id="onboarding-connect-step">Connect</strong><br><span>Pair the bridge when prompted.</span></p></div>
+        <div><span class="step-number">2</span><p><strong>Choose data · tap Start</strong><br><span>No ECU read runs before Start.</span></p></div>
+        <button id="dismiss-onboarding" class="icon-button" type="button" aria-label="Dismiss setup tips">×</button>
+      </div>
       <div class="group-heading"><h2 id="group-title">Overview</h2><div class="group-actions"><label class="group-picker">View<select id="live-group" aria-label="Live sensor group">
         <option value="overview">All available</option>
         <option value="engine">Engine / Idle</option>
@@ -329,7 +335,7 @@
           <section class="product-about"><img class="about-product-icon" src="icons/icon.svg" alt=""><div><h3>EscortScope</h3><p class="help">Ford Escort SME-105 / EEC-IV diagnostics</p></div></section>
           <div class="about-owner"><img class="owner-logo logo-light" src="brand/logos/basita-ar-light.svg" alt="بسيطة" lang="ar"><img class="owner-logo logo-dark" src="brand/logos/basita-ar-dark.svg" alt="بسيطة" lang="ar"><div><strong>Developed by Basita</strong><p class="help">Independent Ford Escort SME-105 / EEC-IV diagnostic research. Not affiliated with Ford.</p></div></div>
           <details class="settings-subdetail"><summary>Basita motion &amp; sound</summary><p class="help">The official loading motion appears only while a connection is pending. Sound is silent by default. Preview the original sonic identity here.</p><div class="sound-preview"><button id="preview-brand-sound" type="button">Play signature</button><audio id="brand-sound" preload="none" src="brand/audio/basita-resolution-micro.mp3"></audio><span id="brand-sound-status" role="status" class="help"></span></div></details>
-          <p class="about-version-line"><span data-str="aboutVersion"></span> <strong id="about-version">2.0.2</strong></p>
+          <p class="about-version-line"><span data-str="aboutVersion"></span> <strong id="about-version">2.1.0</strong></p>
           <details class="settings-subdetail">
             <summary>Demo Mode Simulation</summary>
             <label class="check"><input id="demo-toggle" type="checkbox"> <span data-str="demoOn"></span></label>
@@ -672,6 +678,6 @@
     <button id="ignition-review" type="button" hidden>Ignition confirmation pending · Review</button>
   </div>
   <script src="vendor/jszip.min.js"></script>
-  <script type="module" src="js/app.js?v=27" onerror="document.getElementById('startup-status').textContent='Could not load the application.';document.getElementById('startup-retry').hidden=false"></script>
+  <script type="module" src="js/app.js?v=28" onerror="document.getElementById('startup-status').textContent='Could not load the application.';document.getElementById('startup-retry').hidden=false"></script>
 </body>
 </html>

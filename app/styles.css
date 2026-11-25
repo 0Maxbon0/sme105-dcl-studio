@@ -3,14 +3,14 @@
 
 :root {
   color-scheme: dark;
-  --bg: #17242e;
-  --surface: #20313e;
-  --surface-raised: #293e4d;
-  --line: #405463;
-  --text: #f1f5f6;
-  --muted: #b5c6ce;
-  --accent: #a9cbd9;
-  --accent-soft: #304b5d;
+  --bg: var(--basita-brand-ink);
+  --surface: #23343c;
+  --surface-raised: #2d4149;
+  --line: #496068;
+  --text: var(--basita-brand-canvas);
+  --muted: var(--basita-brand-mineral);
+  --accent: var(--basita-brand-mineral);
+  --accent-soft: #345457;
   --action: #b0d2df;
   --on-action: #172d3b;
   --green: var(--basita-functional-success-dark);
@@ -26,8 +26,8 @@
   --success-bg: #253f35;
   --on-danger: #291417;
   --on-warning: #f4d527;
-  --radius-card: 16px;
-  --radius-control: 10px;
+  --radius-card: var(--basita-dimensions-radius-16);
+  --radius-control: var(--basita-dimensions-radius-8);
   font-family: var(--basita-font-en);
   font-size: 16px;
   font-synthesis: none;
@@ -250,14 +250,14 @@ select { width: 100%; background: var(--surface-raised); }
 }
 body[data-theme="light"] {
   color-scheme: light;
-  --bg: #f3f6f8;
+  --bg: var(--basita-brand-canvas);
   --surface: #fff;
-  --surface-raised: #eaf0f4;
-  --line: #ccd9e1;
-  --text: #18262d;
-  --muted: #4b616e;
-  --accent: #2c4f7b;
-  --accent-soft: #e3edf4;
+  --surface-raised: #e9efeb;
+  --line: var(--basita-brand-mineral);
+  --text: var(--basita-brand-ink);
+  --muted: #4b6263;
+  --accent: var(--basita-brand-lagoon);
+  --accent-soft: #e0ebe6;
   --action: #2c4f7b;
   --on-action: #fff;
   --green: var(--basita-functional-success-light);
@@ -576,8 +576,8 @@ body[data-theme="light"] .danger-panel summary { display: inline-block; padding:
 
 
 /* EscortScope 2: distinct automotive interface, Basita endorsed. */
-html { background:#17242e; }
-html:has(body[data-theme="light"]) { background:#f3f6f8; }
+html { background:var(--basita-brand-ink); }
+html:has(body[data-theme="light"]) { background:var(--basita-brand-canvas); }
 body { font-family:var(--basita-font-en); padding-bottom:calc(88px + env(safe-area-inset-bottom)); }
 body.large-text { font-size:19px; }
 button,select,input,textarea { font-family:inherit; }
@@ -794,3 +794,56 @@ body[data-theme="light"] .owner-brand { background:#f3f6f3; }
 .owner-brand video,.owner-brand .credit-poster { inset:0 0 0 23px; width:calc(100% - 23px); height:100%; }
 .owner-brand .credit-poster img { inset:0; width:100%; height:100%; }
 @media(max-width:359px) { .owner-brand { width:106px; height:40px; } }
+
+/* EscortScope 2.1: shared Basita foundations, independent automotive actions. */
+:root { --space-2:var(--basita-dimensions-space-8); --space-3:var(--basita-dimensions-space-12); --space-4:var(--basita-dimensions-space-16); --control:var(--basita-dimensions-control-48); }
+.top { gap:var(--space-2); padding-block:calc(8px + env(safe-area-inset-top)) 8px; background:var(--bg); }
+.connection-console { border-radius:var(--radius-control); padding:4px 4px 4px 12px; background:var(--surface); }
+.top button:not(.stop-active) { min-height:var(--control); background:var(--surface); padding-inline:12px; }
+.top .pill { font-size:.72rem; }
+.connection-caption { font-size:.62rem; }
+.owner-brand { background:transparent; }
+body[data-theme="light"] .owner-brand { background:transparent; }
+.owner-brand video,.owner-brand .credit-poster { border-radius:4px; overflow:hidden; }
+.message-bar { padding-top:0; }
+.message { font-size:.78rem; }
+main { padding-top:8px; }
+.view { gap:var(--space-3); }
+.vehicle-hero { min-height:84px; padding:12px 16px; border-radius:var(--radius-card); }
+.vehicle-hero h2 { font-size:1.25rem; line-height:1.25; }
+.vehicle-year { font-size:.7rem; font-weight:500; color:var(--hero-muted); }
+.vehicle-hero p { margin:4px 0 0; font-size:.75rem; }
+.vehicle-hero .section-kicker { margin-bottom:4px; font-size:.58rem; }
+.vehicle-art { width:34%; max-width:160px; }
+.live-controls { gap:var(--space-2); padding:var(--space-3); border-radius:var(--radius-card); }
+.capture-heading h2 { font-size:1.06rem; font-weight:650; }
+.subtle-tag { display:inline-flex; align-items:center; gap:5px; font-size:.66rem; }
+.local-dot { width:6px; height:6px; border:1px solid currentColor; border-radius:50%; }
+.dataset-choices { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:4px; }
+.dataset-choices button { min-height:var(--control); padding:4px 3px; background:var(--surface); font-size:.72rem; color:var(--muted); border-radius:var(--radius-control); }
+.dataset-choices button[aria-pressed="true"] { background:var(--accent-soft); color:var(--accent); border-color:var(--accent); font-weight:700; }
+#live-start { min-height:var(--control); border-radius:var(--radius-control); }
+.dataset-explanation summary { min-height:32px; padding-block:6px; }
+.pinned-section { gap:var(--space-2); }
+.pinned-card,.sensor-card { border-radius:var(--radius-card); }
+.pinned-open,.sensor-open { padding:var(--space-3); border-radius:var(--radius-card); }
+.pinned-title,.sensor-title { font-size:.82rem; }
+.pinned-value,.sensor-value { font-weight:650; font-variant-numeric:tabular-nums; }
+.pinned-grid[data-density="dense"] .pinned-title { font-size:.7rem; }
+.pinned-grid[data-density="small"] .pinned-title { font-size:.75rem; }
+.pinned-grid[data-density="comfortable"] .pinned-open { min-height:110px; }
+.page-heading { padding:12px 0 8px; }
+.page-heading h2 { font-size:1.5rem; font-weight:650; }
+.action-panel,.settings-card,.recording-panel { padding:var(--space-4); gap:var(--space-3); }
+button,select,input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),textarea { border-radius:var(--radius-control); }
+select,input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),textarea { background:var(--surface); }
+button:focus-visible,select:focus-visible,input:focus-visible,summary:focus-visible,[tabindex="0"]:focus-visible { outline:2px solid var(--basita-semantic-focus-ring); outline-offset:3px; }
+button.secondary { background:var(--surface); color:var(--accent); border-color:var(--accent); }
+nav { background:var(--bg); padding-inline:8px; gap:4px; }
+nav button { border-radius:var(--radius-control); min-height:54px; font-size:.65rem; }
+nav button[aria-current="page"] { border-radius:var(--radius-control); background:var(--accent-soft); color:var(--accent); }
+@media(min-width:600px) {
+  .vehicle-hero { min-height:92px; }
+  .live-controls { grid-template-columns:minmax(0,1fr) 210px; }
+}
+@media(max-width:359px) { .dataset-choices button { font-size:.63rem; } nav button {font-size:.56rem;} }

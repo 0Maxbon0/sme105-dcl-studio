@@ -17,7 +17,7 @@ Many older EEC-IV vehicles have limited support in modern diagnostic ecosystems.
 
 EscortScope, developed by Basita, is an effort to build a transparent chain from **raw bytes → timestamped capture → reproducible parser → evidence-qualified interpretation**. Rather than treating reverse-engineering hypotheses as established manufacturer specifications, each finding is labeled *Observed*, *Reference*, *Inferred* or *Unknown*.
 
-**Identity:** an independent automotive product by Basita (بسيطة), with its own steel-blue palette and gauge icon, official Basita typography, semantic colors and motion. See [identity and migration notes](docs/BRANDING_RELEASE.md).
+**Identity:** an independent automotive product by Basita (بسيطة), with a steel-blue automotive action/vehicle identity, official Basita Canvas/Ink surfaces, Lagoon/Mineral selection colors, typography, spacing, controls, semantic colors and motion. See [identity and migration notes](docs/BRANDING_RELEASE.md).
 
 ### What it demonstrates
 
@@ -43,7 +43,7 @@ EscortScope, developed by Basita, is an effort to build a transparent chain from
 
 ## Current engineering status
 
-**Current release (25 November 2026):** Android **v2.0.2** (build **27**) and ESP32 firmware **v30**. EscortScope was installed in place on a Samsung Galaxy A52s; the original package identity and saved recordings were retained. The startup screen follows actual initialization and the original Basita Unravel credit loops silently every 7.63 seconds in both themes.
+**Current release (25 November 2026):** Android **v2.1.0** (build **28**) and ESP32 firmware **v30**. EscortScope was installed in place on a Samsung Galaxy A52s; the original package identity and saved recordings were retained. The compact live dashboard exposes readings earlier and offers direct data-set selection. The startup screen follows actual initialization and the original Basita Unravel credit loops silently every 7.63 seconds in both themes.
 
 **Physical bridge validation:** v30 BLE was flashed and verified by USB. With the ECU disconnected, the phone completed TX2 self-test and reached the initial DCL transmission. The former v29 BLE output reservation could never fit in its 4 KiB queue. v30 reserves a bounded report in an 8 KiB queue without bypassing electrical safety gates. Vehicle ECU response remains unverified.
 

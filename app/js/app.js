@@ -1578,6 +1578,18 @@ function wire() {
     writeStorage("eeciv-idle-check", value ? "1" : "0");
     renderApp(controller.state);
   });
+  const datasetSelect = document.getElementById("live-set");
+  const datasetChoices = document.getElementById("dataset-choices");
+  if (datasetChoices) {
+    datasetChoices.hidden = false;
+    datasetSelect.closest("label").hidden = true;
+    datasetChoices.addEventListener("click", event => {
+      const choice = event.target.closest("button[data-dataset]");
+      if (!choice || choice.disabled || datasetSelect.disabled) return;
+      datasetSelect.value = choice.dataset.dataset;
+      datasetSelect.dispatchEvent(new window.Event("change", { bubbles: true }));
+    });
+  }
   document.getElementById("live-set").addEventListener("change", event => {
     writeStorage("eeciv-live-set", event.target.value); closeSensorDetails(); renderApp(controller.state);
   });

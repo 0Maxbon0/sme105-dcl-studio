@@ -119,7 +119,7 @@ test("Navigation has the six bottom tabs in the required order and labels", asyn
     assert.equal(bottomNavButtons.length, 6, "Must have 6 bottom navigation tabs");
     const tabs = [...bottomNavButtons].map(button => [button.textContent.trim(), button.dataset.view]);
     assert.deepEqual(tabs, [
-      ["Dashboard", "live"], ["Faults", "codes"], ["Lab", "lab"],
+      ["Live", "live"], ["Faults", "codes"], ["Lab", "lab"],
       ["History", "log"], ["K-Line", "kline"], ["Settings", "tools"],
     ]);
 

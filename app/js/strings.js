@@ -5,7 +5,7 @@ export const STR = {
   shortTitle: "FORD ESCORT · SME-105",
   tabs: {
     codes: "Faults",
-    live: "Dashboard",
+    live: "Live",
     lab: "Lab",
     tools: "Settings",
     log: "History",

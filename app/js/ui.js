@@ -1340,6 +1340,12 @@ export function render(state) {
   for (const id of actions) $(id).disabled = !linked || busy || !!state.recovering || !!state.review?.active;
   $("stored-code-mode").disabled = busy;
   $("live-set").disabled = busy || !!state.recovering;
+  const dataset = $("live-set");
+  for (const button of document.querySelectorAll("[data-dataset]")) {
+    button.disabled = dataset.disabled;
+    button.setAttribute("aria-pressed", String(button.dataset.dataset === dataset.value));
+  }
+
 
   const banner = (node) => {
     if (state.trust === "progress") { node.hidden = false; node.textContent = STR.inProgress; node.className = "banner"; }

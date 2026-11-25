@@ -3,10 +3,10 @@
 **Independent automotive diagnostics and embedded-systems research**
 
 - **Target under study:** European Ford Escort 1998, 1.6 Zetec-E, Ford EEC-IV SME-105 PCM (`97AB-12A650-KA`)
-- **Software source:** Android `2.0.2` / build `27`; ESP32 bridge firmware `30`
+- **Software source:** Android `2.1.0` / build `28`; ESP32 bridge firmware `30`
 - **Maintainer:** Basita (بسيطة) · **Status:** experimental research, not a certified diagnostic instrument
 
-**25 November update:** The v30 BLE bridge passed the isolated TX2 self-test and initial DCL transmission with the ECU disconnected. Android v2.0.2 was installed and its brand motion verified. Vehicle ECU response is not established by these checks. See [current release notes](BRANDING_RELEASE.md).
+**25 November update:** The v30 BLE bridge passed the isolated TX2 self-test and initial DCL transmission with the ECU disconnected. Android v2.1.0 was installed and its brand motion verified. Vehicle ECU response is not established by these checks. See [current release notes](BRANDING_RELEASE.md).
 
 ## The problem
 
